@@ -4,7 +4,7 @@ import json
 import shutil
 import subprocess
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import AsyncIterator, List, Optional, Dict, Any
 
@@ -107,25 +107,39 @@ class ClaudeCodeLLM(LLMProvider):
         """
         session_file = self.session_dir / f"{session_id}.jsonl"
         
-        # Build session events
+        # Build session events with realistic timestamps
         events = []
+        base_time = datetime.now(timezone.utc)
         
-        # Add summary event (required first line)
-        summary_text = "Multi-turn conversation session"
-        if system:
-            summary_text = f"System: {system[:100]}..."
-        
+        # Add summary event (required first line) - matches Claude's actual format
         events.append({
             "type": "summary",
-            "summary": summary_text,
+            "summary": "Claude Code CLI Session Started",
             "leafUuid": str(uuid.uuid4())
         })
         
-        # Add message events
+        # Add file-history-snapshot event (required after summary)
+        # This appears to be necessary for Claude to recognize the session properly
+        first_msg_uuid = str(uuid.uuid4())
+        events.append({
+            "type": "file-history-snapshot",
+            "messageId": first_msg_uuid,
+            "snapshot": {
+                "messageId": first_msg_uuid,
+                "trackedFileBackups": {},
+                "timestamp": base_time.isoformat()
+            },
+            "isSnapshotUpdate": False
+        })
+        
+        # Add message events with incremental timestamps
         parent_uuid = None
-        for msg in messages:
+        time_offset = 0
+        for i, msg in enumerate(messages):
             msg_uuid = str(uuid.uuid4())
-            timestamp = datetime.now(timezone.utc).isoformat()
+            # Increment timestamp by 1-3 seconds per message for realism
+            time_offset += (1 + i % 3)
+            timestamp = (base_time + timedelta(seconds=time_offset)).isoformat()
             
             if msg.role == "user":
                 event = {
@@ -321,36 +335,88 @@ class ClaudeCodeLLM(LLMProvider):
                 session_file = self._create_session_file(session_id, [], system)
             
             # Build command - run from project directory with --resume and current prompt
+            # Add safeguard flags to prevent unwanted file access and MCP interactions
             cmd = [
                 self.cli_path,
                 "--resume", session_id,
                 "--print",
                 "--output-format", "json",
-                current_prompt
+                "--allowed-tools", "",  # Disable all tools to prevent file access
+                "--strict-mcp-config",  # Only use explicit MCP config, ignore defaults
             ]
             
-            # Log request if debug enabled
-            request_data = {
-                "session_id": session_id,
-                "messages": [{"role": m.role, "content": m.content} for m in messages],
-                "model": model,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "system": system
-            }
+            # Add system prompt if provided
+            # Replace newlines with spaces to prevent command line parsing issues
+            if system:
+                system_clean = system.replace('\n', ' ').replace('\r', '')
+                cmd.extend(["--system-prompt", system_clean])
+            
+            # Add the actual prompt at the end
+            cmd.append(current_prompt)
+            
+            # Log request if debug enabled - use raw session file content
             request_id = None
             if DebugLogger.is_enabled():
+                # Read raw session file content for debugging
+                with open(session_file, 'r', encoding='utf-8') as f:
+                    session_events = [json.loads(line) for line in f if line.strip()]
+                
+                request_data = {
+                    "session_id": session_id,
+                    "current_prompt": current_prompt,
+                    "session_file": str(session_file),
+                    "session_events": session_events,
+                    "command": cmd
+                }
                 request_id = DebugLogger.log_request("claude_code", request_data, category=debug_category)
+                
+                # Copy session file to debug directory for manual testing
+                if DebugLogger._log_dir:
+                    category_dir = DebugLogger._log_dir / debug_category
+                    category_dir.mkdir(parents=True, exist_ok=True)
+                    now = datetime.now(timezone.utc)
+                    timestamp = now.strftime('%Y%m%dT%H%M%SZ')
+                    short_request_id = request_id[:4]
+                    session_copy = category_dir / f"claude_code_{timestamp}_{short_request_id}_session.jsonl"
+                    shutil.copy2(session_file, session_copy)
             
             # Execute CLI command from project directory
             try:
+                # Log encoding diagnostics
+                if DebugLogger.is_enabled():
+                    import locale
+                    import sys
+                    DebugLogger.log_request("encoding_diagnostic", {
+                        "subprocess_default_encoding": locale.getpreferredencoding(),
+                        "stdout_encoding": sys.stdout.encoding,
+                        "stderr_encoding": sys.stderr.encoding,
+                        "file_system_encoding": sys.getfilesystemencoding()
+                    }, category=debug_category)
+                
                 result = subprocess.run(
                     cmd,
                     capture_output=True,
                     text=True,
+                    encoding='utf-8',  # Explicit UTF-8 to handle Claude's output on Windows
+                    errors='replace',  # Replace invalid sequences instead of crashing
                     check=True,
                     cwd=str(self.project_dir)
                 )
+            except UnicodeDecodeError as e:
+                # Capture encoding error details
+                error_msg = (
+                    f"UTF-8 encoding error in Claude CLI output: {e}\n"
+                    f"This suggests Claude output UTF-8 but Python used {e.encoding} encoding.\n"
+                    f"Problematic byte: 0x{e.object[e.start:e.start+1].hex()} at position {e.start}"
+                )
+                if DebugLogger.is_enabled():
+                    DebugLogger.log_response("encoding_error", {
+                        "error": str(e),
+                        "encoding": e.encoding,
+                        "position": e.start,
+                        "byte": e.object[e.start:e.start+1].hex() if e.start < len(e.object) else None
+                    }, request_id, category=debug_category)
+                raise LLMError(error_msg)
             except subprocess.CalledProcessError as e:
                 self._handle_subprocess_error(e)
             
@@ -389,9 +455,6 @@ class ClaudeCodeLLM(LLMProvider):
                     session_file.unlink()
                 except Exception:
                     pass  # Best effort cleanup
-            elif session_file and DebugLogger.is_enabled():
-                import sys
-                print(f"DEBUG: Session file preserved at: {session_file}", file=sys.stderr)
     
     async def stream(
         self,
@@ -449,44 +512,105 @@ class ClaudeCodeLLM(LLMProvider):
                 session_file = self._create_session_file(session_id, [], system)
             
             # Build command - run from project directory with --resume and current prompt
+            # Add safeguard flags to prevent unwanted file access and MCP interactions
             cmd = [
                 self.cli_path,
                 "--resume", session_id,
                 "--print",
                 "--verbose",
                 "--output-format", "stream-json",
-                current_prompt
+                "--allowed-tools", "",  # Disable all tools to prevent file access
+                "--strict-mcp-config",  # Only use explicit MCP config, ignore defaults
             ]
             
-            # Log request if debug enabled
-            request_data = {
-                "session_id": session_id,
-                "messages": [{"role": m.role, "content": m.content} for m in messages],
-                "model": model,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "system": system
-            }
+            # Add system prompt if provided
+            # Replace newlines with spaces to prevent command line parsing issues
+            if system:
+                system_clean = system.replace('\n', ' ').replace('\r', '')
+                cmd.extend(["--system-prompt", system_clean])
+            
+            # Add the actual prompt at the end
+            cmd.append(current_prompt)
+            
+            # Log request if debug enabled - use raw session file content
             request_id = None
             all_events = []  # Always collect events for error extraction
             if DebugLogger.is_enabled():
+                # Read raw session file content for debugging
+                with open(session_file, 'r', encoding='utf-8') as f:
+                    session_events = [json.loads(line) for line in f if line.strip()]
+                
+                request_data = {
+                    "session_id": session_id,
+                    "current_prompt": current_prompt,
+                    "session_file": str(session_file),
+                    "session_events": session_events,
+                    "command": cmd
+                }
                 request_id = DebugLogger.log_request("claude_code_stream", request_data, category=debug_category)
+                
+                # Copy session file to debug directory for manual testing
+                if DebugLogger._log_dir:
+                    category_dir = DebugLogger._log_dir / debug_category
+                    category_dir.mkdir(parents=True, exist_ok=True)
+                    now = datetime.now(timezone.utc)
+                    timestamp = now.strftime('%Y%m%dT%H%M%SZ')
+                    short_request_id = request_id[:4]
+                    session_copy = category_dir / f"claude_code_stream_{timestamp}_{short_request_id}_session.jsonl"
+                    shutil.copy2(session_file, session_copy)
             
             # Execute CLI command with streaming from project directory
             try:
+                # Log encoding diagnostics
+                if DebugLogger.is_enabled():
+                    import locale
+                    import sys
+                    DebugLogger.log_request("stream_encoding_diagnostic", {
+                        "subprocess_default_encoding": locale.getpreferredencoding(),
+                        "stdout_encoding": sys.stdout.encoding,
+                        "stderr_encoding": sys.stderr.encoding,
+                        "file_system_encoding": sys.getfilesystemencoding()
+                    }, category=debug_category)
+                
                 process = subprocess.Popen(
                     cmd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
+                    encoding='utf-8',  # Explicit UTF-8 to handle Claude's output on Windows
+                    errors='replace',  # Replace invalid sequences instead of crashing
+                    bufsize=1,  # Line buffered
+                    universal_newlines=True,
                     cwd=str(self.project_dir)
                 )
                 
                 # Read streaming output
                 final_usage = None
                 final_stop_reason = None
+                raw_lines = []  # Collect all raw lines for debugging
                 
                 for line in process.stdout:
+                    try:
+                        # Collect raw line for debugging
+                        if DebugLogger.is_enabled():
+                            raw_lines.append(line.strip())
+                    except UnicodeDecodeError as e:
+                        # Capture encoding error details in streaming
+                        error_msg = (
+                            f"UTF-8 encoding error in Claude CLI stream: {e}\n"
+                            f"This suggests Claude output UTF-8 but Python used {e.encoding} encoding.\n"
+                            f"Problematic byte: 0x{e.object[e.start:e.start+1].hex()} at position {e.start}"
+                        )
+                        if DebugLogger.is_enabled():
+                            DebugLogger.log_response("stream_encoding_error", {
+                                "error": str(e),
+                                "encoding": e.encoding,
+                                "position": e.start,
+                                "byte": e.object[e.start:e.start+1].hex() if e.start < len(e.object) else None,
+                                "collected_events": len(all_events)
+                            }, request_id, category=debug_category)
+                        raise LLMError(error_msg)
+                    
                     event = self._parse_stream_event(line)
                     if not event:
                         continue
@@ -496,13 +620,38 @@ class ClaudeCodeLLM(LLMProvider):
                     
                     event_type = event.get("type")
                     
-                    # Content delta events
+                    # Content delta events (streaming format)
                     if event_type == "content_block_delta":
                         delta = event.get("delta", {})
                         if delta.get("type") == "text_delta":
                             text = delta.get("text", "")
                             if text:
                                 yield StreamChunk(delta=text)
+                    
+                    # Assistant message event (contains full response in message.content)
+                    elif event_type == "assistant":
+                        message = event.get("message", {})
+                        content = message.get("content", [])
+                        if isinstance(content, list):
+                            for block in content:
+                                if block.get("type") == "text":
+                                    text = block.get("text", "")
+                                    if text:
+                                        yield StreamChunk(delta=text)
+                        elif isinstance(content, str) and content:
+                            yield StreamChunk(delta=content)
+                    
+                    # Result event (contains accurate usage metrics but duplicate text)
+                    # Don't yield text here - it's already in the assistant event
+                    # Instead, capture the complete usage metrics for final reporting
+                    elif event_type == "result":
+                        # Extract accurate usage from result event
+                        result_usage = event.get("usage", {})
+                        if result_usage:
+                            final_usage = result_usage
+                        # Extract stop reason if present
+                        if not final_stop_reason and "subtype" in event:
+                            final_stop_reason = event.get("subtype", "end_turn")
                     
                     # Message delta events (alternative format)
                     elif event_type == "message_delta":
@@ -569,7 +718,14 @@ class ClaudeCodeLLM(LLMProvider):
                 
                 # Log all events if debug enabled
                 if DebugLogger.is_enabled():
-                    DebugLogger.log_response("claude_code_stream", {"events": all_events}, request_id, category=debug_category)
+                    response_data = {
+                        "events": all_events,
+                        "raw_event_lines": raw_lines,  # Raw JSON lines from stdout
+                        "num_events": len(all_events),
+                        "num_raw_lines": len(raw_lines),
+                        "event_types": [e.get("type") for e in all_events if isinstance(e, dict)]
+                    }
+                    DebugLogger.log_response("claude_code_stream", response_data, request_id, category=debug_category)
                 
             except subprocess.CalledProcessError as e:
                 self._handle_subprocess_error(e)
@@ -581,5 +737,3 @@ class ClaudeCodeLLM(LLMProvider):
                     session_file.unlink()
                 except Exception:
                     pass  # Best effort cleanup
-            elif session_file and DebugLogger.is_enabled():
-                print(f"DEBUG: Session file preserved at: {session_file}", file=sys.stderr)

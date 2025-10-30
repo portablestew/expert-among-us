@@ -20,6 +20,7 @@ from expert_among_us.embeddings.bedrock import BedrockEmbedder
 from expert_among_us.db.metadata.sqlite import SQLiteMetadataDB
 from expert_among_us.db.vector.chroma import ChromaVectorDB
 from expert_among_us.vcs.detector import detect_vcs
+from expert_among_us.llm.factory import create_llm_provider
 from expert_among_us.utils.progress import (
     log_error,
     log_info,
@@ -52,33 +53,6 @@ def create_embedder(provider: str, settings: Settings):
         return BedrockEmbedder(model_id=settings.embedding_model)
     else:
         raise ValueError(f"Unknown embedding provider: {provider}")
-
-
-def create_llm(provider: str, settings: Settings):
-    """Factory function to create LLM based on provider.
-    
-    Args:
-        provider: "bedrock" for AWS Bedrock, "claude-code" for Claude CLI
-        settings: Settings instance with configuration
-        
-    Returns:
-        LLM provider instance
-    """
-    if provider == "bedrock":
-        from expert_among_us.llm.bedrock import BedrockLLM
-        return BedrockLLM(
-            region_name=settings.aws_region,
-            profile_name=settings.aws_profile,
-            enable_caching=settings.bedrock_enable_caching
-        )
-    elif provider == "claude-code":
-        from expert_among_us.llm.claude_code import ClaudeCodeLLM
-        return ClaudeCodeLLM(
-            cli_path=settings.claude_code_cli_path,
-            project_dir=settings.claude_code_session_dir if hasattr(settings, 'claude_code_session_dir') else None
-        )
-    else:
-        raise ValueError(f"Unknown LLM provider: {provider}")
 
 
 def _process_changelist_batch(
@@ -167,7 +141,7 @@ def _process_changelist_batch(
 @click.group()
 @click.option('--debug', is_flag=True, help='Enable debug logging for all Bedrock API calls')
 @click.option('--data-dir', type=click.Path(path_type=Path), help='Base directory for expert data storage (default: ~/.expert-among-us)')
-@click.option('--llm-provider', type=click.Choice(['bedrock', 'claude-code']), default='bedrock', help='LLM provider for AI recommendations (default: bedrock)')
+@click.option('--llm-provider', type=click.Choice(['openai', 'openrouter', 'local', 'bedrock', 'claude-code']), help='LLM provider for AI recommendations (required for prompt command)')
 @click.option('--embedding-provider', type=click.Choice(['local', 'bedrock']), default='local', help='Embedding provider: local=Jina Code, bedrock=AWS Titan (default: local)')
 @click.version_option(version=__version__)
 @click.pass_context
@@ -178,7 +152,12 @@ def main(ctx, debug: bool, data_dir: Optional[Path], llm_provider: str, embeddin
     AI-powered recommendations based on historical development patterns.
     
     Global Options:
-        --llm-provider: Choose LLM provider (bedrock or claude-code)
+        --llm-provider: Choose LLM provider (required for prompt command)
+            - openai: OpenAI API (requires OPENAI_API_KEY)
+            - openrouter: OpenRouter API (requires OPENROUTER_API_KEY)
+            - local: Local LLM server (requires LOCAL_LLM_BASE_URL)
+            - bedrock: AWS Bedrock (requires AWS credentials)
+            - claude-code: Claude Code CLI (requires claude CLI)
         --embedding-provider: Choose embedding provider (local or bedrock)
     """
     from expert_among_us.utils.debug import DebugLogger
@@ -244,10 +223,12 @@ def populate(
         embedding_provider = ctx.obj.get('embedding_provider')
         
         # Step 1: Initialize components and settings
-        settings = Settings(
-            data_dir=data_dir,
-            embedding_provider=embedding_provider
-        )
+        # Only pass data_dir if it's not None to allow default_factory to work
+        settings_kwargs = {'embedding_provider': embedding_provider}
+        if data_dir is not None:
+            settings_kwargs['data_dir'] = data_dir
+        
+        settings = Settings(**settings_kwargs)
         
         log_info("Initializing components...")
         log_info(f"Using embedding provider: {embedding_provider}")
@@ -747,10 +728,12 @@ def query(
         )
         
         # Initialize components and settings
-        settings = Settings(
-            data_dir=data_dir,
-            embedding_provider=embedding_provider
-        )
+        # Only pass data_dir if it's not None to allow default_factory to work
+        settings_kwargs = {'embedding_provider': embedding_provider}
+        if data_dir is not None:
+            settings_kwargs['data_dir'] = data_dir
+        
+        settings = Settings(**settings_kwargs)
         
         log_info("Initializing search components...")
         log_info(f"Using embedding provider: {embedding_provider}")
@@ -886,6 +869,10 @@ def prompt(
         $ expert-among-us prompt MyExpert "How should I implement X?"
         
         \b
+        # Use OpenAI LLM provider
+        $ expert-among-us --llm-provider openai prompt MyExpert "Implement X"
+        
+        \b
         # Use Claude Code LLM with Bedrock embeddings (global flags)
         $ expert-among-us --llm-provider claude-code --embedding-provider bedrock prompt MyExpert "Implement X"
         
@@ -929,11 +916,15 @@ def prompt(
             log_info(f"Filtering by files: {', '.join(file_list)}")
         
         # Step 3: Initialize components and settings
-        settings = Settings(
-            data_dir=data_dir,
-            llm_provider=llm_provider,
-            embedding_provider=embedding_provider
-        )
+        # Only pass data_dir if it's not None to allow default_factory to work
+        settings_kwargs = {
+            'llm_provider': llm_provider,
+            'embedding_provider': embedding_provider
+        }
+        if data_dir is not None:
+            settings_kwargs['data_dir'] = data_dir
+        
+        settings = Settings(**settings_kwargs)
         
         log_info("Initializing components...")
         log_info(f"Using LLM provider: {llm_provider}")
@@ -984,7 +975,7 @@ def prompt(
         log_success(f"Found {len(search_results)} relevant examples")
         
         # Step 6: Initialize LLM
-        llm = create_llm(settings.llm_provider, settings)
+        llm = create_llm_provider(settings, debug=debug)
         
         # Step 7: Generate prompts for changelists (with progress)
         prompt_gen = PromptGenerator(

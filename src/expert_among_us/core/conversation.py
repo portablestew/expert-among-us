@@ -29,6 +29,7 @@ class ConversationBuilder:
     # System prompt for normal mode
     NORMAL_SYSTEM_PROMPT = """You are an expert software developer providing recommendations based on historical commit patterns. 
 Analyze the provided code changes and respond with practical, actionable advice for the current request.
+DO NOT USE any external tools, APIs, searches, or other resources; only the messages in this conversation.
 Focus on architectural patterns, potential pitfalls, implementation approaches, that have worked in this codebase.
 Include a list of the top most relevant *existing* files that provide context for the current request.
 Also report relevant testing strategies or regression traps, such as changes that needed a follow-up fix later.
