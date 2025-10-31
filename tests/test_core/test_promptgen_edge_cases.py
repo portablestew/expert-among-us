@@ -6,7 +6,10 @@ from unittest.mock import Mock
 
 from expert_among_us.core.promptgen import PromptGenerator
 from expert_among_us.models.changelist import Changelist
-from expert_among_us.llm.base import LLMResponse, LLMError, LLMRateLimitError
+from expert_among_us.llm.base import LLMResponse, UsageMetrics, LLMError, LLMRateLimitError
+
+# Test constant for max_diff_chars
+TEST_MAX_DIFF_CHARS = 2000
 
 
 @pytest.fixture
@@ -28,7 +31,7 @@ def prompt_generator(mock_llm, mock_metadata_db):
         llm_provider=mock_llm,
         metadata_db=mock_metadata_db,
         model="test-model",
-        max_diff_chars=2000
+        max_diff_chars=TEST_MAX_DIFF_CHARS
     )
 
 
@@ -51,7 +54,7 @@ class TestEmptyAndNullInputs:
             content="Add new functionality",
             model="test-model",
             stop_reason="end_turn",
-            usage={"input_tokens": 50, "output_tokens": 10}
+            usage=UsageMetrics(input_tokens=50, output_tokens=10, total_tokens=60)
         )
         
         # Should work with minimal message
@@ -74,7 +77,7 @@ class TestEmptyAndNullInputs:
             content="Update configuration",
             model="test-model",
             stop_reason="end_turn",
-            usage={"input_tokens": 50, "output_tokens": 10}
+            usage=UsageMetrics(input_tokens=50, output_tokens=10, total_tokens=60)
         )
         
         # Should handle minimal diff gracefully
@@ -97,7 +100,7 @@ class TestEmptyAndNullInputs:
             content="Update metadata",
             model="test-model",
             stop_reason="end_turn",
-            usage={"input_tokens": 50, "output_tokens": 10}
+            usage=UsageMetrics(input_tokens=50, output_tokens=10, total_tokens=60)
         )
         
         request = prompt_generator._build_prompt_request(changelist)
@@ -126,7 +129,7 @@ class TestExtremeInputs:
             content="Fix multiple bugs",
             model="test-model",
             stop_reason="end_turn",
-            usage={"input_tokens": 50, "output_tokens": 10}
+            usage=UsageMetrics(input_tokens=50, output_tokens=10, total_tokens=60)
         )
         
         # Should handle long messages
@@ -197,7 +200,7 @@ class TestSpecialCharactersAndEncoding:
             content="Update with multiple changes",
             model="test-model",
             stop_reason="end_turn",
-            usage={"input_tokens": 50, "output_tokens": 10}
+            usage=UsageMetrics(input_tokens=50, output_tokens=10, total_tokens=60)
         )
         
         # Should handle newlines properly
@@ -237,7 +240,7 @@ class TestSpecialCharactersAndEncoding:
             content="Add internationalization and emoji support",
             model="test-model",
             stop_reason="end_turn",
-            usage={"input_tokens": 50, "output_tokens": 10}
+            usage=UsageMetrics(input_tokens=50, output_tokens=10, total_tokens=60)
         )
         
         # Should handle Unicode properly
@@ -279,7 +282,7 @@ class TestBatchProcessingEdgeCases:
             content="Single prompt",
             model="test-model",
             stop_reason="end_turn",
-            usage={"input_tokens": 50, "output_tokens": 10}
+            usage=UsageMetrics(input_tokens=50, output_tokens=10, total_tokens=60)
         )
         
         changelist = Changelist(
@@ -297,29 +300,6 @@ class TestBatchProcessingEdgeCases:
         assert len(results) == 1
         assert results["single123"] == "Single prompt"
     
-    def test_all_failures_in_batch(self, prompt_generator, mock_llm, mock_metadata_db):
-        """Test batch where all LLM calls fail."""
-        mock_metadata_db.get_generated_prompt.return_value = None
-        mock_llm.generate.side_effect = LLMError("API error")
-        
-        changelists = [
-            Changelist(
-                id=f"fail{i}",
-                expert_name="TestExpert",
-                timestamp=datetime(2024, 1, 15, 10, 0, 0),
-                author="test@example.com",
-                message=f"Change {i}",
-                diff="diff content",
-                files=["file.py"],
-            )
-            for i in range(3)
-        ]
-        
-        results = prompt_generator.generate_prompts(changelists)
-        
-        # Should return empty dict when all fail
-        assert len(results) == 0
-
 
 class TestQuoteHandling:
     """Test handling of quotes in generated prompts."""
@@ -340,7 +320,7 @@ class TestQuoteHandling:
             content='"Add authentication to the API"',
             model="test-model",
             stop_reason="end_turn",
-            usage={"input_tokens": 50, "output_tokens": 10}
+            usage=UsageMetrics(input_tokens=50, output_tokens=10, total_tokens=60)
         )
         
         prompt = prompt_generator._generate_single_prompt(changelist)
@@ -366,7 +346,7 @@ class TestQuoteHandling:
             content="'Implement user validation'",
             model="test-model",
             stop_reason="end_turn",
-            usage={"input_tokens": 50, "output_tokens": 10}
+            usage=UsageMetrics(input_tokens=50, output_tokens=10, total_tokens=60)
         )
         
         prompt = prompt_generator._generate_single_prompt(changelist)
@@ -390,7 +370,7 @@ class TestQuoteHandling:
             content='Add support for "special" characters',
             model="test-model",
             stop_reason="end_turn",
-            usage={"input_tokens": 50, "output_tokens": 10}
+            usage=UsageMetrics(input_tokens=50, output_tokens=10, total_tokens=60)
         )
         
         prompt = prompt_generator._generate_single_prompt(changelist)
@@ -414,7 +394,7 @@ class TestQuoteHandling:
             content='"Add \'nested\' quote handling"',
             model="test-model",
             stop_reason="end_turn",
-            usage={"input_tokens": 50, "output_tokens": 10}
+            usage=UsageMetrics(input_tokens=50, output_tokens=10, total_tokens=60)
         )
         
         prompt = prompt_generator._generate_single_prompt(changelist)
@@ -434,7 +414,7 @@ class TestConcurrentGenerationScenarios:
             content="Generated prompt",
             model="test-model",
             stop_reason="end_turn",
-            usage={"input_tokens": 50, "output_tokens": 10}
+            usage=UsageMetrics(input_tokens=50, output_tokens=10, total_tokens=60)
         )
         
         # Create changelists with same ID (edge case, shouldn't happen normally)

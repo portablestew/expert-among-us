@@ -16,7 +16,7 @@ def create_llm_provider(settings: Settings, debug: bool = False) -> LLMProvider:
     Requires an explicit --llm-provider argument to be set. Supports:
     - "openai": OpenAI API
     - "openrouter": OpenRouter API
-    - "local": Local LLM server
+    - "ollama": Ollama LLM server
     - "bedrock": AWS Bedrock
     - "claude-code": Claude Code CLI
     
@@ -38,7 +38,7 @@ def create_llm_provider(settings: Settings, debug: bool = False) -> LLMProvider:
             "Available providers:\n"
             "  --llm-provider openai      (requires OPENAI_API_KEY)\n"
             "  --llm-provider openrouter  (requires OPENROUTER_API_KEY)\n"
-            "  --llm-provider local       (requires LOCAL_LLM_BASE_URL)\n"
+            "  --llm-provider ollama      (default: http://127.0.0.1:11434/v1)\n"
             "  --llm-provider bedrock     (requires AWS credentials)\n"
             "  --llm-provider claude-code (requires claude CLI)"
         )
@@ -51,9 +51,12 @@ def create_llm_provider(settings: Settings, debug: bool = False) -> LLMProvider:
                 "Please set your OpenAI API key:\n"
                 "  export OPENAI_API_KEY=your-key-here"
             )
+        # Use base_url_override if provided, otherwise use default (None = OpenAI default)
+        base_url = settings.base_url_override if settings.base_url_override else None
         return OpenAICompatibleLLM(
             api_key=settings.openai_api_key,
-            model=settings.openai_expert_model,
+            model="not-used",  # Model specified per-call
+            base_url=base_url,
             debug=debug,
         )
     
@@ -64,31 +67,22 @@ def create_llm_provider(settings: Settings, debug: bool = False) -> LLMProvider:
                 "Please set your OpenRouter API key:\n"
                 "  export OPENROUTER_API_KEY=your-key-here"
             )
-        extra_headers: Dict[str, str] = {}
-        if settings.openrouter_site_url:
-            extra_headers["HTTP-Referer"] = settings.openrouter_site_url
-        if settings.openrouter_app_name:
-            extra_headers["X-Title"] = settings.openrouter_app_name
-        
+        # Use base_url_override if provided, otherwise use OpenRouter default
+        base_url = settings.base_url_override if settings.base_url_override else "https://openrouter.ai/api/v1"
         return OpenAICompatibleLLM(
             api_key=settings.openrouter_api_key,
-            model=settings.openai_expert_model,
-            base_url="https://openrouter.ai/api/v1",
-            extra_headers=extra_headers if extra_headers else None,
+            model="not-used",  # Model specified per-call
+            base_url=base_url,
             debug=debug,
         )
     
-    elif provider == "local":
-        if not settings.local_llm_base_url:
-            raise ValueError(
-                "Local LLM provider requires LOCAL_LLM_BASE_URL environment variable to be set.\n"
-                "Please set your local LLM server URL:\n"
-                "  export LOCAL_LLM_BASE_URL=http://localhost:1234/v1"
-            )
+    elif provider == "ollama":
+        # Use base_url_override if provided, otherwise use Ollama default
+        base_url = settings.base_url_override if settings.base_url_override else settings.ollama_base_url
         return OpenAICompatibleLLM(
-            api_key="local",  # Local LLMs often don't require real API keys
-            model=settings.openai_expert_model,
-            base_url=settings.local_llm_base_url,
+            api_key="ollama",  # Ollama doesn't require real API keys
+            model="not-used",  # Model specified per-call
+            base_url=base_url,
             debug=debug,
         )
     
@@ -121,5 +115,5 @@ def create_llm_provider(settings: Settings, debug: bool = False) -> LLMProvider:
     else:
         raise ValueError(
             f"Unknown LLM provider: {provider}\n"
-            "Valid providers: openai, openrouter, local, bedrock, claude-code"
+            "Valid providers: openai, openrouter, ollama, bedrock, claude-code"
         )

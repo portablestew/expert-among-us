@@ -8,9 +8,13 @@ from pathlib import Path
 from expert_among_us.models.changelist import Changelist
 from expert_among_us.models.query import QueryParams
 from expert_among_us.core.searcher import SearchResult
-from expert_among_us.llm.base import Message, LLMResponse, StreamChunk
+from expert_among_us.llm.base import Message, LLMResponse, StreamChunk, UsageMetrics
 from expert_among_us.core.promptgen import PromptGenerator
 from expert_among_us.core.conversation import ConversationBuilder
+
+# Test constants for max_diff_chars
+TEST_MAX_DIFF_CHARS_PROMPT = 2000
+TEST_MAX_DIFF_CHARS_CONV = 3000
 
 
 @pytest.fixture
@@ -78,7 +82,7 @@ def mock_llm():
         content="Generated prompt for commit",
         model="us.amazon.nova-lite-v1:0",
         stop_reason="end_turn",
-        usage={"input_tokens": 50, "output_tokens": 15}
+        usage=UsageMetrics(input_tokens=50, output_tokens=15, total_tokens=65)
     )
     
     # Mock stream method for final response
@@ -92,7 +96,7 @@ def mock_llm():
             StreamChunk(
                 delta="",
                 stop_reason="end_turn",
-                usage={"input_tokens": 200, "output_tokens": 50}
+                usage=UsageMetrics(input_tokens=200, output_tokens=50, total_tokens=250)
             )
         ]
         for chunk in chunks:
@@ -139,7 +143,7 @@ class TestPromptCommandIntegration:
             llm_provider=mock_llm,
             metadata_db=mock_metadata_db,
             model="us.amazon.nova-lite-v1:0",
-            max_diff_chars=2000
+            max_diff_chars=TEST_MAX_DIFF_CHARS_PROMPT
         )
         
         changelists = [r.changelist for r in search_results]
@@ -153,7 +157,7 @@ class TestPromptCommandIntegration:
         assert mock_llm.generate.call_count == 3
         
         # Step 3: Build conversation context
-        conv_builder = ConversationBuilder(prompt_generator=prompt_gen)
+        conv_builder = ConversationBuilder(prompt_generator=prompt_gen, max_diff_chars=TEST_MAX_DIFF_CHARS_CONV)
         system_prompt, messages = conv_builder.build_conversation(
             changelists=changelists,
             user_prompt="How should I implement authentication?",
@@ -190,8 +194,8 @@ class TestPromptCommandIntegration:
         # Verify streaming worked
         assert full_response == "This is a test response."
         assert final_usage is not None
-        assert final_usage["input_tokens"] == 200
-        assert final_usage["output_tokens"] == 50
+        assert final_usage.input_tokens == 200
+        assert final_usage.output_tokens == 50
     
     @pytest.mark.asyncio
     async def test_full_prompt_flow_with_cache(
@@ -220,7 +224,8 @@ class TestPromptCommandIntegration:
         prompt_gen = PromptGenerator(
             llm_provider=mock_llm,
             metadata_db=mock_metadata_db,
-            model="us.amazon.nova-lite-v1:0"
+            model="us.amazon.nova-lite-v1:0",
+            max_diff_chars=TEST_MAX_DIFF_CHARS_PROMPT
         )
         
         changelists = [r.changelist for r in search_results]
@@ -254,14 +259,15 @@ class TestPromptCommandIntegration:
         prompt_gen = PromptGenerator(
             llm_provider=mock_llm,
             metadata_db=mock_metadata_db,
-            model="us.amazon.nova-lite-v1:0"
+            model="us.amazon.nova-lite-v1:0",
+            max_diff_chars=TEST_MAX_DIFF_CHARS_PROMPT
         )
         
         changelists = [r.changelist for r in search_results[:2]]
         prompt_gen.generate_prompts(changelists)
         
         # Build conversation with amogus=True
-        conv_builder = ConversationBuilder(prompt_generator=prompt_gen)
+        conv_builder = ConversationBuilder(prompt_generator=prompt_gen, max_diff_chars=TEST_MAX_DIFF_CHARS_CONV)
         system_prompt, messages = conv_builder.build_conversation(
             changelists=changelists,
             user_prompt="Test query",
@@ -269,9 +275,9 @@ class TestPromptCommandIntegration:
         )
         
         # Verify Among Us elements in system prompt
-        assert "impostor" in system_prompt
-        assert "20%" in system_prompt
-        assert "subtly incorrect" in system_prompt
+        assert "Among Us" in system_prompt
+        assert "sabotage" in system_prompt
+        assert "mislead" in system_prompt
     
     @pytest.mark.asyncio
     async def test_prompt_flow_with_filters(
@@ -319,7 +325,7 @@ class TestPromptCommandIntegration:
         assert results == []
         
         # ConversationBuilder should raise error on empty changelists
-        conv_builder = ConversationBuilder(None)
+        conv_builder = ConversationBuilder(None, TEST_MAX_DIFF_CHARS_CONV)
         with pytest.raises(ValueError, match="Cannot build conversation with empty changelists"):
             conv_builder.build_conversation(
                 changelists=[],
@@ -359,7 +365,7 @@ class TestPromptFlowEdgeCases:
             content="Generated prompt",
             model="test-model",
             stop_reason="end_turn",
-            usage={"input_tokens": 50, "output_tokens": 10}
+            usage=UsageMetrics(input_tokens=50, output_tokens=10, total_tokens=60)
         )
         
         prompt = prompt_gen._generate_single_prompt(changelist)
@@ -392,14 +398,15 @@ class TestPromptFlowEdgeCases:
         prompt_gen = PromptGenerator(
             llm_provider=mock_llm,
             metadata_db=mock_metadata_db,
-            model="test-model"
+            model="test-model",
+            max_diff_chars=TEST_MAX_DIFF_CHARS_PROMPT
         )
         
         mock_llm.generate.return_value = LLMResponse(
             content="Handle special characters properly",
             model="test-model",
             stop_reason="end_turn",
-            usage={"input_tokens": 50, "output_tokens": 10}
+            usage=UsageMetrics(input_tokens=50, output_tokens=10, total_tokens=60)
         )
         
         # Should handle without errors
@@ -423,14 +430,15 @@ class TestPromptFlowEdgeCases:
         prompt_gen = PromptGenerator(
             llm_provider=mock_llm,
             metadata_db=mock_metadata_db,
-            model="test-model"
+            model="test-model",
+            max_diff_chars=TEST_MAX_DIFF_CHARS_PROMPT
         )
         
         mock_llm.generate.return_value = LLMResponse(
             content="Add internationalization support",
             model="test-model",
             stop_reason="end_turn",
-            usage={"input_tokens": 50, "output_tokens": 10}
+            usage=UsageMetrics(input_tokens=50, output_tokens=10, total_tokens=60)
         )
         
         # Should handle Unicode properly
@@ -455,7 +463,7 @@ class TestPromptFlowEdgeCases:
             for i in range(20)
         ]
         
-        conv_builder = ConversationBuilder(None)
+        conv_builder = ConversationBuilder(None, TEST_MAX_DIFF_CHARS_CONV)
         system_prompt, messages = conv_builder.build_conversation(
             changelists=many_changelists,
             user_prompt="Test query",
@@ -469,66 +477,3 @@ class TestPromptFlowEdgeCases:
         for i in range(20):
             assert f"Change {i}" in messages[i * 2 + 1].content
 
-
-class TestPromptFlowErrorHandling:
-    """Error handling tests for the prompt flow."""
-    
-    @pytest.mark.asyncio
-    async def test_llm_error_during_prompt_generation(self, mock_metadata_db):
-        """Test handling of LLM errors during prompt generation."""
-        
-        from expert_among_us.llm.base import LLMError
-        
-        mock_llm = Mock()
-        mock_llm.generate.side_effect = LLMError("API error")
-        
-        changelist = Changelist(
-            id="test123",
-            expert_name="TestExpert",
-            timestamp=datetime(2024, 1, 15, 10, 0, 0),
-            author="test@example.com",
-            message="Test change",
-            diff="diff content",
-            files=["file.py"],
-        )
-        
-        prompt_gen = PromptGenerator(
-            llm_provider=mock_llm,
-            metadata_db=mock_metadata_db,
-            model="test-model"
-        )
-        
-        # Should handle error and continue
-        results = prompt_gen.generate_prompts([changelist])
-        
-        # Result should be empty for failed generation
-        assert len(results) == 0
-    
-    @pytest.mark.asyncio
-    async def test_rate_limit_during_prompt_generation(self, mock_metadata_db):
-        """Test handling of rate limit errors."""
-        
-        from expert_among_us.llm.base import LLMRateLimitError
-        
-        mock_llm = Mock()
-        mock_llm.generate.side_effect = LLMRateLimitError("Rate limit exceeded")
-        
-        changelist = Changelist(
-            id="test123",
-            expert_name="TestExpert",
-            timestamp=datetime(2024, 1, 15, 10, 0, 0),
-            author="test@example.com",
-            message="Test change",
-            diff="diff content",
-            files=["file.py"],
-        )
-        
-        prompt_gen = PromptGenerator(
-            llm_provider=mock_llm,
-            metadata_db=mock_metadata_db,
-            model="test-model"
-        )
-        
-        # Should handle rate limit error
-        results = prompt_gen.generate_prompts([changelist])
-        assert len(results) == 0

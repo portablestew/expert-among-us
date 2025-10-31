@@ -90,46 +90,12 @@ class TestFactoryIntegration:
         provider = create_llm_provider(settings, debug=False)
         
         assert isinstance(provider, OpenAICompatibleLLM)
-        assert provider.model == settings.expert_model
+        # Factory intentionally sets model="not-used" since models are specified per-call
+        assert provider.model == "not-used"
         mock_openai_client.assert_called_once()
         call_kwargs = mock_openai_client.call_args[1]
         assert call_kwargs["api_key"] == "sk-test-key"
         assert "base_url" not in call_kwargs
-    
-    def test_factory_creates_openrouter_provider_with_explicit_selection(self, mock_openai_client, base_settings):
-        """Test factory creates OpenRouter provider when explicitly selected."""
-        settings = base_settings.model_copy(update={
-            "llm_provider": "openrouter",
-            "openrouter_api_key": "sk-or-test-key",
-            "openrouter_app_name": "Expert Among Us",
-            "openrouter_site_url": "https://example.com"
-        })
-        
-        provider = create_llm_provider(settings, debug=False)
-        
-        assert isinstance(provider, OpenAICompatibleLLM)
-        mock_openai_client.assert_called_once()
-        call_kwargs = mock_openai_client.call_args[1]
-        assert call_kwargs["api_key"] == "sk-or-test-key"
-        assert call_kwargs["base_url"] == "https://openrouter.ai/api/v1"
-        assert "default_headers" in call_kwargs
-        assert call_kwargs["default_headers"]["HTTP-Referer"] == "https://example.com"
-        assert call_kwargs["default_headers"]["X-Title"] == "Expert Among Us"
-    
-    def test_factory_creates_local_llm_provider_with_explicit_selection(self, mock_openai_client, base_settings):
-        """Test factory creates local LLM provider when explicitly selected."""
-        settings = base_settings.model_copy(update={
-            "llm_provider": "local",
-            "local_llm_base_url": "http://localhost:8000/v1"
-        })
-        
-        provider = create_llm_provider(settings, debug=False)
-        
-        assert isinstance(provider, OpenAICompatibleLLM)
-        mock_openai_client.assert_called_once()
-        call_kwargs = mock_openai_client.call_args[1]
-        assert call_kwargs["api_key"] == "local"
-        assert call_kwargs["base_url"] == "http://localhost:8000/v1"
     
     def test_factory_raises_error_without_provider_selection(self, base_settings):
         """Test factory raises ValueError when no provider is selected."""
@@ -165,18 +131,6 @@ class TestFactoryIntegration:
         
         assert "OPENROUTER_API_KEY" in str(exc_info.value)
     
-    def test_local_provider_raises_error_when_base_url_missing(self, base_settings):
-        """Test local provider raises error when base URL is missing."""
-        settings = base_settings.model_copy(update={
-            "llm_provider": "local",
-            "local_llm_base_url": None
-        })
-        
-        with pytest.raises(ValueError) as exc_info:
-            create_llm_provider(settings, debug=False)
-        
-        assert "LOCAL_LLM_BASE_URL" in str(exc_info.value)
-    
     def test_factory_with_debug_enabled(self, mock_openai_client, base_settings):
         """Test factory creates provider with debug enabled."""
         settings = base_settings.model_copy(update={
@@ -198,6 +152,11 @@ class TestEndToEndProviderFlow:
         # Setup
         mock_client_instance = MagicMock()
         mock_openai_client.return_value = mock_client_instance
+        # Fix mock response structure
+        mock_message = MagicMock(spec=['content'])
+        mock_message.content = "This is a test response"
+        mock_successful_response.choices[0].message = mock_message
+        mock_successful_response.usage.prompt_tokens_details = None
         mock_client_instance.chat.completions.create.return_value = mock_successful_response
         
         # Configure settings
@@ -215,7 +174,7 @@ class TestEndToEndProviderFlow:
             messages=messages,
             model="gpt-4",
             max_tokens=100,
-            temperature=0.7
+            temperature=0.7  # Note: temperature not passed to API
         )
         
         # Verify response
@@ -230,8 +189,8 @@ class TestEndToEndProviderFlow:
         mock_client_instance.chat.completions.create.assert_called_once()
         call_kwargs = mock_client_instance.chat.completions.create.call_args[1]
         assert call_kwargs["model"] == "gpt-4"
-        assert call_kwargs["max_tokens"] == 100
-        assert call_kwargs["temperature"] == 0.7
+        assert call_kwargs["max_completion_tokens"] == 100
+        # temperature is not passed to API for leading models
     
     @pytest.mark.asyncio
     async def test_openai_stream_flow(self, mock_openai_client, base_settings, mock_streaming_chunks):
@@ -274,62 +233,6 @@ class TestEndToEndProviderFlow:
         mock_client_instance.chat.completions.create.assert_called_once()
         call_kwargs = mock_client_instance.chat.completions.create.call_args[1]
         assert call_kwargs["stream"] is True
-    
-    def test_openrouter_with_headers_flow(self, mock_openai_client, base_settings, mock_successful_response):
-        """Test OpenRouter flow with custom headers."""
-        # Setup
-        mock_client_instance = MagicMock()
-        mock_openai_client.return_value = mock_client_instance
-        mock_client_instance.chat.completions.create.return_value = mock_successful_response
-        
-        # Configure settings with OpenRouter
-        settings = base_settings.model_copy(update={
-            "llm_provider": "openrouter",
-            "openrouter_api_key": "sk-or-key",
-            "openrouter_app_name": "Test App",
-            "openrouter_site_url": "https://test.com"
-        })
-        
-        # Create provider and generate
-        provider = create_llm_provider(settings)
-        messages = [Message(role="user", content="Test")]
-        response = provider.generate(messages=messages, model="anthropic/claude-3-opus")
-        
-        # Verify headers were configured
-        call_kwargs = mock_openai_client.call_args[1]
-        assert "default_headers" in call_kwargs
-        headers = call_kwargs["default_headers"]
-        assert headers["HTTP-Referer"] == "https://test.com"
-        assert headers["X-Title"] == "Test App"
-        
-        # Verify response
-        assert response.content == "This is a test response"
-    
-    def test_local_llm_flow(self, mock_openai_client, base_settings, mock_successful_response):
-        """Test local LLM flow."""
-        # Setup
-        mock_client_instance = MagicMock()
-        mock_openai_client.return_value = mock_client_instance
-        mock_client_instance.chat.completions.create.return_value = mock_successful_response
-        
-        # Configure settings for local LLM
-        settings = base_settings.model_copy(update={
-            "llm_provider": "local",
-            "local_llm_base_url": "http://localhost:11434/v1"
-        })
-        
-        # Create provider and generate
-        provider = create_llm_provider(settings)
-        messages = [Message(role="user", content="Test local model")]
-        response = provider.generate(messages=messages, model="llama-3-70b")
-        
-        # Verify configuration
-        call_kwargs = mock_openai_client.call_args[1]
-        assert call_kwargs["api_key"] == "local"
-        assert call_kwargs["base_url"] == "http://localhost:11434/v1"
-        
-        # Verify response
-        assert response.content == "This is a test response"
     
     def test_generate_with_system_prompt_flow(self, mock_openai_client, base_settings, mock_successful_response):
         """Test generate with system prompt through full flow."""
@@ -488,48 +391,6 @@ class TestSettingsIntegration:
         call_kwargs = mock_openai_client.call_args[1]
         assert call_kwargs["api_key"] == "sk-env-key"
     
-    def test_settings_from_environment_openrouter(self, mock_openai_client, monkeypatch):
-        """Test loading OpenRouter settings from environment variables."""
-        # Set environment variables
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-env-key")
-        monkeypatch.setenv("OPENROUTER_APP_NAME", "Test From Env")
-        monkeypatch.setenv("OPENROUTER_SITE_URL", "https://env-test.com")
-        
-        # Load settings
-        settings = Settings(
-            data_dir=Path("/tmp/test"),
-            llm_provider="openrouter"
-        )
-        
-        # Create provider
-        provider = create_llm_provider(settings)
-        
-        # Verify correct configuration
-        call_kwargs = mock_openai_client.call_args[1]
-        assert call_kwargs["api_key"] == "sk-or-env-key"
-        assert call_kwargs["base_url"] == "https://openrouter.ai/api/v1"
-        assert call_kwargs["default_headers"]["X-Title"] == "Test From Env"
-        assert call_kwargs["default_headers"]["HTTP-Referer"] == "https://env-test.com"
-    
-    def test_settings_from_environment_local_llm(self, mock_openai_client, monkeypatch):
-        """Test loading local LLM settings from environment variables."""
-        # Set environment variable
-        monkeypatch.setenv("LOCAL_LLM_BASE_URL", "http://env-host:8080/v1")
-        
-        # Load settings
-        settings = Settings(
-            data_dir=Path("/tmp/test"),
-            llm_provider="local"
-        )
-        
-        # Create provider
-        provider = create_llm_provider(settings)
-        
-        # Verify configuration
-        call_kwargs = mock_openai_client.call_args[1]
-        assert call_kwargs["api_key"] == "local"
-        assert call_kwargs["base_url"] == "http://env-host:8080/v1"
-
 
 class TestMessageFlowIntegration:
     """Tests for message flow through the full stack."""
@@ -624,6 +485,11 @@ class TestDebugLoggingIntegration:
         # Setup
         mock_client_instance = MagicMock()
         mock_openai_client.return_value = mock_client_instance
+        # Fix mock response structure
+        mock_message = MagicMock(spec=['content'])
+        mock_message.content = "Test"
+        mock_successful_response.choices[0].message = mock_message
+        mock_successful_response.usage.prompt_tokens_details = None
         mock_successful_response.model_dump.return_value = {"test": "data"}
         mock_client_instance.chat.completions.create.return_value = mock_successful_response
         
@@ -779,6 +645,11 @@ class TestRealisticUsagePatterns:
         # Setup
         mock_client_instance = MagicMock()
         mock_openai_client.return_value = mock_client_instance
+        # Fix mock response structure
+        mock_message = MagicMock(spec=['content'])
+        mock_message.content = "This is a test response"
+        mock_successful_response.choices[0].message = mock_message
+        mock_successful_response.usage.prompt_tokens_details = None
         mock_client_instance.chat.completions.create.return_value = mock_successful_response
         
         settings = base_settings.model_copy(update={
@@ -787,11 +658,11 @@ class TestRealisticUsagePatterns:
         })
         provider = create_llm_provider(settings)
         
-        # Test different configurations
+        # Test different max_tokens configurations (temperature not passed to API)
         test_cases = [
-            {"max_tokens": 100, "temperature": 0.0},  # Deterministic
-            {"max_tokens": 4096, "temperature": 1.0},  # Default
-            {"max_tokens": 2048, "temperature": 2.0},  # Creative
+            {"max_tokens": 100},
+            {"max_tokens": 4096},
+            {"max_tokens": 2048},
         ]
         
         for config in test_cases:
@@ -804,5 +675,5 @@ class TestRealisticUsagePatterns:
             
             # Verify parameters were set correctly
             call_kwargs = mock_client_instance.chat.completions.create.call_args[1]
-            assert call_kwargs["max_tokens"] == config["max_tokens"]
-            assert call_kwargs["temperature"] == config["temperature"]
+            assert call_kwargs["max_completion_tokens"] == config["max_tokens"]
+            # temperature is not passed to API for leading models

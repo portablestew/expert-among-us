@@ -5,12 +5,12 @@ import numpy as np
 
 
 class TestJinaCodeEmbedder(unittest.TestCase):
-    @patch('expert_among_us.embeddings.local.torch')
-    @patch('expert_among_us.embeddings.local.SentenceTransformer')
-    def test_embed(self, mock_sentence_transformer_class, mock_torch):
+    @patch('torch.cuda.is_available', return_value=False)
+    @patch('torch.compile', side_effect=lambda x: x)
+    @patch('sentence_transformers.SentenceTransformer')
+    def test_embed(self, mock_sentence_transformer_class, mock_compile, mock_cuda):
         """Test basic embedding generation."""
         # Setup mocks
-        mock_torch.cuda.is_available.return_value = False
         mock_model = Mock()
         mock_sentence_transformer_class.return_value = mock_model
         
@@ -36,12 +36,12 @@ class TestJinaCodeEmbedder(unittest.TestCase):
         self.assertTrue(called_text.startswith("Represent this code for retrieving similar code: "))
         self.assertIn(text, called_text)
         
-    @patch('expert_among_us.embeddings.local.torch')
-    @patch('expert_among_us.embeddings.local.SentenceTransformer')
-    def test_embed_batch(self, mock_sentence_transformer_class, mock_torch):
+    @patch('torch.cuda.is_available', return_value=False)
+    @patch('torch.compile', side_effect=lambda x: x)
+    @patch('sentence_transformers.SentenceTransformer')
+    def test_embed_batch(self, mock_sentence_transformer_class, mock_compile, mock_cuda):
         """Test batch embedding generation."""
         # Setup mocks
-        mock_torch.cuda.is_available.return_value = False
         mock_model = Mock()
         mock_sentence_transformer_class.return_value = mock_model
         
@@ -71,12 +71,12 @@ class TestJinaCodeEmbedder(unittest.TestCase):
         for called_text in called_texts:
             self.assertTrue(called_text.startswith("Represent this code for retrieving similar code: "))
         
-    @patch('expert_among_us.embeddings.local.torch')
-    @patch('expert_among_us.embeddings.local.SentenceTransformer')
-    def test_dimension(self, mock_sentence_transformer_class, mock_torch):
+    @patch('torch.cuda.is_available', return_value=False)
+    @patch('torch.compile', side_effect=lambda x: x)
+    @patch('sentence_transformers.SentenceTransformer')
+    def test_dimension(self, mock_sentence_transformer_class, mock_compile, mock_cuda):
         """Test dimension property."""
         # Setup mocks
-        mock_torch.cuda.is_available.return_value = False
         mock_model = Mock()
         mock_sentence_transformer_class.return_value = mock_model
         
@@ -87,12 +87,12 @@ class TestJinaCodeEmbedder(unittest.TestCase):
         # Verify dimension
         self.assertEqual(embedder.dimension, 256)
         
-    @patch('expert_among_us.embeddings.local.torch')
-    @patch('expert_among_us.embeddings.local.SentenceTransformer')
-    def test_task_prefix_application(self, mock_sentence_transformer_class, mock_torch):
+    @patch('torch.cuda.is_available', return_value=False)
+    @patch('torch.compile', side_effect=lambda x: x)
+    @patch('sentence_transformers.SentenceTransformer')
+    def test_task_prefix_application(self, mock_sentence_transformer_class, mock_compile, mock_cuda):
         """Test that task prefix is correctly applied."""
         # Setup mocks
-        mock_torch.cuda.is_available.return_value = False
         mock_model = Mock()
         mock_sentence_transformer_class.return_value = mock_model
         
@@ -114,12 +114,12 @@ class TestJinaCodeEmbedder(unittest.TestCase):
         expected_prefix = "Represent this code for retrieving similar code: "
         self.assertEqual(called_text, expected_prefix + text)
         
-    @patch('expert_among_us.embeddings.local.torch')
-    @patch('expert_among_us.embeddings.local.SentenceTransformer')
-    def test_model_initialization(self, mock_sentence_transformer_class, mock_torch):
+    @patch('torch.cuda.is_available', return_value=False)
+    @patch('torch.compile', side_effect=lambda x: x)
+    @patch('sentence_transformers.SentenceTransformer')
+    def test_model_initialization(self, mock_sentence_transformer_class, mock_compile, mock_cuda):
         """Test that model is initialized with correct parameters."""
         # Setup mocks
-        mock_torch.cuda.is_available.return_value = False
         mock_model = Mock()
         mock_sentence_transformer_class.return_value = mock_model
         
@@ -133,12 +133,12 @@ class TestJinaCodeEmbedder(unittest.TestCase):
         self.assertTrue(call_kwargs.get('trust_remote_code'))
         self.assertEqual(call_kwargs.get('device'), 'cpu')  # CPU when GPU not available
         
-    @patch('expert_among_us.embeddings.local.torch')
-    @patch('expert_among_us.embeddings.local.SentenceTransformer')
-    def test_matryoshka_truncation(self, mock_sentence_transformer_class, mock_torch):
+    @patch('torch.cuda.is_available', return_value=False)
+    @patch('torch.compile', side_effect=lambda x: x)
+    @patch('sentence_transformers.SentenceTransformer')
+    def test_matryoshka_truncation(self, mock_sentence_transformer_class, mock_compile, mock_cuda):
         """Test that embeddings are truncated to specified dimension."""
         # Setup mocks
-        mock_torch.cuda.is_available.return_value = False
         mock_model = Mock()
         mock_sentence_transformer_class.return_value = mock_model
         
@@ -158,12 +158,12 @@ class TestJinaCodeEmbedder(unittest.TestCase):
         self.assertEqual(embedding[0], 0)
         self.assertEqual(embedding[511], 511)
         
-    @patch('expert_among_us.embeddings.local.torch')
-    @patch('expert_among_us.embeddings.local.SentenceTransformer')
-    def test_default_parameters(self, mock_sentence_transformer_class, mock_torch):
+    @patch('torch.cuda.is_available', return_value=False)
+    @patch('torch.compile', side_effect=lambda x: x)
+    @patch('sentence_transformers.SentenceTransformer')
+    def test_default_parameters(self, mock_sentence_transformer_class, mock_compile, mock_cuda):
         """Test default parameter values."""
         # Setup mocks
-        mock_torch.cuda.is_available.return_value = False
         mock_model = Mock()
         mock_sentence_transformer_class.return_value = mock_model
         
@@ -177,13 +177,13 @@ class TestJinaCodeEmbedder(unittest.TestCase):
         self.assertEqual(embedder.task, "code2code")
         self.assertEqual(embedder.task_prefix, "Represent this code for retrieving similar code: ")
     
-    @patch('expert_among_us.embeddings.local.torch')
-    @patch('expert_among_us.embeddings.local.SentenceTransformer')
-    def test_gpu_detection(self, mock_sentence_transformer_class, mock_torch):
+    @patch('torch.cuda.is_available', return_value=True)
+    @patch('torch.cuda.get_device_name', return_value="NVIDIA GeForce RTX 3080")
+    @patch('torch.compile', side_effect=lambda x: x)
+    @patch('sentence_transformers.SentenceTransformer')
+    def test_gpu_detection(self, mock_sentence_transformer_class, mock_compile, mock_device_name, mock_cuda):
         """Test that GPU is used when available."""
-        # Setup mocks - GPU available
-        mock_torch.cuda.is_available.return_value = True
-        mock_torch.cuda.get_device_name.return_value = "NVIDIA GeForce RTX 3080"
+        # Setup mocks
         mock_model = Mock()
         mock_sentence_transformer_class.return_value = mock_model
         

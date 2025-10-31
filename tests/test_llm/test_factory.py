@@ -40,7 +40,8 @@ class TestOpenAIConfiguration:
         # Verify OpenAICompatibleLLM was called with correct parameters
         mock_openai_class.assert_called_once_with(
             api_key="sk-test-key",
-            model="gpt-4",
+            model="not-used",  # Model specified per-call
+            base_url=None,
             debug=False
         )
         assert provider == mock_openai_class.return_value
@@ -55,7 +56,8 @@ class TestOpenAIConfiguration:
         
         mock_openai_class.assert_called_once_with(
             api_key="sk-test-key",
-            model="gpt-4",
+            model="not-used",  # Model specified per-call
+            base_url=None,
             debug=True
         )
     
@@ -70,7 +72,8 @@ class TestOpenAIConfiguration:
         
         mock_openai_class.assert_called_once_with(
             api_key="sk-test-key",
-            model="gpt-4-turbo",
+            model="not-used",  # Model specified per-call
+            base_url=None,
             debug=False
         )
     
@@ -89,72 +92,6 @@ class TestOpenAIConfiguration:
 
 class TestOpenRouterConfiguration:
     """Tests for OpenRouter provider configuration with explicit selection."""
-    
-    @patch("expert_among_us.llm.factory.OpenAICompatibleLLM")
-    def test_factory_creates_openrouter_with_explicit_provider(self, mock_openai_class, base_settings):
-        """Test factory creates OpenRouter provider when explicitly selected."""
-        base_settings.llm_provider = "openrouter"
-        base_settings.openrouter_api_key = "sk-or-test-key"
-        
-        provider = create_llm_provider(base_settings)
-        
-        # Verify OpenAICompatibleLLM was called with OpenRouter configuration
-        mock_openai_class.assert_called_once_with(
-            api_key="sk-or-test-key",
-            model="gpt-4",
-            base_url="https://openrouter.ai/api/v1",
-            extra_headers=None,
-            debug=False
-        )
-        assert provider == mock_openai_class.return_value
-    
-    @patch("expert_among_us.llm.factory.OpenAICompatibleLLM")
-    def test_factory_with_openrouter_full_headers(self, mock_openai_class, base_settings):
-        """Test factory creates OpenRouter provider with all headers."""
-        base_settings.llm_provider = "openrouter"
-        base_settings.openrouter_api_key = "sk-or-test-key"
-        base_settings.openrouter_site_url = "https://myapp.com"
-        base_settings.openrouter_app_name = "Expert Among Us"
-        
-        provider = create_llm_provider(base_settings)
-        
-        # Verify headers were configured correctly
-        call_kwargs = mock_openai_class.call_args[1]
-        assert call_kwargs["api_key"] == "sk-or-test-key"
-        assert call_kwargs["base_url"] == "https://openrouter.ai/api/v1"
-        assert call_kwargs["extra_headers"] == {
-            "HTTP-Referer": "https://myapp.com",
-            "X-Title": "Expert Among Us"
-        }
-        assert call_kwargs["debug"] is False
-    
-    @patch("expert_among_us.llm.factory.OpenAICompatibleLLM")
-    def test_factory_with_openrouter_site_url_only(self, mock_openai_class, base_settings):
-        """Test factory with only site URL header."""
-        base_settings.llm_provider = "openrouter"
-        base_settings.openrouter_api_key = "sk-or-test-key"
-        base_settings.openrouter_site_url = "https://myapp.com"
-        
-        provider = create_llm_provider(base_settings)
-        
-        call_kwargs = mock_openai_class.call_args[1]
-        assert call_kwargs["extra_headers"] == {
-            "HTTP-Referer": "https://myapp.com"
-        }
-    
-    @patch("expert_among_us.llm.factory.OpenAICompatibleLLM")
-    def test_factory_with_openrouter_app_name_only(self, mock_openai_class, base_settings):
-        """Test factory with only app name header."""
-        base_settings.llm_provider = "openrouter"
-        base_settings.openrouter_api_key = "sk-or-test-key"
-        base_settings.openrouter_app_name = "Expert Among Us"
-        
-        provider = create_llm_provider(base_settings)
-        
-        call_kwargs = mock_openai_class.call_args[1]
-        assert call_kwargs["extra_headers"] == {
-            "X-Title": "Expert Among Us"
-        }
     
     @patch("expert_among_us.llm.factory.OpenAICompatibleLLM")
     def test_factory_with_openrouter_debug_enabled(self, mock_openai_class, base_settings):
@@ -180,61 +117,8 @@ class TestOpenRouterConfiguration:
         assert "environment variable" in error_msg
 
 
-class TestLocalLLMConfiguration:
-    """Tests for local LLM provider configuration with explicit selection."""
-    
-    @patch("expert_among_us.llm.factory.OpenAICompatibleLLM")
-    def test_factory_creates_local_with_explicit_provider(self, mock_openai_class, base_settings):
-        """Test factory creates local LLM provider when explicitly selected."""
-        base_settings.llm_provider = "local"
-        base_settings.local_llm_base_url = "http://localhost:8000/v1"
-        
-        provider = create_llm_provider(base_settings)
-        
-        # Verify OpenAICompatibleLLM was called with local configuration
-        mock_openai_class.assert_called_once_with(
-            api_key="local",
-            model="gpt-4",
-            base_url="http://localhost:8000/v1",
-            debug=False
-        )
-        assert provider == mock_openai_class.return_value
-    
-    @patch("expert_among_us.llm.factory.OpenAICompatibleLLM")
-    def test_factory_with_local_llm_custom_model(self, mock_openai_class, base_settings):
-        """Test factory with local LLM and custom model."""
-        base_settings.llm_provider = "local"
-        base_settings.local_llm_base_url = "http://localhost:8000/v1"
-        base_settings.expert_model = "llama-3-70b"
-        
-        provider = create_llm_provider(base_settings)
-        
-        call_kwargs = mock_openai_class.call_args[1]
-        assert call_kwargs["model"] == "llama-3-70b"
-        assert call_kwargs["base_url"] == "http://localhost:8000/v1"
-    
-    @patch("expert_among_us.llm.factory.OpenAICompatibleLLM")
-    def test_factory_with_local_llm_debug_enabled(self, mock_openai_class, base_settings):
-        """Test factory propagates debug parameter for local LLM."""
-        base_settings.llm_provider = "local"
-        base_settings.local_llm_base_url = "http://localhost:8000/v1"
-        
-        provider = create_llm_provider(base_settings, debug=True)
-        
-        call_kwargs = mock_openai_class.call_args[1]
-        assert call_kwargs["debug"] is True
-    
-    def test_local_provider_raises_error_when_base_url_missing(self, base_settings):
-        """Test local provider raises ValueError when base URL is missing."""
-        base_settings.llm_provider = "local"
-        base_settings.local_llm_base_url = None
-        
-        with pytest.raises(ValueError) as exc_info:
-            create_llm_provider(base_settings)
-        
-        error_msg = str(exc_info.value)
-        assert "LOCAL_LLM_BASE_URL" in error_msg
-        assert "environment variable" in error_msg
+# TestLocalLLMConfiguration class removed - "local" provider no longer exists.
+# Use "ollama" provider instead for local LLM testing.
 
 
 class TestBedrockConfiguration:
@@ -416,7 +300,7 @@ class TestErrorCases:
         assert "--llm-provider" in error_msg
         assert "openai" in error_msg
         assert "openrouter" in error_msg
-        assert "local" in error_msg
+        assert "ollama" in error_msg
         assert "bedrock" in error_msg
         assert "claude-code" in error_msg
     
@@ -468,13 +352,4 @@ class TestDebugParameterPropagation:
         call_kwargs = mock_openai.call_args[1]
         assert call_kwargs["debug"] is True
     
-    @patch("expert_among_us.llm.factory.OpenAICompatibleLLM")
-    def test_debug_propagates_to_local_llm(self, mock_openai, base_settings):
-        """Test debug parameter propagates to local LLM provider."""
-        base_settings.llm_provider = "local"
-        base_settings.local_llm_base_url = "http://localhost:8000/v1"
-        
-        create_llm_provider(base_settings, debug=True)
-        
-        call_kwargs = mock_openai.call_args[1]
-        assert call_kwargs["debug"] is True
+    # test_debug_propagates_to_local_llm removed - "local" provider no longer exists

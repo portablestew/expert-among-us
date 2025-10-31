@@ -157,16 +157,45 @@ class OpenAICompatibleLLM(LLMProvider):
                 response_data = response.model_dump() if hasattr(response, 'model_dump') else response.dict()
                 DebugLogger.log_response("openai_generate", response_data, request_id, category=debug_category)
             
-            # Extract content
-            content = response.choices[0].message.content or ""
+            # Extract content - support both standard content and reasoning formats
+            # Some models (like o1) may provide both reasoning and content
+            message = response.choices[0].message
+            content_parts = []
+            
+            # Check for reasoning field (used by some models like Minimax, o1)
+            # Only include reasoning in output if debug is enabled
+            if (DebugLogger.is_enabled() or self.debug) and hasattr(message, 'reasoning') and message.reasoning:
+                content_parts.append(message.reasoning)
+            
+            # Check for standard content field
+            if message.content:
+                content_parts.append(message.content)
+            # If no content field, fall back to reasoning (for reasoning-only models)
+            elif hasattr(message, 'reasoning') and message.reasoning:
+                content_parts.append(message.reasoning)
+            
+            # Combine content parts with newline separator if both present
+            content = "\n\n".join(content_parts) if content_parts else ""
+            
+            # Check for empty response and raise exception
+            if not content:
+                error_msg = f"Received empty response from model {model or self.model}"
+                raise LLMError(error_msg)
             
             # Extract usage metrics
             usage = response.usage
+            
+            # Extract cache_read_tokens from prompt_tokens_details (Pydantic model)
+            cache_read_tokens = 0
+            if hasattr(usage, 'prompt_tokens_details') and usage.prompt_tokens_details:
+                # prompt_tokens_details is a Pydantic model, use attribute access
+                cache_read_tokens = getattr(usage.prompt_tokens_details, 'cached_tokens', 0)
+            
             usage_metrics = UsageMetrics(
                 input_tokens=usage.prompt_tokens,
                 output_tokens=usage.completion_tokens,
                 total_tokens=usage.total_tokens,
-                cache_read_tokens=getattr(usage, 'prompt_tokens_details', {}).get('cached_tokens', 0) if hasattr(usage, 'prompt_tokens_details') else 0,
+                cache_read_tokens=cache_read_tokens,
                 cache_creation_tokens=0,
             )
             
@@ -233,6 +262,11 @@ class OpenAICompatibleLLM(LLMProvider):
             final_usage = None
             final_stop_reason = None
             
+            # Track content state
+            has_content = False  # Track if we received any content chunks
+            reasoning_buffer = []  # Buffer reasoning chunks to decide later
+            seen_content_chunk = False  # Track if we've seen ANY content chunk in the stream
+            
             for chunk in stream:
                 if DebugLogger.is_enabled() or self.debug:
                     chunk_data = chunk.model_dump() if hasattr(chunk, 'model_dump') else chunk.dict()
@@ -242,9 +276,29 @@ class OpenAICompatibleLLM(LLMProvider):
                 if chunk.choices and len(chunk.choices) > 0:
                     choice = chunk.choices[0]
                     
-                    # Extract content delta
-                    if choice.delta and choice.delta.content:
-                        yield StreamChunk(delta=choice.delta.content)
+                    # Extract content delta - support both standard content and reasoning formats
+                    if choice.delta:
+                        # Check for reasoning field (comes before content in stream)
+                        if hasattr(choice.delta, 'reasoning') and choice.delta.reasoning:
+                            reasoning_buffer.append(choice.delta.reasoning)
+                            has_content = True  # We have some content (even if buffered)
+                        
+                        # Check for standard content field
+                        if hasattr(choice.delta, 'content') and choice.delta.content:
+                            # First content chunk - decide what to do with buffered reasoning
+                            if not seen_content_chunk and reasoning_buffer:
+                                # Yield buffered reasoning only if debug is enabled
+                                if DebugLogger.is_enabled() or self.debug:
+                                    for reasoning_chunk in reasoning_buffer:
+                                        yield StreamChunk(delta=reasoning_chunk)
+                                    # Add separator between reasoning and content
+                                    yield StreamChunk(delta="\n\n")
+                                # Clear buffer either way
+                                reasoning_buffer.clear()
+                            
+                            seen_content_chunk = True
+                            has_content = True
+                            yield StreamChunk(delta=choice.delta.content)
                     
                     # Extract stop reason
                     if choice.finish_reason:
@@ -254,15 +308,35 @@ class OpenAICompatibleLLM(LLMProvider):
                 if hasattr(chunk, 'usage') and chunk.usage:
                     final_usage = chunk.usage
             
+            # Stream ended - handle any remaining buffered reasoning
+            # Only yield buffered reasoning if we never saw content (reasoning-only model)
+            if reasoning_buffer and not seen_content_chunk:
+                for reasoning_chunk in reasoning_buffer:
+                    yield StreamChunk(delta=reasoning_chunk)
+                reasoning_buffer.clear()
+            
+            # Check for empty response and raise exception
+            if not has_content and final_stop_reason:
+                error_msg = f"Received empty response from model {model or self.model}"
+                if DebugLogger.is_enabled() or self.debug:
+                    error_msg += f" (stop_reason: {final_stop_reason})"
+                raise LLMError(error_msg)
+            
             # Yield final chunk with usage metrics
             if final_usage or final_stop_reason:
                 usage_metrics = None
                 if final_usage:
+                    # Extract cache_read_tokens from prompt_tokens_details (Pydantic model)
+                    cache_read_tokens = 0
+                    if hasattr(final_usage, 'prompt_tokens_details') and final_usage.prompt_tokens_details:
+                        # prompt_tokens_details is a Pydantic model, use attribute access
+                        cache_read_tokens = getattr(final_usage.prompt_tokens_details, 'cached_tokens', 0)
+                    
                     usage_metrics = UsageMetrics(
                         input_tokens=final_usage.prompt_tokens,
                         output_tokens=final_usage.completion_tokens,
                         total_tokens=final_usage.total_tokens,
-                        cache_read_tokens=getattr(final_usage, 'prompt_tokens_details', {}).get('cached_tokens', 0) if hasattr(final_usage, 'prompt_tokens_details') else 0,
+                        cache_read_tokens=cache_read_tokens,
                         cache_creation_tokens=0,
                     )
                 

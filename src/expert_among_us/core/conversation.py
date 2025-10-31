@@ -41,13 +41,15 @@ If the commit analysis is inconclusive or not relevant to the request, include t
 Incorporate references to the game 'Among Us' in your responses. Your workplace is a dangerous spacecraft in deep space.
 Occasionally present advice on how to sabotage the codebase or mislead other developers, but make it tounge-in-cheek while still providing useful information."""
     
-    def __init__(self, prompt_generator: PromptGenerator):
+    def __init__(self, prompt_generator: PromptGenerator, max_diff_chars: int):
         """Initialize conversation builder with prompt generator.
         
         Args:
             prompt_generator: PromptGenerator for creating user prompts from diffs
+            max_diff_chars: Maximum diff characters to include in conversation
         """
         self.prompt_generator = prompt_generator
+        self.max_diff_chars = max_diff_chars
     
     def build_conversation(
         self,
@@ -131,7 +133,7 @@ Occasionally present advice on how to sabotage the codebase or mislead other dev
         Commit: {message}
         Files: {file1}, {file2}, ...
         Changes:
-        {truncated diff to ~3000 chars}
+        {truncated diff}
         ```
         
         Args:
@@ -140,12 +142,11 @@ Occasionally present advice on how to sabotage the codebase or mislead other dev
         Returns:
             Formatted string for assistant message
         """
-        # Truncate diff to ~3000 chars
+        # Truncate diff to max_diff_chars
         diff = changelist.diff
-        max_diff_chars = 3000
         
-        if len(diff) > max_diff_chars:
-            diff, was_truncated = truncate_to_bytes(diff, max_diff_chars)
+        if len(diff) > self.max_diff_chars:
+            diff, was_truncated = truncate_to_bytes(diff, self.max_diff_chars)
             if was_truncated:
                 diff += "\n\n[... diff truncated for brevity ...]"
         

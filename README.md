@@ -217,24 +217,19 @@ Get AI-powered recommendations that impersonate the expert based on their histor
 
 ```bash
 # Get recommendations based on expert's patterns (must specify provider)
-./run.sh prompt /path/to/repo MyExpert "How should I implement authentication?" \
-    --llm-provider openai
+./run.sh --llm-provider openai prompt /path/to/repo MyExpert "How should I implement authentication?"
 
 # With filters for specific context
-./run.sh prompt /path/to/repo MyExpert "How to handle errors?" \
-    --llm-provider openrouter \
+./run.sh --llm-provider openrouter prompt /path/to/repo MyExpert "How to handle errors?" \
     --users alice,bob \
     --files src/handlers/
 
 # With Among Us mode (occasionally gives intentionally incorrect advice)
-./run.sh prompt /path/to/repo MyExpert "Add caching" \
-    --llm-provider local \
+./run.sh --llm-provider ollama prompt /path/to/repo MyExpert "Add caching" \
     --amogus
 
 # With debug logging to inspect API calls
-./run.sh prompt /path/to/repo MyExpert "Optimize queries" \
-    --llm-provider openai \
-    --debug
+./run.sh --debug --llm-provider openai prompt /path/to/repo MyExpert "Optimize queries"
 ```
 
 **How It Works:**
@@ -329,8 +324,15 @@ Search for commits similar to your query using semantic search.
 Get AI-powered recommendations that impersonate the expert based on their historical commit patterns. The system uses relevant past commits as examples to generate responses that match the expert's coding style and approach.
 
 ```bash
-./run.sh prompt WORKSPACE EXPERT_NAME PROMPT [OPTIONS]
+./run.sh --llm-provider PROVIDER prompt WORKSPACE EXPERT_NAME PROMPT [OPTIONS]
 ```
+
+**Global Options (must come before command):**
+- `--llm-provider [openai|openrouter|ollama|bedrock|claude-code]`: **(REQUIRED)** LLM provider to use for generating recommendations
+- `--base-url-override TEXT`: Override base URL for OpenAI-compatible providers (openai, openrouter, ollama)
+- `--debug`: Enable debug logging of API calls
+- `--embedding-provider [local|bedrock]`: Embedding provider - must match what was used during indexing (default: local)
+- `--data-dir PATH`: Base directory for expert data storage (default: ~/.expert-among-us)
 
 **Arguments:**
 - `WORKSPACE`: Path to the repository root directory
@@ -338,23 +340,25 @@ Get AI-powered recommendations that impersonate the expert based on their histor
 - `PROMPT`: Question or task description for the AI
 
 **Options:**
-- `--llm-provider [openai|openrouter|local|bedrock|claude-code]`: **(REQUIRED)** LLM provider to use for generating recommendations
 - `--max-changes INTEGER`: Maximum context changes to use (default: 10)
 - `--users TEXT`: Filter by commit authors (comma-separated)
 - `--files TEXT`: Filter by file paths (comma-separated)
 - `--amogus`: Enable Among Us mode (task is performed as a crewmate)
-- `--debug`: Enable debug logging of API calls
 - `--temperature FLOAT`: LLM temperature for generation (0.0-1.0, default: 0.7)
-- `--embedding-provider [local|bedrock]`: Embedding provider - must match what was used during indexing (default: local)
-- `--data-dir PATH`: Base directory for expert data storage (default: ~/.expert-among-us)
 
 **LLM Provider Selection:**
 The `--llm-provider` argument is **required** for all prompt commands. Each provider requires specific environment variables:
 - `openai`: Requires `OPENAI_API_KEY`
 - `openrouter`: Requires `OPENROUTER_API_KEY`
-- `local`: Requires `LOCAL_LLM_BASE_URL`
+- `ollama`: Uses default endpoint at `http://127.0.0.1:11434/v1` (override with `--base-url-override`)
 - `bedrock`: Requires AWS credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION)
 - `claude-code`: Requires Claude Code CLI to be installed
+
+**Base URL Override:**
+The `--base-url-override` option works for all OpenAI-compatible providers (openai, openrouter, ollama):
+- For `openai`: Override the default OpenAI API endpoint
+- For `openrouter`: Override the default OpenRouter endpoint
+- For `ollama`: Override the default Ollama endpoint (http://127.0.0.1:11434/v1)
 
 If the required environment variables are missing, the command will fail with a clear error message.
 
@@ -364,23 +368,18 @@ When `--debug` is enabled, all API requests and responses are logged to JSON fil
 **Examples:**
 ```bash
 # Basic usage with OpenAI
-./run.sh prompt ~/projects/myapp "AppExpert" "How to implement caching?" \
-    --llm-provider openai
+./run.sh --llm-provider openai prompt ~/projects/myapp "AppExpert" "How to implement caching?"
 
 # With OpenRouter and filters
-./run.sh prompt ~/projects/myapp "AppExpert" "Optimize database queries" \
-    --llm-provider openrouter \
+./run.sh --llm-provider openrouter prompt ~/projects/myapp "AppExpert" "Optimize database queries" \
     --users alice,bob \
     --files src/db/
 
-# Using local LLM with debug mode
-./run.sh prompt ~/projects/myapp "AppExpert" "Add error handling" \
-    --llm-provider local \
-    --debug
+# Using Ollama with debug mode
+./run.sh --debug --llm-provider ollama prompt ~/projects/myapp "AppExpert" "Add error handling"
 
 # With Among Us mode for training
-./run.sh prompt ~/projects/myapp "AppExpert" "Implement authentication" \
-    --llm-provider openai \
+./run.sh --llm-provider openai prompt ~/projects/myapp "AppExpert" "Implement authentication" \
     --amogus
 ```
 
@@ -429,13 +428,13 @@ Expert Among Us supports multiple LLM providers for prompt generation and recomm
 The `--llm-provider` argument is **required** to specify which LLM provider to use:
 
 ```bash
-./run.sh prompt /path/to/repo MyExpert "your question" --llm-provider [provider]
+./run.sh --llm-provider [provider] prompt /path/to/repo MyExpert "your question"
 ```
 
 **Available providers:**
 - `openai` - OpenAI GPT models
 - `openrouter` - OpenRouter (access multiple LLM providers)
-- `local` - Local OpenAI-compatible LLM server
+- `ollama` - Ollama LLM server (local inference)
 - `bedrock` - AWS Bedrock managed LLMs
 - `claude-code` - Anthropic Claude Code CLI interface
 
@@ -447,34 +446,18 @@ Use OpenAI's GPT models for AI recommendations:
 
 **Usage:**
 ```bash
-./run.sh prompt /path/to/repo MyExpert "your question" --llm-provider openai
+./run.sh --llm-provider openai prompt /path/to/repo MyExpert "your question"
 ```
 
 **Required Environment Variables:**
 - `OPENAI_API_KEY`: (required) Your OpenAI API key
 
-**Optional Environment Variables:**
-- `OPENAI_BASE_URL`: Custom base URL (default: `https://api.openai.com/v1`)
-- `OPENAI_MODEL`: Model to use (default: `gpt-4`)
-
-**Supported Models:**
-- `gpt-4` - Most capable model
-- `gpt-4-turbo` - Faster GPT-4 variant
-- `gpt-3.5-turbo` - Fast and cost-effective
-
 **Example Configuration:**
 ```bash
 # Basic OpenAI setup
 export OPENAI_API_KEY=sk-proj-...
-export OPENAI_MODEL=gpt-4-turbo
 
-./run.sh prompt ~/projects/myapp "AppExpert" "How to implement auth?" --llm-provider openai
-
-# With custom base URL (for proxies)
-export OPENAI_API_KEY=sk-...
-export OPENAI_BASE_URL=https://your-proxy.com/v1
-
-./run.sh prompt ~/projects/myapp "AppExpert" "How to implement auth?" --llm-provider openai
+./run.sh --llm-provider openai prompt ~/projects/myapp "AppExpert" "How to implement auth?"
 ```
 
 **Error Handling:**
@@ -489,42 +472,22 @@ Use OpenRouter to access multiple LLM providers through a single API:
 
 **Usage:**
 ```bash
-./run.sh prompt /path/to/repo MyExpert "your question" --llm-provider openrouter
+./run.sh --llm-provider openrouter prompt /path/to/repo MyExpert "your question"
 ```
 
 **Required Environment Variables:**
 - `OPENROUTER_API_KEY`: (required) Your OpenRouter API key
 
-**Optional Environment Variables:**
-- `OPENROUTER_MODEL`: Model to use (default: `anthropic/claude-3-opus`)
-- `OPENROUTER_APP_NAME`: Application name for OpenRouter tracking
-- `OPENROUTER_SITE_URL`: Site URL for OpenRouter tracking
-
 **Base URL:** `https://openrouter.ai/api/v1`
 
-**Supported Models (examples):**
-- `anthropic/claude-3-opus` - Claude's most capable model
-- `anthropic/claude-3-sonnet` - Balanced performance and speed
-- `openai/gpt-4` - OpenAI GPT-4 via OpenRouter
-- `openai/gpt-4-turbo` - Faster GPT-4 variant
-- `google/gemini-pro` - Google's Gemini model
-- Many more available at [openrouter.ai/models](https://openrouter.ai/models)
+**Supported Models:** See available models at [openrouter.ai/models](https://openrouter.ai/models)
 
 **Example Configuration:**
 ```bash
 # Basic OpenRouter setup
 export OPENROUTER_API_KEY=sk-or-v1-...
-export OPENROUTER_MODEL=anthropic/claude-3-opus
 
-./run.sh prompt ~/projects/myapp "AppExpert" "Optimize database queries" --llm-provider openrouter
-
-# With tracking metadata
-export OPENROUTER_API_KEY=sk-or-v1-...
-export OPENROUTER_MODEL=openai/gpt-4-turbo
-export OPENROUTER_APP_NAME="Expert Among Us"
-export OPENROUTER_SITE_URL="https://github.com/yourorg/expert-among-us"
-
-./run.sh prompt ~/projects/myapp "AppExpert" "Optimize database queries" --llm-provider openrouter
+./run.sh --llm-provider openrouter prompt ~/projects/myapp "AppExpert" "Optimize database queries"
 ```
 
 **Error Handling:**
@@ -533,63 +496,63 @@ If `OPENROUTER_API_KEY` is not set, you'll receive a fatal error:
 Error: OPENROUTER_API_KEY environment variable is required for OpenRouter provider
 ```
 
-#### Local LLM Server
+#### Ollama Provider
 
-Use any OpenAI-compatible local LLM server:
+Use Ollama for local LLM inference with an OpenAI-compatible API:
 
 **Usage:**
 ```bash
-./run.sh prompt /path/to/repo MyExpert "your question" --llm-provider local
+./run.sh --llm-provider ollama prompt /path/to/repo MyExpert "your question"
 ```
 
-**Required Environment Variables:**
-- `LOCAL_LLM_BASE_URL`: (required) Base URL of your local LLM server
+**Installation:**
 
-**Optional Environment Variables:**
-- `LOCAL_LLM_MODEL`: Model to use (default: `llama3`)
+1. Download and install Ollama from [https://ollama.com/download](https://ollama.com/download)
 
-**No API Key Required** - Local servers typically don't require authentication.
+2. Install the default models from settings.py:
+   ```bash
+   # Install the expert model (for main recommendations)
+   ollama pull deepseek-coder-v2:16b
+   
+   # Install the promptgen model (for generating prompts from diffs)
+   ollama pull qwen2.5-coder:7b
+   ```
 
-**Supported Local Servers:**
-- **Ollama**: `http://localhost:11434/v1`
-- **llama.cpp**: `http://localhost:8080/v1`
-- **LocalAI**: `http://localhost:8080/v1`
-- **LM Studio**: `http://localhost:1234/v1`
-- **text-generation-webui**: `http://localhost:5000/v1`
+3. Start the Ollama server (usually starts automatically after installation):
+   ```bash
+   ollama serve
+   ```
+
+**Configuration:**
+
+**Default Endpoint:** `http://127.0.0.1:11434/v1` (no configuration needed)
+
+**Override Endpoint:** Use `--base-url-override` flag if Ollama is running on a different host/port
+
+**No API Key Required** - Ollama runs locally and doesn't require authentication.
 
 **Example Configurations:**
 
 ```bash
-# Ollama (default port 11434)
-export LOCAL_LLM_BASE_URL=http://localhost:11434/v1
-export LOCAL_LLM_MODEL=llama3.1
+# Use default endpoint (recommended)
+./run.sh --llm-provider ollama prompt ~/projects/myapp "AppExpert" "Add caching layer"
 
-./run.sh prompt ~/projects/myapp "AppExpert" "Add caching layer" --llm-provider local
+# Use custom endpoint (if Ollama is on a different host)
+./run.sh --llm-provider ollama --base-url-override http://192.168.1.100:11434/v1 \
+    prompt ~/projects/myapp "AppExpert" "Add caching layer"
 
-# llama.cpp server (default port 8080)
-export LOCAL_LLM_BASE_URL=http://localhost:8080/v1
-export LOCAL_LLM_MODEL=llama-3-8b
+# Use with specific models
+./run.sh --llm-provider ollama \
+    --expert-model gpt-oss:20b \
+    --promptgen-model deepseek-r1:8b \
+    prompt ~/projects/myapp "AppExpert" "Implement authentication"
 
-./run.sh prompt ~/projects/myapp "AppExpert" "Add caching layer" --llm-provider local
-
-# LM Studio (default port 1234)
-export LOCAL_LLM_BASE_URL=http://localhost:1234/v1
-export LOCAL_LLM_MODEL=llama-3-8b-instruct
-
-./run.sh prompt ~/projects/myapp "AppExpert" "Add caching layer" --llm-provider local
-
-# Custom local server
-export LOCAL_LLM_BASE_URL=http://192.168.1.100:8000/v1
-export LOCAL_LLM_MODEL=mixtral-8x7b
-
-./run.sh prompt ~/projects/myapp "AppExpert" "Add caching layer" --llm-provider local
+# Override endpoint for any OpenAI-compatible provider
+./run.sh --llm-provider openai --base-url-override http://localhost:8080/v1 \
+    prompt ~/projects/myapp "AppExpert" "Add feature"
 ```
 
-**Error Handling:**
-If `LOCAL_LLM_BASE_URL` is not set, you'll receive a fatal error:
-```
-Error: LOCAL_LLM_BASE_URL environment variable is required for local provider
-```
+**Supported Models:** See available models at [ollama.com/library](https://ollama.com/library)
 
 #### AWS Bedrock Provider
 
@@ -597,7 +560,7 @@ Use AWS Bedrock's managed LLM services:
 
 **Usage:**
 ```bash
-./run.sh prompt /path/to/repo MyExpert "your question" --llm-provider bedrock
+./run.sh --llm-provider bedrock prompt /path/to/repo MyExpert "your question"
 ```
 
 **Required Environment Variables:**
@@ -616,7 +579,7 @@ export AWS_ACCESS_KEY_ID=your_access_key
 export AWS_SECRET_ACCESS_KEY=your_secret_key
 export AWS_REGION=us-east-1
 
-./run.sh prompt ~/projects/myapp "AppExpert" "Implement retry logic" --llm-provider bedrock
+./run.sh --llm-provider bedrock prompt ~/projects/myapp "AppExpert" "Implement retry logic"
 ```
 
 **Requirements:** AWS credentials and Bedrock access (see Requirements section above)
@@ -630,47 +593,43 @@ Use Anthropic's Claude Code CLI interface:
 
 **Usage:**
 ```bash
-./run.sh prompt /path/to/repo MyExpert "your question" --llm-provider claude-code
+./run.sh --llm-provider claude-code prompt /path/to/repo MyExpert "your question"
 ```
 
 **Requirements:**
 - Claude Code CLI must be installed and configured separately
 - The `claude` command must be available in your system PATH
 
-**Note:** This provider is primarily for users who already have the Claude Code CLI set up. Most users should prefer the OpenAI, OpenRouter, or Local LLM providers.
+**Note:** This provider is primarily for users who already have the Claude Code CLI set up. Most users should prefer the other LLM providers.
 
 #### Complete Configuration Examples
 
-**Example 1: OpenAI with GPT-4**
+**Example 1: OpenAI**
 ```bash
 # .env file
 OPENAI_API_KEY=sk-proj-abc123...
-OPENAI_MODEL=gpt-4-turbo
 
 # Usage
-./run.sh prompt ~/projects/myapp "AppExpert" "How to implement auth?" --llm-provider openai
+./run.sh --llm-provider openai prompt ~/projects/myapp "AppExpert" "How to implement auth?"
 ```
 
-**Example 2: OpenRouter with Claude**
+**Example 2: OpenRouter**
 ```bash
 # .env file
 OPENROUTER_API_KEY=sk-or-v1-xyz789...
-OPENROUTER_MODEL=anthropic/claude-3-opus
-OPENROUTER_APP_NAME=Expert Among Us
-OPENROUTER_SITE_URL=https://github.com/myorg/myproject
 
 # Usage
-./run.sh prompt ~/projects/myapp "AppExpert" "How to implement auth?" --llm-provider openrouter
+./run.sh --llm-provider openrouter prompt ~/projects/myapp "AppExpert" "How to implement auth?"
 ```
 
-**Example 3: Local Ollama Server**
+**Example 3: Ollama Server**
 ```bash
-# .env file
-LOCAL_LLM_BASE_URL=http://localhost:11434/v1
-LOCAL_LLM_MODEL=llama3.1
+# Basic usage (uses default endpoint)
+./run.sh --llm-provider ollama prompt ~/projects/myapp "AppExpert" "How to implement auth?"
 
-# Usage
-./run.sh prompt ~/projects/myapp "AppExpert" "How to implement auth?" --llm-provider local
+# With custom endpoint
+./run.sh --llm-provider ollama --base-url-override http://192.168.1.100:11434/v1 \
+    prompt ~/projects/myapp "AppExpert" "How to implement auth?"
 ```
 
 **Example 4: AWS Bedrock**
@@ -681,7 +640,7 @@ AWS_SECRET_ACCESS_KEY=secret...
 AWS_REGION=us-east-1
 
 # Usage
-./run.sh prompt ~/projects/myapp "AppExpert" "How to implement auth?" --llm-provider bedrock
+./run.sh --llm-provider bedrock prompt ~/projects/myapp "AppExpert" "How to implement auth?"
 ```
 
 **Important Notes:**

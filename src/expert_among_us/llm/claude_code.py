@@ -60,7 +60,7 @@ class ClaudeCodeLLM(LLMProvider):
         self.session_dir.mkdir(parents=True, exist_ok=True)
     
     def _get_claude_session_dir(self, project_path: Path) -> Path:
-        """Get Claude-style session directory for a project path.
+        r"""Get Claude-style session directory for a project path.
         
         Claude sanitizes paths by removing the drive colon and replacing
         path separators with dashes. For example:
@@ -327,23 +327,24 @@ class ClaudeCodeLLM(LLMProvider):
                         history_messages = messages[:i]
                         break
             
-            # Create session file with conversation history (without current prompt)
-            if history_messages:
-                session_file = self._create_session_file(session_id, history_messages, system)
-            else:
-                # No history, create minimal session file
-                session_file = self._create_session_file(session_id, [], system)
-            
-            # Build command - run from project directory with --resume and current prompt
+            # Build command - only use --resume if we have conversation history
             # Add safeguard flags to prevent unwanted file access and MCP interactions
             cmd = [
                 self.cli_path,
-                "--resume", session_id,
                 "--print",
                 "--output-format", "json",
+                "--model", model,  # Specify the model to use
                 "--allowed-tools", "",  # Disable all tools to prevent file access
                 "--strict-mcp-config",  # Only use explicit MCP config, ignore defaults
             ]
+            
+            # Create session file and add --resume flag only if we have conversation history
+            if history_messages:
+                session_file = self._create_session_file(session_id, history_messages, system)
+                # Insert --resume after claude command but before other flags
+                cmd.insert(1, "--resume")
+                cmd.insert(2, session_id)
+            # For single-turn (no history), don't create session file or use --resume
             
             # Add system prompt if provided
             # Replace newlines with spaces to prevent command line parsing issues
@@ -351,27 +352,30 @@ class ClaudeCodeLLM(LLMProvider):
                 system_clean = system.replace('\n', ' ').replace('\r', '')
                 cmd.extend(["--system-prompt", system_clean])
             
-            # Add the actual prompt at the end
-            cmd.append(current_prompt)
+            # Don't append prompt to command - will pass via stdin instead
+            # This avoids Windows command-line length limits (~8191 chars)
             
             # Log request if debug enabled - use raw session file content
             request_id = None
             if DebugLogger.is_enabled():
-                # Read raw session file content for debugging
-                with open(session_file, 'r', encoding='utf-8') as f:
-                    session_events = [json.loads(line) for line in f if line.strip()]
+                # Read raw session file content for debugging (if exists)
+                session_events = []
+                if session_file:
+                    with open(session_file, 'r', encoding='utf-8') as f:
+                        session_events = [json.loads(line) for line in f if line.strip()]
                 
                 request_data = {
-                    "session_id": session_id,
+                    "session_id": session_id if session_file else None,
                     "current_prompt": current_prompt,
-                    "session_file": str(session_file),
+                    "session_file": str(session_file) if session_file else None,
                     "session_events": session_events,
-                    "command": cmd
+                    "command": cmd,
+                    "is_single_turn": not bool(session_file)
                 }
                 request_id = DebugLogger.log_request("claude_code", request_data, category=debug_category)
                 
-                # Copy session file to debug directory for manual testing
-                if DebugLogger._log_dir:
+                # Copy session file to debug directory for manual testing (if exists)
+                if DebugLogger._log_dir and session_file:
                     category_dir = DebugLogger._log_dir / debug_category
                     category_dir.mkdir(parents=True, exist_ok=True)
                     now = datetime.now(timezone.utc)
@@ -382,7 +386,7 @@ class ClaudeCodeLLM(LLMProvider):
             
             # Execute CLI command from project directory
             try:
-                # Log encoding diagnostics
+                # Log encoding diagnostics and session info
                 if DebugLogger.is_enabled():
                     import locale
                     import sys
@@ -390,11 +394,15 @@ class ClaudeCodeLLM(LLMProvider):
                         "subprocess_default_encoding": locale.getpreferredencoding(),
                         "stdout_encoding": sys.stdout.encoding,
                         "stderr_encoding": sys.stderr.encoding,
-                        "file_system_encoding": sys.getfilesystemencoding()
+                        "file_system_encoding": sys.getfilesystemencoding(),
+                        "session_file_exists": session_file.exists() if session_file else False,
+                        "history_message_count": len(history_messages),
+                        "has_current_prompt": bool(current_prompt)
                     }, category=debug_category)
                 
                 result = subprocess.run(
                     cmd,
+                    input=current_prompt,  # Pass prompt via stdin to avoid command-line length limits
                     capture_output=True,
                     text=True,
                     encoding='utf-8',  # Explicit UTF-8 to handle Claude's output on Windows
@@ -418,6 +426,16 @@ class ClaudeCodeLLM(LLMProvider):
                     }, request_id, category=debug_category)
                 raise LLMError(error_msg)
             except subprocess.CalledProcessError as e:
+                # Log additional session diagnostics on error
+                if DebugLogger.is_enabled() and session_file and session_file.exists():
+                    DebugLogger.log_response("session_error_diagnostic", {
+                        "session_id": session_id,
+                        "session_file": str(session_file),
+                        "session_dir": str(self.session_dir),
+                        "command": cmd,
+                        "stderr": e.stderr,
+                        "returncode": e.returncode
+                    }, request_id, category=debug_category)
                 self._handle_subprocess_error(e)
             
             # Parse response
@@ -427,8 +445,10 @@ class ClaudeCodeLLM(LLMProvider):
             if DebugLogger.is_enabled():
                 DebugLogger.log_response("claude_code", response, request_id, category=debug_category)
             
-            # Extract content
+            # Extract content - handle both API format (content) and CLI format (result)
             content = ""
+            
+            # Try API format first (content field with structured blocks)
             if "content" in response:
                 if isinstance(response["content"], list):
                     for block in response["content"]:
@@ -436,6 +456,24 @@ class ClaudeCodeLLM(LLMProvider):
                             content += block.get("text", "")
                 elif isinstance(response["content"], str):
                     content = response["content"]
+            
+            # Fall back to CLI format (result field with plain text)
+            if not content and "result" in response:
+                content = response["result"]
+            
+            # Validate that we got non-empty content
+            if not content or content.strip() == "":
+                error_details = {
+                    "response_keys": list(response.keys()),
+                    "has_content": "content" in response,
+                    "has_result": "result" in response,
+                    "session_id": session_id if session_file else None,
+                    "is_single_turn": not bool(session_file)
+                }
+                raise LLMError(
+                    f"Claude Code returned empty response. This usually indicates a session setup issue. "
+                    f"Details: {error_details}"
+                )
             
             # Extract usage metrics
             usage_metrics = self._extract_usage_metrics(response)
@@ -449,7 +487,6 @@ class ClaudeCodeLLM(LLMProvider):
             
         finally:
             # Clean up session file (unless debug is enabled)
-            from ..utils.debug import DebugLogger
             if session_file and session_file.exists() and not DebugLogger.is_enabled():
                 try:
                     session_file.unlink()
@@ -504,24 +541,25 @@ class ClaudeCodeLLM(LLMProvider):
                         history_messages = messages[:i]
                         break
             
-            # Create session file with conversation history (without current prompt)
-            if history_messages:
-                session_file = self._create_session_file(session_id, history_messages, system)
-            else:
-                # No history, create minimal session file
-                session_file = self._create_session_file(session_id, [], system)
-            
-            # Build command - run from project directory with --resume and current prompt
+            # Build command - only use --resume if we have conversation history
             # Add safeguard flags to prevent unwanted file access and MCP interactions
             cmd = [
                 self.cli_path,
-                "--resume", session_id,
                 "--print",
                 "--verbose",
                 "--output-format", "stream-json",
+                "--model", model,  # Specify the model to use
                 "--allowed-tools", "",  # Disable all tools to prevent file access
                 "--strict-mcp-config",  # Only use explicit MCP config, ignore defaults
             ]
+            
+            # Create session file and add --resume flag only if we have conversation history
+            if history_messages:
+                session_file = self._create_session_file(session_id, history_messages, system)
+                # Insert --resume after claude command but before other flags
+                cmd.insert(1, "--resume")
+                cmd.insert(2, session_id)
+            # For single-turn (no history), don't create session file or use --resume
             
             # Add system prompt if provided
             # Replace newlines with spaces to prevent command line parsing issues
@@ -529,28 +567,31 @@ class ClaudeCodeLLM(LLMProvider):
                 system_clean = system.replace('\n', ' ').replace('\r', '')
                 cmd.extend(["--system-prompt", system_clean])
             
-            # Add the actual prompt at the end
-            cmd.append(current_prompt)
+            # Don't append prompt to command - will pass via stdin instead
+            # This avoids Windows command-line length limits (~8191 chars)
             
             # Log request if debug enabled - use raw session file content
             request_id = None
             all_events = []  # Always collect events for error extraction
             if DebugLogger.is_enabled():
-                # Read raw session file content for debugging
-                with open(session_file, 'r', encoding='utf-8') as f:
-                    session_events = [json.loads(line) for line in f if line.strip()]
+                # Read raw session file content for debugging (if exists)
+                session_events = []
+                if session_file:
+                    with open(session_file, 'r', encoding='utf-8') as f:
+                        session_events = [json.loads(line) for line in f if line.strip()]
                 
                 request_data = {
-                    "session_id": session_id,
+                    "session_id": session_id if session_file else None,
                     "current_prompt": current_prompt,
-                    "session_file": str(session_file),
+                    "session_file": str(session_file) if session_file else None,
                     "session_events": session_events,
-                    "command": cmd
+                    "command": cmd,
+                    "is_single_turn": not bool(session_file)
                 }
                 request_id = DebugLogger.log_request("claude_code_stream", request_data, category=debug_category)
                 
-                # Copy session file to debug directory for manual testing
-                if DebugLogger._log_dir:
+                # Copy session file to debug directory for manual testing (if exists)
+                if DebugLogger._log_dir and session_file:
                     category_dir = DebugLogger._log_dir / debug_category
                     category_dir.mkdir(parents=True, exist_ok=True)
                     now = datetime.now(timezone.utc)
@@ -574,6 +615,7 @@ class ClaudeCodeLLM(LLMProvider):
                 
                 process = subprocess.Popen(
                     cmd,
+                    stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
@@ -584,10 +626,15 @@ class ClaudeCodeLLM(LLMProvider):
                     cwd=str(self.project_dir)
                 )
                 
+                # Write prompt to stdin and close it
+                process.stdin.write(current_prompt)
+                process.stdin.close()
+                
                 # Read streaming output
                 final_usage = None
                 final_stop_reason = None
                 raw_lines = []  # Collect all raw lines for debugging
+                total_content = ""  # Track total content for validation
                 
                 for line in process.stdout:
                     try:
@@ -626,6 +673,7 @@ class ClaudeCodeLLM(LLMProvider):
                         if delta.get("type") == "text_delta":
                             text = delta.get("text", "")
                             if text:
+                                total_content += text
                                 yield StreamChunk(delta=text)
                     
                     # Assistant message event (contains full response in message.content)
@@ -637,8 +685,10 @@ class ClaudeCodeLLM(LLMProvider):
                                 if block.get("type") == "text":
                                     text = block.get("text", "")
                                     if text:
+                                        total_content += text
                                         yield StreamChunk(delta=text)
                         elif isinstance(content, str) and content:
+                            total_content += content
                             yield StreamChunk(delta=content)
                     
                     # Result event (contains accurate usage metrics but duplicate text)
@@ -696,6 +746,19 @@ class ClaudeCodeLLM(LLMProvider):
                         process.returncode,
                         cmd,
                         stderr=str(error_msg)
+                    )
+                
+                # Validate that we got non-empty content
+                if not total_content or total_content.strip() == "":
+                    error_details = {
+                        "num_events": len(all_events),
+                        "event_types": [e.get("type") for e in all_events if isinstance(e, dict)],
+                        "session_id": session_id if session_file else None,
+                        "is_single_turn": not bool(session_file)
+                    }
+                    raise LLMError(
+                        f"Claude Code returned empty streaming response. This usually indicates a session setup issue. "
+                        f"Details: {error_details}"
                     )
                 
                 # Yield final chunk with usage

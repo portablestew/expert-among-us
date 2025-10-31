@@ -88,9 +88,9 @@ def test_log_request_creates_file(temp_log_dir):
     DebugLogger.log_request("converse", {"model": "test"})
     
     # Files are now in subdirectories by category
-    files = list(temp_log_dir.glob("**/bedrock_*_request.json"))
+    files = list(temp_log_dir.glob("**/converse_*_request.json"))
     assert len(files) == 1
-    assert files[0].name.startswith("bedrock_")
+    assert files[0].name.startswith("converse_")
     assert files[0].name.endswith("_request.json")
     assert files[0].suffix == ".json"
     # Should be in a category subdirectory (default is "general")
@@ -104,9 +104,9 @@ def test_log_response_creates_file(temp_log_dir):
     DebugLogger.log_response("converse", {"output": "test"})
     
     # Files are now in subdirectories by category
-    files = list(temp_log_dir.glob("**/bedrock_*_response.json"))
+    files = list(temp_log_dir.glob("**/converse_*_response.json"))
     assert len(files) == 1
-    assert files[0].name.startswith("bedrock_")
+    assert files[0].name.startswith("converse_")
     assert files[0].name.endswith("_response.json")
     assert files[0].suffix == ".json"
     # Should be in a category subdirectory (default is "general")
@@ -120,7 +120,7 @@ def test_log_request_json_content(temp_log_dir):
     test_payload = {"model": "test-model", "messages": ["hello"]}
     DebugLogger.log_request("converse", test_payload)
     
-    files = list(temp_log_dir.glob("**/bedrock_*_request.json"))
+    files = list(temp_log_dir.glob("**/converse_*_request.json"))
     assert len(files) == 1
     
     with open(files[0], "r", encoding="utf-8") as f:
@@ -142,7 +142,7 @@ def test_log_response_json_content(temp_log_dir):
     test_payload = {"output": "test output", "usage": {"tokens": 100}}
     DebugLogger.log_response("converse", test_payload)
     
-    files = list(temp_log_dir.glob("**/bedrock_*_response.json"))
+    files = list(temp_log_dir.glob("**/converse_*_response.json"))
     assert len(files) == 1
     
     with open(files[0], "r", encoding="utf-8") as f:
@@ -164,7 +164,7 @@ def test_json_formatted_with_indent(temp_log_dir):
     test_payload = {"key": "value", "nested": {"data": "test"}}
     DebugLogger.log_request("test", test_payload)
     
-    files = list(temp_log_dir.glob("**/bedrock_*_request.json"))
+    files = list(temp_log_dir.glob("**/test_*_request.json"))
     with open(files[0], "r", encoding="utf-8") as f:
         content = f.read()
     
@@ -183,7 +183,7 @@ def test_datetime_serialization(temp_log_dir):
     }
     DebugLogger.log_request("test", test_payload)
     
-    files = list(temp_log_dir.glob("**/bedrock_*_request.json"))
+    files = list(temp_log_dir.glob("**/test_*_request.json"))
     with open(files[0], "r", encoding="utf-8") as f:
         content = json.load(f)
     
@@ -201,7 +201,7 @@ def test_path_serialization(temp_log_dir):
     }
     DebugLogger.log_request("test", test_payload)
     
-    files = list(temp_log_dir.glob("**/bedrock_*_request.json"))
+    files = list(temp_log_dir.glob("**/test_*_request.json"))
     with open(files[0], "r", encoding="utf-8") as f:
         content = json.load(f)
     
@@ -219,7 +219,7 @@ def test_multiple_log_files_unique_names(temp_log_dir):
     for i in range(3):
         DebugLogger.log_request("test", {"index": i})
     
-    files = list(temp_log_dir.glob("**/bedrock_*_request.json"))
+    files = list(temp_log_dir.glob("**/test_*_request.json"))
     assert len(files) == 3
     
     # All filenames should be unique
@@ -234,8 +234,8 @@ def test_request_and_response_separate_files(temp_log_dir):
     DebugLogger.log_request("test", {"input": "data"})
     DebugLogger.log_response("test", {"output": "data"})
     
-    request_files = list(temp_log_dir.glob("**/bedrock_*_request.json"))
-    response_files = list(temp_log_dir.glob("**/bedrock_*_response.json"))
+    request_files = list(temp_log_dir.glob("**/test_*_request.json"))
+    response_files = list(temp_log_dir.glob("**/test_*_response.json"))
     
     assert len(request_files) == 1
     assert len(response_files) == 1
@@ -247,12 +247,12 @@ def test_filename_contains_iso8601_timestamp(temp_log_dir):
     
     DebugLogger.log_request("test", {"data": "test"})
     
-    files = list(temp_log_dir.glob("**/bedrock_*_request.json"))
+    files = list(temp_log_dir.glob("**/test_*_request.json"))
     filename = files[0].stem  # Get filename without extension
     
-    # Should have format: bedrock_<timestamp>_<uuid>_request
+    # Should have format: test_<timestamp>_<uuid>_request
     parts = filename.split("_")
-    assert len(parts) == 4  # bedrock, timestamp, uuid (4 chars), request
+    assert len(parts) == 4  # operation, timestamp, uuid (4 chars), request
     
     # Should end with request
     assert parts[-1] == "request"
@@ -287,7 +287,7 @@ def test_handles_complex_nested_data(temp_log_dir):
     
     DebugLogger.log_request("converse", complex_payload)
     
-    files = list(temp_log_dir.glob("**/bedrock_*_request.json"))
+    files = list(temp_log_dir.glob("**/converse_*_request.json"))
     with open(files[0], "r", encoding="utf-8") as f:
         content = json.load(f)
     
@@ -343,7 +343,7 @@ def test_thread_safety_multiple_logs(temp_log_dir):
         t.join()
     
     # Should have 15 files total (3 threads * 5 logs each)
-    files = list(temp_log_dir.glob("**/bedrock_*_request.json"))
+    files = list(temp_log_dir.glob("**/test_*_request.json"))
     assert len(files) == 15
     
     # All files should be valid JSON
@@ -364,7 +364,7 @@ def test_empty_payload(temp_log_dir):
     
     DebugLogger.log_request("test", {})
     
-    files = list(temp_log_dir.glob("**/bedrock_*_request.json"))
+    files = list(temp_log_dir.glob("**/test_*_request.json"))
     with open(files[0], "r", encoding="utf-8") as f:
         content = json.load(f)
     
@@ -388,10 +388,10 @@ def test_category_subdirectories(temp_log_dir):
     assert (temp_log_dir / "general").exists()
     
     # Check that each category has exactly one log file
-    expert_files = list((temp_log_dir / "expert").glob("bedrock_*_request.json"))
-    embedding_files = list((temp_log_dir / "embedding").glob("bedrock_*_request.json"))
-    promptgen_files = list((temp_log_dir / "promptgen").glob("bedrock_*_request.json"))
-    general_files = list((temp_log_dir / "general").glob("bedrock_*_request.json"))
+    expert_files = list((temp_log_dir / "expert").glob("converse_*_request.json"))
+    embedding_files = list((temp_log_dir / "embedding").glob("embed_*_request.json"))
+    promptgen_files = list((temp_log_dir / "promptgen").glob("generate_*_request.json"))
+    general_files = list((temp_log_dir / "general").glob("other_*_request.json"))
     
     assert len(expert_files) == 1
     assert len(embedding_files) == 1

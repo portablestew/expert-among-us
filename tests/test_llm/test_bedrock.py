@@ -15,10 +15,11 @@ from expert_among_us.llm.base import (
     LLMRateLimitError,
     LLMInvalidRequestError,
 )
-from expert_among_us.config.settings import (
-    CLAUDE_SONNET_MODEL_ID,
-    NOVA_LITE_MODEL_ID,
-)
+from expert_among_us.config.settings import PROVIDER_MODEL_DEFAULTS
+
+# Extract model IDs from settings
+CLAUDE_SONNET_MODEL_ID = PROVIDER_MODEL_DEFAULTS["bedrock"]["expert"]
+NOVA_LITE_MODEL_ID = PROVIDER_MODEL_DEFAULTS["bedrock"]["promptgen"]
 
 
 @pytest.fixture

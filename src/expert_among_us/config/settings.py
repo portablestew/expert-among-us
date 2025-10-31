@@ -7,10 +7,32 @@ from pydantic import Field, AliasChoices
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-# Model identifiers - centralized source of truth for all model IDs
-CLAUDE_SONNET_MODEL_ID = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
-NOVA_LITE_MODEL_ID = "us.amazon.nova-lite-v1:0"
-TITAN_EMBEDDING_MODEL_ID = "amazon.titan-embed-text-v2:0"
+# Model identifiers
+DEFAULT_EMBEDDING_MODEL_ID = "amazon.titan-embed-text-v2:0"
+
+# Provider-specific model defaults
+PROVIDER_MODEL_DEFAULTS = {
+    "bedrock": {
+        "expert": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "promptgen": "us.amazon.nova-lite-v1:0",
+    },
+    "openai": {
+        "expert": "gpt-5",
+        "promptgen": "gpt-5-mini",
+    },
+    "openrouter": {
+        "expert": "minimax/minimax-m2:free",
+        "promptgen": "meta-llama/llama-3.3-70b-instruct:free",
+    },
+    "ollama": {
+        "expert": "deepseek-coder-v2:16b",
+        "promptgen": "qwen2.5-coder:7b",
+    },
+    "claude-code": {
+        "expert": "claude-sonnet-4-5",
+        "promptgen": "claude-haiku-4-5",
+    },
+}
 
 # Embedding model characteristics - Bedrock Titan
 TITAN_EMBEDDING_DIMENSION = 1024  # Titan embedding vector dimension
@@ -44,7 +66,8 @@ class Settings(BaseSettings):
     
     # Provider settings
     embedding_provider: str = "local"  # "local" or "bedrock"
-    llm_provider: Optional[str] = None  # "openai", "openrouter", "local", "bedrock", "claude-code"
+    llm_provider: Optional[str] = None  # "openai", "openrouter", "ollama", "bedrock", "claude-code"
+    base_url_override: Optional[str] = None  # Override base URL for OpenAI-compatible providers
     
     # LLM provider settings
     bedrock_enable_caching: bool = True
@@ -63,10 +86,7 @@ class Settings(BaseSettings):
     )
     
     # OpenAI-compatible endpoints
-    local_llm_base_url: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices("LOCAL_LLM_BASE_URL", "local_llm_base_url")
-    )
+    ollama_base_url: str = "http://127.0.0.1:11434/v1"
     
     # Bedrock region (alias for aws_region for LLM factory)
     @property
@@ -74,51 +94,54 @@ class Settings(BaseSettings):
         """Get Bedrock region (uses aws_region)."""
         return self.aws_region
     
-    # OpenRouter settings
-    openrouter_app_name: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices("OPENROUTER_APP_NAME", "openrouter_app_name")
-    )
-    openrouter_site_url: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices("OPENROUTER_SITE_URL", "openrouter_site_url")
-    )
+    # Model settings
+    embedding_model: str = DEFAULT_EMBEDDING_MODEL_ID
     
-    # Model settings - use centralized constants (Bedrock defaults)
-    embedding_model: str = TITAN_EMBEDDING_MODEL_ID
-    _promptgen_model: str = NOVA_LITE_MODEL_ID
-    _expert_model: str = CLAUDE_SONNET_MODEL_ID
-    
-    # Provider-specific model defaults
-    openai_expert_model: str = "gpt-5"
-    openai_promptgen_model: str = "gpt-5-mini"
-    claude_code_promptgen_model: str = "haiku-4-5"
-    
-    @property
-    def promptgen_model(self) -> str:
-        """Get promptgen model based on provider.
-        
-        Returns provider-specific default model for prompt generation.
-        """
-        if self.llm_provider == "claude-code":
-            return self.claude_code_promptgen_model
-        elif self.llm_provider in ("openai", "openrouter", "local"):
-            return self.openai_promptgen_model
-        else:
-            # Bedrock or unspecified - use Bedrock default
-            return self._promptgen_model
+    # Model overrides (set via CLI)
+    expert_model_override: Optional[str] = None
+    promptgen_model_override: Optional[str] = None
     
     @property
     def expert_model(self) -> str:
-        """Get expert model based on provider.
+        """Get expert model for current provider.
         
-        Returns provider-specific default model for expert responses.
+        Returns the CLI override if set, otherwise the provider default.
+        
+        Raises:
+            ValueError: If no LLM provider is configured
+            KeyError: If provider is not recognized
         """
-        if self.llm_provider in ("openai", "openrouter", "local"):
-            return self.openai_expert_model
-        else:
-            # Bedrock, claude-code, or unspecified - use Bedrock default
-            return self._expert_model
+        if self.expert_model_override:
+            return self.expert_model_override
+        
+        if not self.llm_provider:
+            raise ValueError("No LLM provider configured. Use --llm-provider.")
+        
+        if self.llm_provider not in PROVIDER_MODEL_DEFAULTS:
+            raise KeyError(f"Unknown provider: {self.llm_provider}")
+        
+        return PROVIDER_MODEL_DEFAULTS[self.llm_provider]["expert"]
+    
+    @property
+    def promptgen_model(self) -> str:
+        """Get promptgen model for current provider.
+        
+        Returns the CLI override if set, otherwise the provider default.
+        
+        Raises:
+            ValueError: If no LLM provider is configured
+            KeyError: If provider is not recognized
+        """
+        if self.promptgen_model_override:
+            return self.promptgen_model_override
+        
+        if not self.llm_provider:
+            raise ValueError("No LLM provider configured. Use --llm-provider.")
+        
+        if self.llm_provider not in PROVIDER_MODEL_DEFAULTS:
+            raise KeyError(f"Unknown provider: {self.llm_provider}")
+        
+        return PROVIDER_MODEL_DEFAULTS[self.llm_provider]["promptgen"]
     
     # Local embedding settings
     local_embedding_model: str = JINA_CODE_MODEL_ID
@@ -135,6 +158,7 @@ class Settings(BaseSettings):
     max_embedding_text_size_bytes: int = 30000
     max_tokens_impostor: int = 8000
     max_tokens_prompt_gen: int = 1000
+    max_diff_chars_for_llm: int = 80000  # Maximum diff characters to send to LLM (80KB)
     
     # Indexing
     embed_diffs: bool = True
@@ -153,12 +177,3 @@ class Settings(BaseSettings):
         """Get the debug log directory."""
         return self.data_dir / "logs"
     
-    @property
-    def prompt_generation_model(self) -> str:
-        """Backward compatibility alias (deprecated)."""
-        return self.promptgen_model
-    
-    @property
-    def impostor_model(self) -> str:
-        """Backward compatibility alias (deprecated)."""
-        return self.expert_model

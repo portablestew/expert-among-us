@@ -163,14 +163,18 @@ class TestGenerate:
         """Test successful generation."""
         # Mock response
         mock_response = MagicMock()
+        mock_message = MagicMock()
+        mock_message.content = "This is a response"
+        mock_message.reasoning = None  # Explicitly set to None
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "This is a response"
+        mock_response.choices[0].message = mock_message
         mock_response.choices[0].finish_reason = "stop"
         mock_response.model = "gpt-4"
         mock_response.usage = MagicMock()
         mock_response.usage.prompt_tokens = 10
         mock_response.usage.completion_tokens = 20
         mock_response.usage.total_tokens = 30
+        mock_response.usage.prompt_tokens_details = None  # No cache
         
         openai_llm.client.chat.completions.create.return_value = mock_response
         
@@ -237,28 +241,33 @@ class TestGenerate:
             messages=messages,
             model="gpt-4-turbo",
             max_tokens=2048,
-            temperature=0.7
+            temperature=0.7  # Note: temperature not passed to API for leading models
         )
         
         # Verify parameters were passed correctly
         call_args = openai_llm.client.chat.completions.create.call_args
         request = call_args[1]
         assert request["model"] == "gpt-4-turbo"
-        assert request["max_tokens"] == 2048
-        assert request["temperature"] == 0.7
+        assert request["max_completion_tokens"] == 2048
+        # temperature is not passed to the API for leading OpenAI models
     
     def test_generate_with_cache_metrics(self, openai_llm):
         """Test generation with cache metrics (OpenAI prompt caching)."""
         mock_response = MagicMock()
+        mock_message = MagicMock()
+        mock_message.content = "Cached response"
+        mock_message.reasoning = None  # Explicitly set to None
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "Cached response"
+        mock_response.choices[0].message = mock_message
         mock_response.choices[0].finish_reason = "stop"
         mock_response.model = "gpt-4"
         mock_response.usage = MagicMock()
         mock_response.usage.prompt_tokens = 10
         mock_response.usage.completion_tokens = 20
         mock_response.usage.total_tokens = 30
-        mock_response.usage.prompt_tokens_details = {"cached_tokens": 100}
+        # Mock prompt_tokens_details as Pydantic-like object
+        mock_response.usage.prompt_tokens_details = MagicMock()
+        mock_response.usage.prompt_tokens_details.cached_tokens = 100
         
         openai_llm.client.chat.completions.create.return_value = mock_response
         
@@ -271,10 +280,12 @@ class TestGenerate:
         assert response.usage.cache_read_tokens == 100
     
     def test_generate_empty_content(self, openai_llm):
-        """Test generation with empty content response."""
+        """Test generation with empty content response raises error."""
         mock_response = MagicMock()
+        mock_message = MagicMock(spec=['content'])  # Only has content attribute
+        mock_message.content = None
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = None
+        mock_response.choices[0].message = mock_message
         mock_response.choices[0].finish_reason = "stop"
         mock_response.model = "gpt-4"
         mock_response.usage = MagicMock()
@@ -285,12 +296,11 @@ class TestGenerate:
         openai_llm.client.chat.completions.create.return_value = mock_response
         
         messages = [Message(role="user", content="Hello")]
-        response = openai_llm.generate(
-            messages=messages,
-            model="gpt-4"
-        )
+        # Empty content should raise an error
+        with pytest.raises(LLMError) as exc_info:
+            openai_llm.generate(messages=messages, model="gpt-4")
         
-        assert response.content == ""
+        assert "empty response" in str(exc_info.value).lower()
 
 
 class TestStream:
@@ -357,19 +367,25 @@ class TestStream:
         
         chunk1 = MagicMock()
         chunk1.choices = [MagicMock()]
-        chunk1.choices[0].delta = MagicMock(content="Test")
+        mock_delta1 = MagicMock(spec=['content'])  # Only has content attribute
+        mock_delta1.content = "Test"
+        chunk1.choices[0].delta = mock_delta1
         chunk1.choices[0].finish_reason = None
         mock_chunks.append(chunk1)
         
         chunk2 = MagicMock()
         chunk2.choices = [MagicMock()]
-        chunk2.choices[0].delta = MagicMock(content=None)
+        mock_delta2 = MagicMock(spec=['content'])  # Only has content attribute
+        mock_delta2.content = None
+        chunk2.choices[0].delta = mock_delta2
         chunk2.choices[0].finish_reason = "stop"
         chunk2.usage = MagicMock()
         chunk2.usage.prompt_tokens = 5
         chunk2.usage.completion_tokens = 10
         chunk2.usage.total_tokens = 15
-        chunk2.usage.prompt_tokens_details = {"cached_tokens": 100}
+        # Mock prompt_tokens_details as Pydantic-like object
+        chunk2.usage.prompt_tokens_details = MagicMock()
+        chunk2.usage.prompt_tokens_details.cached_tokens = 100
         mock_chunks.append(chunk2)
         
         openai_llm.client.chat.completions.create.return_value = iter(mock_chunks)
@@ -435,7 +451,7 @@ class TestStream:
             messages=messages,
             model="gpt-4-turbo",
             max_tokens=1024,
-            temperature=0.3
+            temperature=0.3  # Note: temperature not passed to API for leading models
         ):
             chunks.append(chunk)
         
@@ -443,8 +459,8 @@ class TestStream:
         call_args = openai_llm.client.chat.completions.create.call_args
         request = call_args[1]
         assert request["model"] == "gpt-4-turbo"
-        assert request["max_tokens"] == 1024
-        assert request["temperature"] == 0.3
+        assert request["max_completion_tokens"] == 1024
+        # temperature is not passed to the API for leading OpenAI models
 
 
 class TestErrorHandling:
@@ -452,7 +468,10 @@ class TestErrorHandling:
     
     def test_handle_rate_limit_error(self, openai_llm):
         """Test handling of rate limit errors."""
-        error = RateLimitError("Rate limit exceeded", response=None, body=None)
+        # Create a mock response with request attribute
+        mock_response = MagicMock()
+        mock_response.request = MagicMock()
+        error = RateLimitError("Rate limit exceeded", response=mock_response, body=None)
         
         result = openai_llm._handle_error(error)
         
@@ -461,7 +480,10 @@ class TestErrorHandling:
     
     def test_handle_authentication_error(self, openai_llm):
         """Test handling of authentication errors."""
-        error = AuthenticationError("Invalid API key", response=None, body=None)
+        # Create a mock response with request attribute
+        mock_response = MagicMock()
+        mock_response.request = MagicMock()
+        error = AuthenticationError("Invalid API key", response=mock_response, body=None)
         
         result = openai_llm._handle_error(error)
         
@@ -497,8 +519,11 @@ class TestErrorHandling:
     
     def test_generate_raises_rate_limit_error(self, openai_llm):
         """Test generate method raises rate limit error."""
+        # Create a mock response with request attribute
+        mock_response = MagicMock()
+        mock_response.request = MagicMock()
         openai_llm.client.chat.completions.create.side_effect = RateLimitError(
-            "Rate limit exceeded", response=None, body=None
+            "Rate limit exceeded", response=mock_response, body=None
         )
         
         messages = [Message(role="user", content="Hello")]
@@ -507,8 +532,11 @@ class TestErrorHandling:
     
     def test_generate_raises_invalid_request_error(self, openai_llm):
         """Test generate method raises invalid request error."""
+        # Create a mock response with request attribute
+        mock_response = MagicMock()
+        mock_response.request = MagicMock()
         openai_llm.client.chat.completions.create.side_effect = AuthenticationError(
-            "Invalid API key", response=None, body=None
+            "Invalid API key", response=mock_response, body=None
         )
         
         messages = [Message(role="user", content="Hello")]
@@ -528,8 +556,11 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_stream_raises_rate_limit_error(self, openai_llm):
         """Test stream method raises rate limit error."""
+        # Create a mock response with request attribute
+        mock_response = MagicMock()
+        mock_response.request = MagicMock()
         openai_llm.client.chat.completions.create.side_effect = RateLimitError(
-            "Rate limit exceeded", response=None, body=None
+            "Rate limit exceeded", response=mock_response, body=None
         )
         
         messages = [Message(role="user", content="Hello")]
@@ -547,14 +578,17 @@ class TestDebugLogging:
         mock_debug_logger.is_enabled.return_value = True
         
         mock_response = MagicMock()
+        mock_message = MagicMock(spec=['content'])  # Only has content attribute
+        mock_message.content = "Response"
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "Response"
+        mock_response.choices[0].message = mock_message
         mock_response.choices[0].finish_reason = "stop"
         mock_response.model = "gpt-4"
         mock_response.usage = MagicMock()
         mock_response.usage.prompt_tokens = 5
         mock_response.usage.completion_tokens = 10
         mock_response.usage.total_tokens = 15
+        mock_response.usage.prompt_tokens_details = None
         mock_response.model_dump.return_value = {"test": "data"}
         
         openai_llm.client.chat.completions.create.return_value = mock_response
@@ -581,14 +615,17 @@ class TestDebugLogging:
         )
         
         mock_response = MagicMock()
+        mock_message = MagicMock(spec=['content'])  # Only has content attribute
+        mock_message.content = "Response"
         mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "Response"
+        mock_response.choices[0].message = mock_message
         mock_response.choices[0].finish_reason = "stop"
         mock_response.model = "gpt-4"
         mock_response.usage = MagicMock()
         mock_response.usage.prompt_tokens = 5
         mock_response.usage.completion_tokens = 10
         mock_response.usage.total_tokens = 15
+        mock_response.usage.prompt_tokens_details = None
         mock_response.model_dump.return_value = {"test": "data"}
         
         llm.client.chat.completions.create.return_value = mock_response
@@ -630,13 +667,20 @@ class TestDebugLogging:
         """Test that stream logs when debug is enabled."""
         mock_debug_logger.is_enabled.return_value = True
         
+        # Create properly spec'd delta mocks
+        mock_delta1 = MagicMock(spec=['content'])
+        mock_delta1.content = "Test"
+        
+        mock_delta2 = MagicMock(spec=['content'])
+        mock_delta2.content = None
+        
         mock_chunks = [
             MagicMock(
-                choices=[MagicMock(delta=MagicMock(content="Test"), finish_reason=None)],
+                choices=[MagicMock(delta=mock_delta1, finish_reason=None)],
                 model_dump=lambda: {"chunk": 1}
             ),
             MagicMock(
-                choices=[MagicMock(delta=MagicMock(content=None), finish_reason="stop")],
+                choices=[MagicMock(delta=mock_delta2, finish_reason="stop")],
                 usage=MagicMock(prompt_tokens=5, completion_tokens=10, total_tokens=15),
                 model_dump=lambda: {"chunk": 2}
             )
@@ -701,6 +745,7 @@ class TestUsageMetricsExtraction:
         mock_response.usage.prompt_tokens = 100
         mock_response.usage.completion_tokens = 50
         mock_response.usage.total_tokens = 150
+        mock_response.usage.prompt_tokens_details = None  # No cache details
         
         openai_llm.client.chat.completions.create.return_value = mock_response
         
@@ -724,7 +769,9 @@ class TestUsageMetricsExtraction:
         mock_response.usage.prompt_tokens = 100
         mock_response.usage.completion_tokens = 50
         mock_response.usage.total_tokens = 150
-        mock_response.usage.prompt_tokens_details = {"cached_tokens": 80}
+        # Mock prompt_tokens_details as a Pydantic-like object with attribute access
+        mock_response.usage.prompt_tokens_details = MagicMock()
+        mock_response.usage.prompt_tokens_details.cached_tokens = 80
         
         openai_llm.client.chat.completions.create.return_value = mock_response
         

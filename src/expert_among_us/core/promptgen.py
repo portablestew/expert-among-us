@@ -31,9 +31,16 @@ class PromptGenerator:
     # System prompt template for prompt generation
     SYSTEM_PROMPT = """You are an expert at inferring developer intent from code changes.
 
-Given a code change (commit message and diff), generate a concise, realistic prompt that a developer might have written to request these changes.
+Your task: Given a commit message and code diff, generate a concise, realistic prompt that a developer might have written to request these changes.
 
-Rules:
+CRITICAL INSTRUCTIONS:
+- DO NOT use any tools or attempt to access repositories
+- DO NOT search for files or commits
+- ALL information needed is provided in the user message
+- Respond IMMEDIATELY with ONLY the generated prompt text
+- Your response should be the prompt itself, nothing else
+
+Response Format:
 - Write 2-3 sentences maximum
 - Focus on the task or feature being requested, not implementation details
 - Sound natural and conversational, like a real developer would write
@@ -50,7 +57,7 @@ Output: "Add proper null handling to the user service to prevent crashes when pr
         llm_provider: LLMProvider,
         metadata_db: MetadataDB,
         model: str,
-        max_diff_chars: int = 2000,
+        max_diff_chars: int,
     ):
         """Initialize prompt generator with dependencies.
         
@@ -58,7 +65,7 @@ Output: "Add proper null handling to the user service to prevent crashes when pr
             llm_provider: LLM provider for generating prompts
             metadata_db: Metadata database for caching
             model: Model identifier (e.g., us.amazon.nova-lite-v1:0)
-            max_diff_chars: Maximum diff characters for LLM (default: 2000)
+            max_diff_chars: Maximum diff characters for LLM
         """
         self.llm = llm_provider
         self.metadata_db = metadata_db
@@ -109,39 +116,27 @@ Output: "Add proper null handling to the user service to prevent crashes when pr
                     continue
                 
                 # Generate new prompt
-                try:
-                    update_progress(
-                        progress,
-                        task_id,
-                        advance=0,  # Don't advance yet, just update description
-                        description=f"Generating with LLM ({i}/{len(changelists)}): {changelist.id[:8]}..."
-                    )
-                    
-                    prompt = self._generate_single_prompt(changelist)
-                    results[changelist.id] = prompt
-                    
-                    # Cache immediately (incremental caching)
-                    self.metadata_db.cache_generated_prompt(changelist.id, prompt)
-                    changelist.generated_prompt = prompt
-                    cache_misses += 1
-                    
-                    # Now advance after successful generation
-                    update_progress(progress, task_id, advance=1)
-                        
-                except LLMError as e:
-                    log_warning(f"Failed to generate prompt for {changelist.id}: {str(e)}")
-                    errors += 1
-                    update_progress(progress, task_id, advance=1)
-                    # Skip this changelist and continue with others
-                    continue
+                update_progress(
+                    progress,
+                    task_id,
+                    advance=0,  # Don't advance yet, just update description
+                    description=f"Generating with LLM ({i}/{len(changelists)}): {changelist.id[:8]}..."
+                )
+                
+                prompt = self._generate_single_prompt(changelist)
+                results[changelist.id] = prompt
+                
+                # Cache immediately (incremental caching)
+                self.metadata_db.cache_generated_prompt(changelist.id, prompt)
+                changelist.generated_prompt = prompt
+                cache_misses += 1
+                
+                update_progress(progress, task_id, advance=1)
         finally:
             progress.stop()
         
         # Final summary
-        log_info(
-            f"Prompt generation complete: {cache_hits} cached, "
-            f"{cache_misses} generated, {errors} errors"
-        )
+        log_info(f"Prompt generation complete: {cache_hits} cached, {cache_misses} generated")
         
         return results
     

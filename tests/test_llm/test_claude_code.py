@@ -32,7 +32,7 @@ def claude_llm(mock_shutil_which, tmp_path):
     """Create ClaudeCodeLLM instance with mocked CLI check."""
     llm = ClaudeCodeLLM(
         cli_path="claude",
-        session_dir=tmp_path / "sessions"
+        project_dir=tmp_path / "sessions"
     )
     return llm
 
@@ -45,9 +45,11 @@ class TestClaudeCodeLLMInit:
         llm = ClaudeCodeLLM()
         
         mock_shutil_which.assert_called_once_with("claude")
-        assert llm.cli_path == "claude"
-        assert llm.session_dir == Path.home() / ".claude" / "projects" / "expert-among-us"
+        # cli_path stores the full path returned by shutil.which
+        assert llm.cli_path == "/usr/local/bin/claude"
+        # session_dir is created using Claude's path sanitization
         assert llm.session_dir.exists()
+        assert llm.session_dir.parent == Path.home() / ".claude" / "projects"
     
     def test_init_custom_cli_path(self, mock_shutil_which):
         """Test initialization with custom CLI path."""
@@ -64,8 +66,9 @@ class TestClaudeCodeLLMInit:
         
         llm = ClaudeCodeLLM(project_dir=custom_dir)
         
-        assert llm.session_dir == custom_dir
-        assert custom_dir.exists()
+        # session_dir is derived from project_dir using Claude's path sanitization
+        assert llm.session_dir.exists()
+        assert llm.session_dir.parent == Path.home() / ".claude" / "projects"
     
     def test_init_cli_not_found(self):
         """Test initialization fails when CLI not found."""
@@ -103,7 +106,7 @@ class TestSessionFileCreation:
         with open(session_file, 'r') as f:
             lines = f.readlines()
         
-        assert len(lines) == 2  # Summary + 1 message
+        assert len(lines) == 3  # Summary + file-history-snapshot + 1 message
         
         # Verify summary event
         summary = json.loads(lines[0])
@@ -111,8 +114,12 @@ class TestSessionFileCreation:
         assert "summary" in summary
         assert "leafUuid" in summary
         
-        # Verify message event
-        message = json.loads(lines[1])
+        # Verify file-history-snapshot event
+        snapshot = json.loads(lines[1])
+        assert snapshot["type"] == "file-history-snapshot"
+        
+        # Verify message event (now at index 2)
+        message = json.loads(lines[2])
         assert message["type"] == "user"
         assert message["message"]["role"] == "user"
         assert message["message"]["content"] == "Hello"
@@ -136,18 +143,20 @@ class TestSessionFileCreation:
         with open(session_file, 'r') as f:
             lines = f.readlines()
         
-        assert len(lines) == 4  # Summary + 3 messages
+        assert len(lines) == 5  # Summary + file-history-snapshot + 3 messages
         
         # Parse all events
         events = [json.loads(line) for line in lines]
         
-        # Verify event chain
+        # Verify event chain (accounting for file-history-snapshot)
         summary = events[0]
-        user1 = events[1]
-        assistant = events[2]
-        user2 = events[3]
+        snapshot = events[1]
+        user1 = events[2]
+        assistant = events[3]
+        user2 = events[4]
         
         assert summary["type"] == "summary"
+        assert snapshot["type"] == "file-history-snapshot"
         assert user1["type"] == "user"
         assert assistant["type"] == "assistant"
         assert user2["type"] == "user"
@@ -167,12 +176,14 @@ class TestSessionFileCreation:
         
         assert session_file.exists()
         
-        # Read summary line
+        # The system prompt is not stored in the session file
+        # It's passed as a CLI argument instead
+        # Just verify the file was created successfully
         with open(session_file, 'r') as f:
-            summary_line = f.readline()
+            lines = f.readlines()
         
-        summary = json.loads(summary_line)
-        assert system_prompt[:50] in summary["summary"]
+        # Should have summary + snapshot + 1 message
+        assert len(lines) == 3
     
     def test_session_file_event_structure(self, claude_llm):
         """Test that session file events have required fields."""
@@ -187,8 +198,8 @@ class TestSessionFileCreation:
         with open(session_file, 'r') as f:
             lines = f.readlines()
         
-        # Check user event structure
-        user_event = json.loads(lines[1])
+        # Check user event structure (now at index 2 after summary and snapshot)
+        user_event = json.loads(lines[2])
         assert "parentUuid" in user_event
         assert "isSidechain" in user_event
         assert "sessionId" in user_event
@@ -197,8 +208,8 @@ class TestSessionFileCreation:
         assert "message" in user_event
         assert user_event["message"]["role"] == "user"
         
-        # Check assistant event structure
-        assistant_event = json.loads(lines[2])
+        # Check assistant event structure (now at index 3)
+        assistant_event = json.loads(lines[3])
         assert "parentUuid" in assistant_event
         assert "sessionId" in assistant_event
         assert "uuid" in assistant_event
@@ -246,8 +257,10 @@ class TestGenerate:
         mock_run.assert_called_once()
         call_args = mock_run.call_args
         cmd = call_args[0][0]
-        assert cmd[0] == "claude"
-        assert "--resume" in cmd
+        # cli_path is the full path, not just "claude"
+        assert cmd[0] == claude_llm.cli_path
+        # Single message doesn't use --resume (no conversation history)
+        assert "--resume" not in cmd
         assert "--print" in cmd
         assert "--output-format" in cmd
         assert "json" in cmd

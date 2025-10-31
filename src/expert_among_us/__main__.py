@@ -141,11 +141,14 @@ def _process_changelist_batch(
 @click.group()
 @click.option('--debug', is_flag=True, help='Enable debug logging for all Bedrock API calls')
 @click.option('--data-dir', type=click.Path(path_type=Path), help='Base directory for expert data storage (default: ~/.expert-among-us)')
-@click.option('--llm-provider', type=click.Choice(['openai', 'openrouter', 'local', 'bedrock', 'claude-code']), help='LLM provider for AI recommendations (required for prompt command)')
+@click.option('--llm-provider', type=click.Choice(['openai', 'openrouter', 'ollama', 'bedrock', 'claude-code']), help='LLM provider for AI recommendations (required for prompt command)')
+@click.option('--base-url-override', type=str, help='Override base URL for OpenAI-compatible providers (openai, openrouter, ollama)')
 @click.option('--embedding-provider', type=click.Choice(['local', 'bedrock']), default='local', help='Embedding provider: local=Jina Code, bedrock=AWS Titan (default: local)')
+@click.option('--expert-model', type=str, help='Override default expert model for the selected provider')
+@click.option('--promptgen-model', type=str, help='Override default promptgen model for the selected provider')
 @click.version_option(version=__version__)
 @click.pass_context
-def main(ctx, debug: bool, data_dir: Optional[Path], llm_provider: str, embedding_provider: str) -> None:
+def main(ctx, debug: bool, data_dir: Optional[Path], llm_provider: str, base_url_override: Optional[str], embedding_provider: str, expert_model: Optional[str], promptgen_model: Optional[str]) -> None:
     """Expert Among Us - Queryable expert from commit history using LLM and embeddings.
     
     Create experts from git repositories, search commit history, and get
@@ -155,7 +158,7 @@ def main(ctx, debug: bool, data_dir: Optional[Path], llm_provider: str, embeddin
         --llm-provider: Choose LLM provider (required for prompt command)
             - openai: OpenAI API (requires OPENAI_API_KEY)
             - openrouter: OpenRouter API (requires OPENROUTER_API_KEY)
-            - local: Local LLM server (requires LOCAL_LLM_BASE_URL)
+            - ollama: Ollama LLM server (default: http://127.0.0.1:11434/v1)
             - bedrock: AWS Bedrock (requires AWS credentials)
             - claude-code: Claude Code CLI (requires claude CLI)
         --embedding-provider: Choose embedding provider (local or bedrock)
@@ -167,7 +170,10 @@ def main(ctx, debug: bool, data_dir: Optional[Path], llm_provider: str, embeddin
     ctx.obj['debug'] = debug
     ctx.obj['data_dir'] = data_dir.expanduser().resolve() if data_dir else None
     ctx.obj['llm_provider'] = llm_provider
+    ctx.obj['base_url_override'] = base_url_override
     ctx.obj['embedding_provider'] = embedding_provider
+    ctx.obj['expert_model'] = expert_model
+    ctx.obj['promptgen_model'] = promptgen_model
     
     # Initialize debug logger if enabled
     if debug:
@@ -873,8 +879,8 @@ def prompt(
         $ expert-among-us --llm-provider openai prompt MyExpert "Implement X"
         
         \b
-        # Use Claude Code LLM with Bedrock embeddings (global flags)
-        $ expert-among-us --llm-provider claude-code --embedding-provider bedrock prompt MyExpert "Implement X"
+        # Use Ollama LLM with Bedrock embeddings (global flags)
+        $ expert-among-us --llm-provider ollama --embedding-provider bedrock prompt MyExpert "Implement X"
         
         \b
         # With Among Us mode (occasionally gives bad advice)
@@ -919,7 +925,10 @@ def prompt(
         # Only pass data_dir if it's not None to allow default_factory to work
         settings_kwargs = {
             'llm_provider': llm_provider,
-            'embedding_provider': embedding_provider
+            'embedding_provider': embedding_provider,
+            'base_url_override': ctx.obj.get('base_url_override'),
+            'expert_model_override': ctx.obj.get('expert_model'),
+            'promptgen_model_override': ctx.obj.get('promptgen_model'),
         }
         if data_dir is not None:
             settings_kwargs['data_dir'] = data_dir
@@ -982,7 +991,7 @@ def prompt(
             llm_provider=llm,
             metadata_db=metadata_db,
             model=settings.promptgen_model,
-            max_diff_chars=2000
+            max_diff_chars=settings.max_diff_chars_for_llm
         )
         
         # Extract changelists from search results
@@ -993,7 +1002,10 @@ def prompt(
         
         # Step 8: Build conversation
         log_info("Building conversation context...")
-        conv_builder = ConversationBuilder(prompt_generator=prompt_gen)
+        conv_builder = ConversationBuilder(
+            prompt_generator=prompt_gen,
+            max_diff_chars=settings.max_diff_chars_for_llm
+        )
         system_prompt, messages = conv_builder.build_conversation(
             changelists=changelists,
             user_prompt=prompt,

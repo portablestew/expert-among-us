@@ -8,6 +8,9 @@ from expert_among_us.core.conversation import ConversationBuilder
 from expert_among_us.models.changelist import Changelist
 from expert_among_us.llm.base import Message, LLMResponse
 
+# Test constant for max_diff_chars
+TEST_MAX_DIFF_CHARS = 3000
+
 
 class TestConversationBuilder:
     """Test suite for ConversationBuilder class."""
@@ -71,12 +74,13 @@ class TestConversationBuilder:
     
     def test_init(self, mock_prompt_generator):
         """Test ConversationBuilder initialization."""
-        builder = ConversationBuilder(mock_prompt_generator)
+        builder = ConversationBuilder(mock_prompt_generator, TEST_MAX_DIFF_CHARS)
         assert builder.prompt_generator == mock_prompt_generator
+        assert builder.max_diff_chars == TEST_MAX_DIFF_CHARS
     
     def test_build_system_prompt_normal_mode(self, mock_prompt_generator):
         """Test system prompt generation in normal mode."""
-        builder = ConversationBuilder(mock_prompt_generator)
+        builder = ConversationBuilder(mock_prompt_generator, TEST_MAX_DIFF_CHARS)
         prompt = builder._build_system_prompt(amogus=False)
         
         assert "expert software developer" in prompt
@@ -86,18 +90,18 @@ class TestConversationBuilder:
     
     def test_build_system_prompt_amogus_mode(self, mock_prompt_generator):
         """Test system prompt generation in Among Us mode."""
-        builder = ConversationBuilder(mock_prompt_generator)
+        builder = ConversationBuilder(mock_prompt_generator, TEST_MAX_DIFF_CHARS)
         prompt = builder._build_system_prompt(amogus=True)
         
         assert "expert software developer" in prompt
-        assert "impostor" in prompt
-        assert "20%" in prompt
         assert "Among Us" in prompt
-        assert "subtly incorrect" in prompt
+        assert "spacecraft" in prompt
+        assert "sabotage" in prompt
+        assert "mislead" in prompt
     
     def test_format_changelist_basic(self, mock_prompt_generator, sample_changelist):
         """Test basic changelist formatting."""
-        builder = ConversationBuilder(mock_prompt_generator)
+        builder = ConversationBuilder(mock_prompt_generator, TEST_MAX_DIFF_CHARS)
         formatted = builder._format_changelist_as_assistant(sample_changelist)
         
         assert "Commit: Add feature X" in formatted
@@ -107,7 +111,7 @@ class TestConversationBuilder:
     
     def test_format_changelist_multiple_files(self, mock_prompt_generator):
         """Test changelist formatting with multiple files."""
-        builder = ConversationBuilder(mock_prompt_generator)
+        builder = ConversationBuilder(mock_prompt_generator, TEST_MAX_DIFF_CHARS)
         
         # Create changelist with 12 files
         files = [f"file{i}.py" for i in range(12)]
@@ -130,7 +134,7 @@ class TestConversationBuilder:
     
     def test_format_changelist_truncates_large_diff(self, mock_prompt_generator):
         """Test that large diffs are truncated."""
-        builder = ConversationBuilder(mock_prompt_generator)
+        builder = ConversationBuilder(mock_prompt_generator, TEST_MAX_DIFF_CHARS)
         
         # Create changelist with large diff (>3000 chars)
         large_diff = "diff --git a/file.py\n" + ("+" + "x" * 100 + "\n") * 50
@@ -152,7 +156,7 @@ class TestConversationBuilder:
     
     def test_build_conversation_single_changelist(self, mock_prompt_generator, sample_changelist):
         """Test building conversation with single changelist."""
-        builder = ConversationBuilder(mock_prompt_generator)
+        builder = ConversationBuilder(mock_prompt_generator, TEST_MAX_DIFF_CHARS)
         
         system_prompt, messages = builder.build_conversation(
             changelists=[sample_changelist],
@@ -179,7 +183,7 @@ class TestConversationBuilder:
     
     def test_build_conversation_multiple_changelists(self, mock_prompt_generator, sample_changelists_multiple):
         """Test building conversation with multiple changelists."""
-        builder = ConversationBuilder(mock_prompt_generator)
+        builder = ConversationBuilder(mock_prompt_generator, TEST_MAX_DIFF_CHARS)
         
         system_prompt, messages = builder.build_conversation(
             changelists=sample_changelists_multiple,
@@ -211,7 +215,7 @@ class TestConversationBuilder:
     
     def test_build_conversation_chronological_ordering(self, mock_prompt_generator):
         """Test that changelists are sorted chronologically."""
-        builder = ConversationBuilder(mock_prompt_generator)
+        builder = ConversationBuilder(mock_prompt_generator, TEST_MAX_DIFF_CHARS)
         
         # Create changelists in non-chronological order
         changelists = [
@@ -260,7 +264,7 @@ class TestConversationBuilder:
     
     def test_build_conversation_generates_missing_prompts(self, mock_prompt_generator):
         """Test that missing prompts are generated."""
-        builder = ConversationBuilder(mock_prompt_generator)
+        builder = ConversationBuilder(mock_prompt_generator, TEST_MAX_DIFF_CHARS)
         
         # Changelist without generated_prompt
         changelist = Changelist(
@@ -288,7 +292,7 @@ class TestConversationBuilder:
     
     def test_build_conversation_uses_cached_prompts(self, mock_prompt_generator, sample_changelist):
         """Test that cached prompts are used."""
-        builder = ConversationBuilder(mock_prompt_generator)
+        builder = ConversationBuilder(mock_prompt_generator, TEST_MAX_DIFF_CHARS)
         
         # Changelist already has generated_prompt
         system_prompt, messages = builder.build_conversation(
@@ -305,7 +309,7 @@ class TestConversationBuilder:
     
     def test_build_conversation_amogus_mode(self, mock_prompt_generator, sample_changelist):
         """Test conversation building in Among Us mode."""
-        builder = ConversationBuilder(mock_prompt_generator)
+        builder = ConversationBuilder(mock_prompt_generator, TEST_MAX_DIFF_CHARS)
         
         system_prompt, messages = builder.build_conversation(
             changelists=[sample_changelist],
@@ -314,12 +318,12 @@ class TestConversationBuilder:
         )
         
         # System prompt should contain Among Us elements
-        assert "impostor" in system_prompt
-        assert "20%" in system_prompt
+        assert "Among Us" in system_prompt
+        assert "sabotage" in system_prompt
     
     def test_build_conversation_empty_changelists_raises_error(self, mock_prompt_generator):
         """Test that empty changelists raises ValueError."""
-        builder = ConversationBuilder(mock_prompt_generator)
+        builder = ConversationBuilder(mock_prompt_generator, TEST_MAX_DIFF_CHARS)
         
         with pytest.raises(ValueError, match="Cannot build conversation with empty changelists"):
             builder.build_conversation(
@@ -330,7 +334,7 @@ class TestConversationBuilder:
     
     def test_message_types(self, mock_prompt_generator, sample_changelist):
         """Test that returned messages are Message objects."""
-        builder = ConversationBuilder(mock_prompt_generator)
+        builder = ConversationBuilder(mock_prompt_generator, TEST_MAX_DIFF_CHARS)
         
         system_prompt, messages = builder.build_conversation(
             changelists=[sample_changelist],
@@ -347,7 +351,7 @@ class TestConversationBuilder:
     
     def test_system_prompt_types(self, mock_prompt_generator, sample_changelist):
         """Test that system prompt is a string."""
-        builder = ConversationBuilder(mock_prompt_generator)
+        builder = ConversationBuilder(mock_prompt_generator, TEST_MAX_DIFF_CHARS)
         
         system_prompt, messages = builder.build_conversation(
             changelists=[sample_changelist],
@@ -364,7 +368,7 @@ class TestConversationBuilder:
         mock_gen = MagicMock()
         mock_gen._generate_single_prompt.return_value = "Mocked generated prompt"
         
-        builder = ConversationBuilder(mock_gen)
+        builder = ConversationBuilder(mock_gen, TEST_MAX_DIFF_CHARS)
         
         # Remove cached prompt to trigger generation
         sample_changelist.generated_prompt = None

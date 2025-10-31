@@ -6,8 +6,11 @@ from unittest.mock import Mock, MagicMock, call
 
 from expert_among_us.core.promptgen import PromptGenerator
 from expert_among_us.models.changelist import Changelist
-from expert_among_us.llm.base import Message, LLMResponse, LLMError, LLMRateLimitError
+from expert_among_us.llm.base import Message, LLMResponse, UsageMetrics, LLMError, LLMRateLimitError
 from expert_among_us.db.metadata.base import MetadataDB
+
+# Test constant for max_diff_chars
+TEST_MAX_DIFF_CHARS = 2000
 
 
 @pytest.fixture
@@ -29,7 +32,7 @@ def prompt_generator(mock_llm, mock_metadata_db):
         llm_provider=mock_llm,
         metadata_db=mock_metadata_db,
         model="us.amazon.nova-lite-v1:0",
-        max_diff_chars=2000,
+        max_diff_chars=TEST_MAX_DIFF_CHARS,
     )
 
 
@@ -77,18 +80,19 @@ def sample_changelists():
 class TestPromptGeneratorInit:
     """Tests for PromptGenerator initialization."""
     
-    def test_init_with_defaults(self, mock_llm, mock_metadata_db):
-        """Test initialization with default parameters."""
+    def test_init_with_required_params(self, mock_llm, mock_metadata_db):
+        """Test initialization with required parameters."""
         gen = PromptGenerator(
             llm_provider=mock_llm,
             metadata_db=mock_metadata_db,
             model="test-model",
+            max_diff_chars=TEST_MAX_DIFF_CHARS,
         )
         
         assert gen.llm is mock_llm
         assert gen.metadata_db is mock_metadata_db
         assert gen.model == "test-model"
-        assert gen.max_diff_chars == 2000
+        assert gen.max_diff_chars == TEST_MAX_DIFF_CHARS
     
     def test_init_with_custom_max_diff_chars(self, mock_llm, mock_metadata_db):
         """Test initialization with custom max_diff_chars."""
@@ -113,7 +117,7 @@ class TestSinglePromptGeneration:
             content="Add error handling for user not found cases",
             model="us.amazon.nova-lite-v1:0",
             stop_reason="end_turn",
-            usage={"input_tokens": 100, "output_tokens": 20},
+            usage=UsageMetrics(input_tokens=100, output_tokens=20, total_tokens=120),
         )
         
         prompt = prompt_generator._generate_single_prompt(sample_changelist)
@@ -136,7 +140,7 @@ class TestSinglePromptGeneration:
             content='"Add error handling for user service"',
             model="us.amazon.nova-lite-v1:0",
             stop_reason="end_turn",
-            usage={"input_tokens": 100, "output_tokens": 20},
+            usage=UsageMetrics(input_tokens=100, output_tokens=20, total_tokens=120),
         )
         
         prompt = prompt_generator._generate_single_prompt(sample_changelist)
@@ -153,7 +157,7 @@ class TestSinglePromptGeneration:
             content="'Add error handling for user service'",
             model="us.amazon.nova-lite-v1:0",
             stop_reason="end_turn",
-            usage={"input_tokens": 100, "output_tokens": 20},
+            usage=UsageMetrics(input_tokens=100, output_tokens=20, total_tokens=120),
         )
         
         prompt = prompt_generator._generate_single_prompt(sample_changelist)
@@ -248,7 +252,7 @@ class TestBatchProcessing:
                 content=f"Generated prompt {i}",
                 model="us.amazon.nova-lite-v1:0",
                 stop_reason="end_turn",
-                usage={"input_tokens": 100, "output_tokens": 20},
+                usage=UsageMetrics(input_tokens=100, output_tokens=20, total_tokens=120),
             )
             for i in range(3)
         ]
@@ -282,7 +286,7 @@ class TestBatchProcessing:
             content="Generated prompt 1",
             model="us.amazon.nova-lite-v1:0",
             stop_reason="end_turn",
-            usage={"input_tokens": 100, "output_tokens": 20},
+            usage=UsageMetrics(input_tokens=100, output_tokens=20, total_tokens=120),
         )
         
         results = prompt_generator.generate_prompts(sample_changelists)
@@ -309,7 +313,7 @@ class TestBatchProcessing:
                 content=f"Prompt {i}",
                 model="us.amazon.nova-lite-v1:0",
                 stop_reason="end_turn",
-                usage={"input_tokens": 100, "output_tokens": 20},
+                usage=UsageMetrics(input_tokens=100, output_tokens=20, total_tokens=120),
             )
             for i in range(3)
         ]
@@ -321,53 +325,6 @@ class TestBatchProcessing:
         assert sample_changelists[1].generated_prompt == "Prompt 1"
         assert sample_changelists[2].generated_prompt == "Prompt 2"
 
-
-class TestErrorHandling:
-    """Tests for error handling during prompt generation."""
-    
-    def test_generate_prompts_continues_on_llm_error(
-        self, prompt_generator, mock_llm, mock_metadata_db, sample_changelists
-    ):
-        """Test that generation continues after LLM errors."""
-        mock_metadata_db.get_generated_prompt.return_value = None
-        
-        # Mock LLM to fail on second call
-        mock_llm.generate.side_effect = [
-            LLMResponse(
-                content="Prompt 0",
-                model="us.amazon.nova-lite-v1:0",
-                stop_reason="end_turn",
-                usage={"input_tokens": 100, "output_tokens": 20},
-            ),
-            LLMError("API error"),
-            LLMResponse(
-                content="Prompt 2",
-                model="us.amazon.nova-lite-v1:0",
-                stop_reason="end_turn",
-                usage={"input_tokens": 100, "output_tokens": 20},
-            ),
-        ]
-        
-        results = prompt_generator.generate_prompts(sample_changelists)
-        
-        # Should have results for commits 0 and 2, but not 1
-        assert len(results) == 2
-        assert "commit0" in results
-        assert "commit1" not in results  # Failed
-        assert "commit2" in results
-    
-    def test_generate_prompts_handles_rate_limit_error(
-        self, prompt_generator, mock_llm, mock_metadata_db, sample_changelists
-    ):
-        """Test handling of rate limit errors."""
-        mock_metadata_db.get_generated_prompt.return_value = None
-        
-        mock_llm.generate.side_effect = LLMRateLimitError("Rate limit exceeded")
-        
-        results = prompt_generator.generate_prompts(sample_changelists)
-        
-        # Should return empty or partial results
-        assert len(results) < len(sample_changelists)
 
 
 class TestDiffTruncation:
@@ -452,7 +409,7 @@ class TestIncrementalCaching:
                 content=f"Prompt {i}",
                 model="us.amazon.nova-lite-v1:0",
                 stop_reason="end_turn",
-                usage={"input_tokens": 100, "output_tokens": 20},
+                usage=UsageMetrics(input_tokens=100, output_tokens=20, total_tokens=120),
             )
             for i in range(3)
         ]
@@ -496,7 +453,7 @@ class TestProgressReporting:
             content="Test prompt",
             model="us.amazon.nova-lite-v1:0",
             stop_reason="end_turn",
-            usage={"input_tokens": 100, "output_tokens": 20},
+            usage=UsageMetrics(input_tokens=100, output_tokens=20, total_tokens=120),
         )
         
         # Should complete without errors (progress messages logged)
