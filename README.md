@@ -1,16 +1,55 @@
 # expert-among-us
 
-MCP which indexes change history, then uses secondary inference to form a queryable "expert"
+MCP which indexes commit history, then uses secondary inference to form a queryable "expert"
 
 ## Why?
 
 SDEs with practitioner-level knowledge of sprawling legacy codebases have instincts and thought processes not well represented in the final code structure. High-level documentation also fails to fully capture their experience (if such documentation even exists). A software expert's experience and instincts are often implied in their raw commit messages and code review comment discussions.
 
-Transformer LLMs are excellent at filling in the blank, even when the "blank" is a complex analysis topic. By presenting an ordered chain of sample prompt->response entries representing a human expert's knowledge, then a final prompt->[?] entry, an LLM is placed in position to impersonate the human expert in its response. In effect, the assistant becomes a trained impostor.
+### Beyond Semantic File Searches
+
+Traditional semantic code search tools focus on finding relevant files and functions based on current codebase state.
+Expert Among Us goes deeper by **indexing your repository's entire commit history**. 
+This unlocks a trove of unintended expert documentation, all written in natural language specifically to communicate intent to humans.
+By performing semantic search on commit messages alongside code diffs, Expert Among Us can:
+- Better match natural language queries to the developer's original explanation of their changes
+- Surface relevant context even when the code itself uses technical jargon or domain-specific terminology
+- Find conceptual matches (e.g., "authentication" finds commits about "login", "security", "user verification")
+- Understand intent beyond just matching function names or variable names in code
+
+This makes searches like "How do I handle authentication?" far more accurate than searching code alone, since developers naturally describe these concepts clearly in their commit messages.
+The result is key contextual insights that naive file search cannot provide:
+- **Historical Context:** Understand not just what the code does, but why decisions were made and how solutions evolved over time
+- **Hidden Insights:** Discover patterns in bug fixes, regressions, performance optimizations, and architectural changes that aren't visible in the final code
+- **Thought Processes:** Capture the reasoning behind technical decisions through commit messages and diff patterns, even when formal documentation is lacking
+- **Test Cases & Edge Cases:** Learn from past bug fixes and edge case handling that shaped the current implementation
+- **Future Plans:** Identify intended directions and planned improvements mentioned in commit messages but not yet implemented
+- **Evolution Patterns:** See how similar problems were solved across different parts of the codebase over time
+
+### Key Differences from Traditional Search Approaches
+
+| Static File Search | Traditional Semantic Search | Expert Among Us |
+|--------------------|----------------------------|-----------------|
+| Keyword/regex matching | Searches current file contents | Searches historical commit patterns |
+| Shows matching code lines | Shows what code does | Shows why and how code evolved |
+| No context understanding | Static snapshot | Temporal context and progression |
+| Fast but literal | File-level relevance | Change-level insights |
+| No semantic understanding | Limited to current codebase | Captures individual expert's style |
+| Documentation-independent | Documentation-dependent | Can generate deep documentation |
+| File paths and code only | Code semantics | Natural language text |
+| No authorship context | No authorship context | Preserves expert's decision-making patterns |
+
+### Synthetic Commit Context
+
+Not all commit messages are created equal. Fortunately, transformer LLMs are excellent at filling in the blanks. 
+When run with `--impostor` mode, Expert Among Us generates additional commit message content.
+This is presented as an ordered chain of user prompt -> assistant response entries, where the user is the generated prompts, and the real commits are the assistant responses.
+The actual user prompt is the final message. Effectively, a conversation is presented as if the LLM has authored all commits by itself. The AI becomes a trained impostor of human experts.
 
 ## Overview
 
-Expert Among Us creates a queryable "expert" from your repository's commit history using AI-powered semantic search and vector embeddings. It helps you understand development patterns, find relevant changes, and get AI-powered recommendations based on historical code changes.
+Expert Among Us creates a queryable "expert" from your repository's commit history using AI-powered semantic search and vector embeddings. 
+It helps you understand development patterns, find relevant changes, and get AI-powered recommendations based on historical code changes.
 
 ### Key Capabilities
 
@@ -19,12 +58,7 @@ Expert Among Us creates a queryable "expert" from your repository's commit histo
 - **Vector Embeddings**: Supports local (GPU-accelerated) or cloud (AWS Bedrock) embedding models
 - **Flexible Filtering**: Search by author, files, or time period
 - **Version Control Support**: Works with Git repositories (Perforce support planned)
-
-## Requirements
-
-- **Python**: 3.12 or higher
-- **Git**: For repository access
-- **uv**: Package manager (>=0.1)
+- **Commit Enhancement**: Optionally adds LLM-generated analysis of a commit to its context
 
 ## Installation
 
@@ -130,7 +164,7 @@ Find commits similar to your query:
 ./run.sh query /path/to/repo MyExpert "Bug fix for memory leak" \
     --users john,jane \
     --files src/main.py,src/utils.py \
-    --max-changes 15
+    --max-changes 20
 
 # Save results to JSON
 ./run.sh query /path/to/repo MyExpert "API endpoint implementation" \
@@ -155,9 +189,9 @@ Get AI-powered recommendations that impersonate the expert based on their histor
     --users alice,bob \
     --files src/handlers/
 
-# With Among Us mode (the expert is an impostor)
+# With improved commit message context
 ./run.sh prompt /path/to/repo MyExpert "Add caching" \
-    --amogus
+    --impostor
 
 # With debug logging to inspect API calls
 ./run.sh --debug prompt /path/to/repo MyExpert "Optimize queries"
@@ -271,11 +305,14 @@ The system uses relevant past commits as examples to generate responses that mat
 - `PROMPT`: Question or task description for the AI
 
 **Options:**
-- `--max-changes INTEGER`: Maximum context changes to use (default: 10)
+- `--max-changes INTEGER`: Maximum context changes to use (default: 15)
 - `--users TEXT`: Filter by commit authors (comma-separated)
 - `--files TEXT`: Filter by file paths (comma-separated)
-- `--amogus`: Enable Among Us mode (the expert is a crewmate.. or are they?)
-- `--temperature FLOAT`: LLM temperature for generation (0.0-1.0, default: 0.7), if the provider supports it
+- `--impostor`: Generates a user prompt for each commit, and places commit content in "assistant" messages
+  - Enhances lackluster commit messages by adding a feasible thought process
+  - Tricks the LLM into thinking it created all the code, but it is an AI impostor
+- `--amogus`: Enable Among Us mode (the LLM expert is your crewmate.. or are they?)
+- `--temperature FLOAT`: LLM temperature for generation (0.0-1.0, default: 0.7) -- if the provider supports it
 
 **LLM Provider Selection:**
 By default, the system auto-detects an available provider. You can explicitly specify a provider with `--llm-provider`. Each provider requires specific environment variables:
@@ -309,7 +346,11 @@ When `--debug` is enabled, all API requests and responses are logged to JSON fil
 # Using debug mode
 ./run.sh --debug prompt ~/projects/myapp "AppExpert" "Add error handling"
 
-# With Among Us mode
+# With improved commit message context
+./run.sh prompt ~/projects/myapp "AppExpert" "Add caching" \
+    --impostor
+
+# With Among Us mode (don't use)
 ./run.sh prompt ~/projects/myapp "AppExpert" "Implement authentication" \
     --amogus
 ```

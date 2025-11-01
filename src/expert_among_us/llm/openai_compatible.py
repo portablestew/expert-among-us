@@ -177,9 +177,13 @@ class OpenAICompatibleLLM(LLMProvider):
             # Combine content parts with newline separator if both present
             content = "\n\n".join(content_parts) if content_parts else ""
             
-            # Check for empty response and raise exception
+            # Check for empty response and provide specific error based on finish reason
             if not content:
-                error_msg = f"Received empty response from model {model or self.model}"
+                finish_reason = response.choices[0].finish_reason
+                if finish_reason == "length":
+                    error_msg = f"Model {model or self.model} hit token limit before generating output - try reducing input size or use a model with larger context."
+                else:
+                    error_msg = f"Received empty response from model {model or self.model} (finish_reason: {finish_reason})"
                 raise LLMError(error_msg)
             
             # Extract usage metrics

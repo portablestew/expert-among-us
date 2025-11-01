@@ -160,6 +160,7 @@ class Settings(BaseSettings):
     max_tokens_impostor: int = 8000
     max_tokens_prompt_gen: int = 1000
     max_diff_chars_for_llm: int = 80000  # Maximum diff characters to send to LLM (80KB)
+    max_diff_chars_for_promptgen: int = 8000  # Maximum diff characters for prompt generation (8KB) - much smaller to fit in small model context
     
     # Indexing
     embed_diffs: bool = True

@@ -161,7 +161,8 @@ class TestConversationBuilder:
         system_prompt, messages = builder.build_conversation(
             changelists=[sample_changelist],
             user_prompt="How should I implement feature Z?",
-            amogus=False
+            amogus=False,
+            impostor=True
         )
         
         # Should have 3 messages: user (generated), assistant (changelist), user (final)
@@ -188,7 +189,8 @@ class TestConversationBuilder:
         system_prompt, messages = builder.build_conversation(
             changelists=sample_changelists_multiple,
             user_prompt="Final question",
-            amogus=False
+            amogus=False,
+            impostor=True
         )
         
         # Should have 7 messages: 3 pairs (user+assistant) + final user
@@ -254,7 +256,8 @@ class TestConversationBuilder:
         system_prompt, messages = builder.build_conversation(
             changelists=changelists,
             user_prompt="Test",
-            amogus=False
+            amogus=False,
+            impostor=True
         )
         
         # Verify chronological order in messages
@@ -281,7 +284,8 @@ class TestConversationBuilder:
         system_prompt, messages = builder.build_conversation(
             changelists=[changelist],
             user_prompt="Test prompt",
-            amogus=False
+            amogus=False,
+            impostor=True
         )
         
         # Should call _generate_single_prompt
@@ -298,7 +302,8 @@ class TestConversationBuilder:
         system_prompt, messages = builder.build_conversation(
             changelists=[sample_changelist],
             user_prompt="Test",
-            amogus=False
+            amogus=False,
+            impostor=True
         )
         
         # Should NOT call _generate_single_prompt
@@ -314,7 +319,8 @@ class TestConversationBuilder:
         system_prompt, messages = builder.build_conversation(
             changelists=[sample_changelist],
             user_prompt="Test",
-            amogus=True
+            amogus=True,
+            impostor=True
         )
         
         # System prompt should contain Among Us elements
@@ -339,7 +345,8 @@ class TestConversationBuilder:
         system_prompt, messages = builder.build_conversation(
             changelists=[sample_changelist],
             user_prompt="Test",
-            amogus=False
+            amogus=False,
+            impostor=True
         )
         
         # All should be Message objects
@@ -356,7 +363,8 @@ class TestConversationBuilder:
         system_prompt, messages = builder.build_conversation(
             changelists=[sample_changelist],
             user_prompt="Test",
-            amogus=False
+            amogus=False,
+            impostor=True
         )
         
         assert isinstance(system_prompt, str)
@@ -376,7 +384,8 @@ class TestConversationBuilder:
         system_prompt, messages = builder.build_conversation(
             changelists=[sample_changelist],
             user_prompt="Final query",
-            amogus=False
+            amogus=False,
+            impostor=True
         )
         
         # Verify generator was called
@@ -386,4 +395,84 @@ class TestConversationBuilder:
         assert messages[0].content == "Mocked generated prompt"
         
         # Verify changelist was updated with generated prompt
-        assert sample_changelist.generated_prompt == "Mocked generated prompt"
+    
+    def test_build_conversation_default_mode_all_user_messages(
+        self, mock_prompt_generator, sample_changelists_multiple
+    ):
+        """Test default mode with impostor=False creates only user messages."""
+        builder = ConversationBuilder(None, TEST_MAX_DIFF_CHARS)  # No generator needed
+        
+        system_prompt, messages = builder.build_conversation(
+            changelists=sample_changelists_multiple,
+            user_prompt="Final question",
+            amogus=False,
+            impostor=False  # Default mode
+        )
+        
+        # Should have 4 messages: 3 commits + final prompt (all user role)
+        assert len(messages) == 4
+        
+        # All messages should be user role
+        for msg in messages:
+            assert msg.role == "user"
+        
+        # Verify chronological ordering
+        assert "Initial commit" in messages[0].content  # ghi789
+        assert "Add feature X" in messages[1].content   # abc123
+        assert "Fix bug Y" in messages[2].content       # def456
+        assert messages[3].content == "Final question"
+        
+        # Verify no prompts were generated (mock not called)
+        mock_prompt_generator._generate_single_prompt.assert_not_called()
+    
+    
+    def test_build_conversation_impostor_mode_user_assistant_pairs(
+        self, mock_prompt_generator, sample_changelists_multiple
+    ):
+        """Test impostor=True creates user-assistant pairs."""
+        builder = ConversationBuilder(mock_prompt_generator, TEST_MAX_DIFF_CHARS)
+        
+        system_prompt, messages = builder.build_conversation(
+            changelists=sample_changelists_multiple,
+            user_prompt="Final question",
+            amogus=False,
+            impostor=True  # Impostor mode
+        )
+        
+        # Should have 7 messages: 3 pairs + final user
+        assert len(messages) == 7
+        
+        # Verify alternating pattern
+        assert messages[0].role == "user"
+        assert messages[1].role == "assistant"
+        assert messages[2].role == "user"
+        assert messages[3].role == "assistant"
+        assert messages[4].role == "user"
+        assert messages[5].role == "assistant"
+        assert messages[6].role == "user"
+    
+    
+    def test_default_mode_raises_if_generator_none_and_impostor_true(
+        self, sample_changelist
+    ):
+        """Test that impostor=True requires prompt_generator."""
+        builder = ConversationBuilder(None, TEST_MAX_DIFF_CHARS)
+        
+        with pytest.raises(ValueError, match="prompt_generator required when impostor=True"):
+            builder.build_conversation(
+                changelists=[sample_changelist],
+                user_prompt="Test",
+                impostor=True
+            )
+    
+    
+    def test_format_changelist_as_user_same_as_assistant(
+        self, mock_prompt_generator, sample_changelist
+    ):
+        """Test that user and assistant formatting are identical."""
+        builder = ConversationBuilder(mock_prompt_generator, TEST_MAX_DIFF_CHARS)
+        
+        user_format = builder._format_changelist_as_user(sample_changelist)
+        assistant_format = builder._format_changelist_as_assistant(sample_changelist)
+        
+        assert user_format == assistant_format

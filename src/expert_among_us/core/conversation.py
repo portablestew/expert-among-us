@@ -5,7 +5,7 @@ as user-assistant message pairs with generated prompts and code changes. Support
 both normal mode and Among Us mode (where the AI occasionally gives bad advice).
 """
 
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from expert_among_us.models.changelist import Changelist
 from expert_among_us.llm.base import Message
 from expert_among_us.core.promptgen import PromptGenerator
@@ -15,15 +15,13 @@ from expert_among_us.utils.truncate import truncate_to_bytes
 class ConversationBuilder:
     """Builds conversation chains from changelists for LLM prompting.
     
-    Constructs a conversation by:
-    1. Creating user-assistant pairs from each changelist
-    2. Using generated prompts as user messages
-    3. Formatting changelists as assistant responses
-    4. Appending the final user prompt
-    5. Building appropriate system prompt
+    Supports two modes:
+    1. Default mode (impostor=False): All commits as user messages, no prompt generation
+    2. Impostor mode (impostor=True): User-assistant pairs with generated prompts
     
     Attributes:
-        prompt_generator: Optional PromptGenerator for creating user prompts
+        prompt_generator: Optional PromptGenerator for creating user prompts (None in default mode)
+        max_diff_chars: Maximum diff characters to include
     """
     
     # System prompt for normal mode
@@ -37,15 +35,15 @@ When appropriate, explain the side effect of observed past mistakes or anti-patt
 If the commit analysis is inconclusive or not relevant to the request, include that assessment in your response."""
     
     # System prompt for Among Us mode
-    AMOGUS_SYSTEM_PROMPT = NORMAL_SYSTEM_PROMPT + """
-Incorporate references to the game 'Among Us' in your responses. Your workplace is a dangerous spacecraft in deep space.
+    AMOGUS_SYSTEM_PROMPT = """Incorporate references to the game 'Among Us' in your responses. Your workplace is a dangerous spacecraft in deep space.
 Occasionally present advice on how to sabotage the codebase or mislead other developers, but make it tounge-in-cheek while still providing useful information."""
     
-    def __init__(self, prompt_generator: PromptGenerator, max_diff_chars: int):
-        """Initialize conversation builder with prompt generator.
+    def __init__(self, prompt_generator: Optional[PromptGenerator], max_diff_chars: int):
+        """Initialize conversation builder.
         
         Args:
-            prompt_generator: PromptGenerator for creating user prompts from diffs
+            prompt_generator: Optional PromptGenerator for creating user prompts.
+                             None when impostor=False (skip prompt generation).
             max_diff_chars: Maximum diff characters to include in conversation
         """
         self.prompt_generator = prompt_generator
@@ -56,27 +54,35 @@ Occasionally present advice on how to sabotage the codebase or mislead other dev
         changelists: List[Changelist],
         user_prompt: str,
         amogus: bool = False,
+        impostor: bool = False,
     ) -> Tuple[str, List[Message]]:
         """Build complete conversation from changelists and user prompt.
         
-        Creates a conversation by:
-        1. Sorting changelists chronologically
-        2. For each changelist:
-           - Generate user prompt (or use cached)
-           - Format changelist as assistant response
-        3. Append final user prompt
-        4. Build appropriate system prompt
+        Supports two modes:
+        
+        1. Default mode (impostor=False):
+           - Skip prompt generation
+           - All commits as user messages
+           - Faster and cheaper
+        
+        2. Impostor mode (impostor=True):
+           - Generate AI prompts for each commit
+           - Create user-assistant pairs
+           - User = generated prompt, Assistant = commit
         
         Args:
             changelists: List of changelists to include as context
             user_prompt: Final user prompt/question
             amogus: Enable Among Us mode (occasional bad advice)
+            impostor: If True, generate prompts and use user-assistant pairs.
+                     If False (default), skip prompts and use all user messages.
             
         Returns:
             Tuple of (system_prompt, messages) where messages is chronologically ordered
             
         Raises:
             ValueError: If changelists list is empty
+            ValueError: If impostor=True but prompt_generator is None
         """
         if not changelists:
             raise ValueError("Cannot build conversation with empty changelists")
@@ -87,21 +93,32 @@ Occasionally present advice on how to sabotage the codebase or mislead other dev
         # Build messages list
         messages: List[Message] = []
         
-        for changelist in sorted_changelists:
-            # Get or generate prompt for this changelist
-            if changelist.generated_prompt:
-                generated_prompt = changelist.generated_prompt
-            else:
-                # Generate using prompt generator
-                generated_prompt = self.prompt_generator._generate_single_prompt(changelist)
-                changelist.generated_prompt = generated_prompt
+        if impostor:
+            # Impostor mode: Generate prompts and create user-assistant pairs
+            if self.prompt_generator is None:
+                raise ValueError("prompt_generator required when impostor=True")
             
-            # Add user message with generated prompt
-            messages.append(Message(role="user", content=generated_prompt))
-            
-            # Add assistant message with formatted changelist
-            formatted_changelist = self._format_changelist_as_assistant(changelist)
-            messages.append(Message(role="assistant", content=formatted_changelist))
+            for changelist in sorted_changelists:
+                # Get or generate prompt for this changelist
+                if changelist.generated_prompt:
+                    generated_prompt = changelist.generated_prompt
+                else:
+                    # Generate using prompt generator
+                    generated_prompt = self.prompt_generator._generate_single_prompt(changelist)
+                    changelist.generated_prompt = generated_prompt
+                
+                # Add user message with generated prompt
+                messages.append(Message(role="user", content=generated_prompt))
+                
+                # Add assistant message with formatted changelist
+                formatted_changelist = self._format_changelist_as_assistant(changelist)
+                messages.append(Message(role="assistant", content=formatted_changelist))
+        else:
+            # Default mode: All commits as user messages, no prompts
+            for changelist in sorted_changelists:
+                # Format and add as user message
+                formatted_changelist = self._format_changelist_as_user(changelist)
+                messages.append(Message(role="user", content=formatted_changelist))
         
         # Add final user prompt
         messages.append(Message(role="user", content=user_prompt))
@@ -121,7 +138,7 @@ Occasionally present advice on how to sabotage the codebase or mislead other dev
             System prompt string
         """
         if amogus:
-            return self.AMOGUS_SYSTEM_PROMPT
+            return self.NORMAL_SYSTEM_PROMPT + "\n\n" + self.AMOGUS_SYSTEM_PROMPT
         else:
             return self.NORMAL_SYSTEM_PROMPT
     
@@ -163,3 +180,23 @@ Occasionally present advice on how to sabotage the codebase or mislead other dev
         ]
         
         return "\n".join(parts)
+    
+    def _format_changelist_as_user(self, changelist: Changelist) -> str:
+        """Format changelist as user message (default mode).
+        
+        Uses same format as assistant messages to maintain consistency:
+        ```
+        Commit: {message}
+        Files: {file1}, {file2}, ...
+        Changes:
+        {truncated diff}
+        ```
+        
+        Args:
+            changelist: Changelist to format
+            
+        Returns:
+            Formatted string for user message
+        """
+        # Reuse assistant formatting logic for consistency
+        return self._format_changelist_as_assistant(changelist)

@@ -693,7 +693,7 @@ def populate(
 @main.command()
 @click.argument("expert_name", type=str)
 @click.argument("prompt", type=str)
-@click.option("--max-changes", default=10, type=int, help="Maximum results to return")
+@click.option("--max-changes", default=15, type=int, help="Maximum results to return")
 @click.option("--users", type=str, help="Filter by authors (comma-separated)")
 @click.option("--files", type=str, help="Filter by files (comma-separated)")
 @click.option("--output", type=click.Path(path_type=Path), help="Output JSON file")
@@ -950,10 +950,12 @@ def query(
 @main.command()
 @click.argument("expert_name", type=str)
 @click.argument("prompt", type=str)
-@click.option("--max-changes", default=10, type=int, help="Maximum context changes to use")
+@click.option("--max-changes", default=15, type=int, help="Maximum context changes to use")
 @click.option("--users", type=str, help="Filter by authors (comma-separated)")
 @click.option("--files", type=str, help="Filter by files (comma-separated)")
 @click.option("--amogus", is_flag=True, help="Enable Among Us mode")
+@click.option("--impostor", is_flag=True, default=False,
+              help="Generate prompts and use user-assistant pairs (old behavior)")
 @click.option("--temperature", default=0.7, type=float, help="LLM temperature (0.0-1.0)")
 @click.pass_context
 def prompt(
@@ -964,6 +966,7 @@ def prompt(
     users: Optional[str],
     files: Optional[str],
     amogus: bool,
+    impostor: bool,
     temperature: float,
 ) -> None:
     """Get AI recommendations based on expert's historical patterns.
@@ -975,8 +978,12 @@ def prompt(
     Examples:
     
         \b
-        # Get recommendations
+        # Get recommendations (default mode - faster, cheaper)
         $ expert-among-us prompt MyExpert "How should I implement X?"
+        
+        \b
+        # Use impostor mode (generate prompts, user-assistant pairs)
+        $ expert-among-us prompt MyExpert "Implement X" --impostor
         
         \b
         # Use OpenAI LLM provider
@@ -1039,8 +1046,15 @@ def prompt(
         
         settings = Settings(**settings_kwargs)
         
+        # Auto-detect LLM provider immediately (fail fast before loading models)
+        if settings.llm_provider == "auto":
+            from expert_among_us.llm.auto_detect import detect_llm_provider
+            detected_provider = detect_llm_provider()
+            settings.llm_provider = detected_provider
+        else:
+            log_info(f"Using LLM provider: {settings.llm_provider}")
+        
         log_info("Initializing components...")
-        log_info(f"Using LLM provider: {llm_provider}")
         log_info(f"Using embedding provider: {embedding_provider}")
         if data_dir:
             log_info(f"Using data directory: {data_dir}")
@@ -1090,19 +1104,23 @@ def prompt(
         # Step 6: Initialize LLM
         llm = create_llm_provider(settings, debug=debug)
         
-        # Step 7: Generate prompts for changelists (with progress)
-        prompt_gen = PromptGenerator(
-            llm_provider=llm,
-            metadata_db=metadata_db,
-            model=settings.promptgen_model,
-            max_diff_chars=settings.max_diff_chars_for_llm
-        )
-        
-        # Extract changelists from search results
+        # Step 7: Optionally generate prompts for changelists
         changelists = [result.changelist for result in search_results]
         
-        # Generate prompts using the PromptGenerator method (includes progress bar and cache logging)
-        prompt_results = prompt_gen.generate_prompts(changelists)
+        if impostor:
+            log_info("Impostor mode: Generating prompts for historical commits...")
+            prompt_gen = PromptGenerator(
+                llm_provider=llm,
+                metadata_db=metadata_db,
+                model=settings.promptgen_model,
+                max_diff_chars=settings.max_diff_chars_for_promptgen
+            )
+            
+            # Generate prompts using the PromptGenerator method
+            prompt_results = prompt_gen.generate_prompts(changelists)
+        else:
+            log_info("Default mode: Skipping prompt generation...")
+            prompt_gen = None
         
         # Step 8: Build conversation
         log_info("Building conversation context...")
@@ -1113,7 +1131,8 @@ def prompt(
         system_prompt, messages = conv_builder.build_conversation(
             changelists=changelists,
             user_prompt=prompt,
-            amogus=amogus
+            amogus=amogus,
+            impostor=impostor
         )
         
         log_info(f"Using {len(changelists)} examples for context")
