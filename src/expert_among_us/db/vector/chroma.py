@@ -1,12 +1,8 @@
 import os
 import chromadb
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 from expert_among_us.db.vector.base import VectorDB, VectorSearchResult
-
-# Completely disable ChromaDB telemetry via environment variable
-os.environ["ANONYMIZED_TELEMETRY"] = "False"
-os.environ["CHROMA_TELEMETRY"] = "0"
 
 class ChromaVectorDB(VectorDB):
     def __init__(self, expert_name: str, data_dir: Optional[Path] = None):
@@ -32,6 +28,7 @@ class ChromaVectorDB(VectorDB):
                     f"Expert database '{self.expert_name}' does not exist. "
                     f"Please run 'populate' command first to create the expert index."
                 )
+            
             self.client = chromadb.PersistentClient(
                 path=str(self.storage_path),
                 settings=chromadb.Settings(anonymized_telemetry=False)

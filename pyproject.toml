@@ -30,6 +30,7 @@ dependencies = [
     "torchaudio>=2.0.0",
     # Databases
     "chromadb>=0.4,<0.5",
+    "posthog>=2.4.0,<6.0.0",  # Pin posthog <6.0.0 for ChromaDB compatibility (v6+ breaks capture() API)
     "numpy>=1.22,<2.0",  # Pin numpy < 2.0 for ChromaDB compatibility
     # UV
     "uv>=0.1,<1.0",
