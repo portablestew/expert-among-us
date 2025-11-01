@@ -66,7 +66,7 @@ class Settings(BaseSettings):
     
     # Provider settings
     embedding_provider: str = "local"  # "local" or "bedrock"
-    llm_provider: Optional[str] = None  # "openai", "openrouter", "ollama", "bedrock", "claude-code"
+    llm_provider: str = "auto"  # "auto", "openai", "openrouter", "ollama", "bedrock", "claude-code"
     base_url_override: Optional[str] = None  # Override base URL for OpenAI-compatible providers
     
     # LLM provider settings
@@ -153,9 +153,10 @@ class Settings(BaseSettings):
     bedrock_embedding_max_tokens: int = TITAN_MAX_EMBEDDING_TOKENS
     
     # Limits
-    max_commits: int = 10000
-    max_diff_size_bytes: int = 100000
-    max_embedding_text_size_bytes: int = 30000
+    max_commits: int = 50000
+    max_metadata_embedding_size_bytes: int = 20000  # Maximum bytes for metadata embeddings (20KB)
+    max_embedding_text_size_bytes: int = 100000  # Maximum bytes for diff before chunking (100KB)
+    diff_chunk_size_bytes: int = 8192  # Chunk size for diff embeddings (8KB)
     max_tokens_impostor: int = 8000
     max_tokens_prompt_gen: int = 1000
     max_diff_chars_for_llm: int = 80000  # Maximum diff characters to send to LLM (80KB)

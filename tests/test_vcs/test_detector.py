@@ -70,18 +70,18 @@ class TestVCSDetection:
         """Verify that detected Git VCS is of correct type."""
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_path = Path(tmpdir)
-            
+
             subprocess.run(
                 ["git", "init"],
                 cwd=repo_path,
                 capture_output=True,
                 check=True
             )
-            
+
             vcs = detect_vcs(str(repo_path))
-            
+
             # Verify it's a Git instance with expected methods
-            assert hasattr(vcs, 'get_commits')
+            assert hasattr(vcs, 'get_commits_page')
             assert hasattr(vcs, 'get_latest_commit_time')
             assert hasattr(vcs, 'detect')
 
@@ -197,7 +197,12 @@ class TestVCSProviderIntegration:
             )
             
             vcs = detect_vcs(str(repo_path))
-            commits = vcs.get_commits(str(repo_path))
+            commits = vcs.get_commits_page(
+                workspace_path=str(repo_path),
+                subdirs=None,
+                page_size=10,
+                since_hash=None
+            )
             
             assert len(commits) > 0
 
@@ -428,10 +433,11 @@ class TestVCSProviderInterface:
             )
             
             vcs = detect_vcs(str(repo_path))
-            
+
             # Verify required methods exist
-            assert hasattr(vcs, 'get_commits')
-            assert callable(vcs.get_commits)
+            assert hasattr(vcs, 'get_commits_page')
+            assert callable(vcs.get_commits_page)
+            assert callable(vcs.get_commits_page_before)
             assert hasattr(vcs, 'get_latest_commit_time')
             assert callable(vcs.get_latest_commit_time)
 

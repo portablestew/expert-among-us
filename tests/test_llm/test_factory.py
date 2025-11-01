@@ -14,14 +14,14 @@ from expert_among_us.config.settings import Settings
 
 @pytest.fixture
 def base_settings():
-    """Create base settings with no provider configured."""
+    """Create base settings with auto provider (default)."""
     settings = Settings(
         expert_model="gpt-4",
         openai_api_key=None,
         openrouter_api_key=None,
         local_llm_base_url=None,
         aws_profile=None,
-        llm_provider=None
+        llm_provider="auto"  # Changed to auto (new default)
     )
     return settings
 
@@ -285,11 +285,66 @@ class TestClaudeCodeConfiguration:
         assert "Claude Code CLI not found" in error_msg
         assert "claude" in error_msg
     
+class TestAutoDetection:
+    """Tests for auto provider detection."""
+    
+    @patch("expert_among_us.llm.auto_detect.detect_llm_provider")
+    @patch("expert_among_us.llm.factory.OpenAICompatibleLLM")
+    def test_factory_with_auto_detects_openai(self, mock_openai, mock_detect, base_settings):
+        """Test factory auto-detects OpenAI provider."""
+        base_settings.llm_provider = "auto"
+        base_settings.openai_api_key = "sk-test"
+        mock_detect.return_value = "openai"
+        
+        provider = create_llm_provider(base_settings)
+        
+        mock_detect.assert_called_once()
+        mock_openai.assert_called_once()
+        assert provider == mock_openai.return_value
+    
+    @patch("expert_among_us.llm.auto_detect.detect_llm_provider")
+    @patch("expert_among_us.llm.factory.BedrockLLM")
+    def test_factory_with_auto_detects_bedrock(self, mock_bedrock, mock_detect, base_settings):
+        """Test factory auto-detects Bedrock provider."""
+        base_settings.llm_provider = "auto"
+        base_settings.aws_region = "us-west-2"
+        mock_detect.return_value = "bedrock"
+        
+        provider = create_llm_provider(base_settings)
+        
+        mock_detect.assert_called_once()
+        mock_bedrock.assert_called_once()
+        assert provider == mock_bedrock.return_value
+    
+    @patch("expert_among_us.llm.auto_detect.detect_llm_provider")
+    def test_factory_with_auto_propagates_detection_errors(self, mock_detect, base_settings):
+        """Test factory propagates errors from auto-detection."""
+        base_settings.llm_provider = "auto"
+        mock_detect.side_effect = ValueError("No LLM provider detected")
+        
+        with pytest.raises(ValueError) as exc_info:
+            create_llm_provider(base_settings)
+        
+        assert "No LLM provider detected" in str(exc_info.value)
+    
+    @patch("expert_among_us.llm.auto_detect.detect_llm_provider")
+    def test_factory_with_auto_propagates_multiple_providers_error(self, mock_detect, base_settings):
+        """Test factory propagates multiple providers error from auto-detection."""
+        base_settings.llm_provider = "auto"
+        mock_detect.side_effect = ValueError("Multiple LLM providers detected: openai, bedrock")
+        
+        with pytest.raises(ValueError) as exc_info:
+            create_llm_provider(base_settings)
+        
+        error_msg = str(exc_info.value)
+        assert "Multiple LLM providers detected" in error_msg
+
+
 class TestErrorCases:
     """Tests for error handling with explicit provider selection."""
     
     def test_factory_raises_error_when_no_provider_specified(self, base_settings):
-        """Test factory raises ValueError when no provider is specified."""
+        """Test factory raises ValueError when provider is explicitly set to None."""
         base_settings.llm_provider = None
         
         with pytest.raises(ValueError) as exc_info:
@@ -298,6 +353,7 @@ class TestErrorCases:
         error_msg = str(exc_info.value)
         assert "No LLM provider specified" in error_msg
         assert "--llm-provider" in error_msg
+        assert "auto" in error_msg
         assert "openai" in error_msg
         assert "openrouter" in error_msg
         assert "ollama" in error_msg

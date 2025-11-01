@@ -86,8 +86,7 @@ def test_expert_config_defaults():
         
         assert config.vcs_type == "git"
         assert config.max_commits == 10000
-        assert config.max_diff_size == 100000
-        assert config.max_embedding_text_size == 30000
+        assert config.max_embedding_text_size == 100000
         assert config.embed_diffs is True
         assert config.embed_metadata is True
         assert config.subdirs == []

@@ -24,8 +24,9 @@ class ExpertConfig(BaseModel):
         last_indexed_at: Last successful index time
         last_commit_time: Most recent commit indexed
         max_commits: Maximum commits to index
-        max_diff_size: Maximum diff size in bytes (100KB default)
-        max_embedding_text_size: Maximum text per embedding (~8K tokens, 30KB default)
+        max_metadata_embedding_size: Maximum bytes for metadata embeddings (20KB default)
+        max_embedding_text_size: Maximum bytes for diff before chunking (100KB default)
+        diff_chunk_size_bytes: Chunk size for diff embeddings (8KB default)
         embed_diffs: Whether to create diff embeddings
         embed_metadata: Whether to create metadata embeddings
     """
@@ -52,14 +53,26 @@ class ExpertConfig(BaseModel):
     last_commit_time: Optional[datetime] = Field(
         None, description="Most recent commit indexed"
     )
+    last_commit_hash: Optional[str] = Field(
+        None, description="Hash of the most recent commit indexed"
+    )
+    first_commit_time: Optional[datetime] = Field(
+        None, description="Oldest commit indexed"
+    )
+    first_commit_hash: Optional[str] = Field(
+        None, description="Hash of the oldest commit indexed"
+    )
     max_commits: int = Field(
         default=10000, ge=1, description="Max commits to index"
     )
-    max_diff_size: int = Field(
-        default=100000, ge=1, description="Max diff size in bytes (100KB)"
+    max_metadata_embedding_size: int = Field(
+        default=20000, ge=1, description="Max bytes for metadata embeddings (20KB)"
     )
     max_embedding_text_size: int = Field(
-        default=30000, ge=1, description="Max text per embedding (~8K tokens)"
+        default=100000, ge=1, description="Max bytes for diff before chunking (100KB)"
+    )
+    diff_chunk_size_bytes: int = Field(
+        default=8192, ge=1, description="Chunk size for diff embeddings (8KB)"
     )
     embed_diffs: bool = Field(
         default=True, description="Whether to create diff embeddings"

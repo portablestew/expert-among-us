@@ -55,7 +55,8 @@ echo ""
 source .venv/bin/activate
 
 echo "Installing PyTorch with CUDA support..."
-uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+uv pip uninstall torch torchvision torchaudio
+uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
 
 echo ""
 echo "Verifying GPU detection..."

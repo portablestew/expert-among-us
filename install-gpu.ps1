@@ -96,7 +96,8 @@ if (-not (Test-Path $activateScript)) {
 # Run activation and PyTorch installation in the same context
 try {
     Write-Host "Installing PyTorch with CUDA support..." -ForegroundColor Yellow
-    & uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+    & uv pip uninstall torch torchvision torchaudio
+    & uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
     if ($LASTEXITCODE -ne 0) {
         throw "PyTorch installation failed"
     }

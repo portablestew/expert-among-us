@@ -1,17 +1,19 @@
 from .base import Embedder
 from typing import List
 from ..utils.debug import DebugLogger
+from ..utils.symbols import SYMBOLS
 
 
 class JinaCodeEmbedder(Embedder):
     """Local embeddings using Jina Code model with code2code task."""
     
-    def __init__(self, model_id: str, dimension: int = 512):
+    def __init__(self, model_id: str, dimension: int = 512, compile_model: bool = True):
         """Initialize the Jina Code embedder.
         
         Args:
             model_id: Hugging Face model identifier
             dimension: Target dimension for Matryoshka truncation
+            compile_model: Whether to use torch.compile for optimization (default: True)
         """
         # Log loading message in debug mode
         if DebugLogger.is_enabled():
@@ -37,7 +39,7 @@ class JinaCodeEmbedder(Embedder):
         
         # Detailed GPU diagnostics
         if not cuda_available:
-            print("⚠️  GPU not detected - using CPU")
+            print(f"{SYMBOLS['warning']}  GPU not detected - using CPU")
             print(f"   PyTorch version: {torch.__version__}")
             print(f"   CUDA available: {cuda_available}")
             print(f"   CUDA built: {torch.version.cuda if hasattr(torch.version, 'cuda') else 'N/A'}")
@@ -45,8 +47,7 @@ class JinaCodeEmbedder(Embedder):
                 print(f"   GPU count: {torch.cuda.device_count()}")
             print("\n   To enable GPU (run after uv sync):")
             print("   1. Check NVIDIA drivers: nvidia-smi")
-            print("   2. Install PyTorch with CUDA:")
-            print("      uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118")
+            print("   2. Install PyTorch with CUDA: ./install-gpu.sh or ./install-gpu.ps1")
             print("   3. Restart your terminal or reactivate venv")
             print()
         
@@ -58,23 +59,28 @@ class JinaCodeEmbedder(Embedder):
             model_kwargs={'dtype': torch.float16}
         )
         
-        # Compile model for faster inference (PyTorch 2.0+)
-        try:
-            self.model = torch.compile(self.model)
-            compilation_enabled = True
-        except Exception as e:
-            # torch.compile may not be available or may fail
-            compilation_enabled = False
+        # Compile model for faster inference (PyTorch 2.0+) if enabled
+        compilation_enabled = False
+        if compile_model:
+            try:
+                self.model = torch.compile(self.model)
+                compilation_enabled = True
+            except Exception as e:
+                # torch.compile may not be available or may fail
+                if DebugLogger.is_enabled():
+                    print(f"[DEBUG] torch.compile not available or failed: {e}")
+        else:
             if DebugLogger.is_enabled():
-                print(f"[DEBUG] torch.compile not available or failed: {e}")
+                print("[DEBUG] torch.compile disabled by user")
         
         # Log device being used
         if self.device == "cuda":
             device_name = torch.cuda.get_device_name(0)
-            print(f"✓ Local embeddings using GPU: {device_name}")
+            compile_status = " (compiled)" if compilation_enabled else " (not compiled)"
+            print(f"{SYMBOLS['success']} Local embeddings using GPU: {device_name}{compile_status}")
         else:
-            print(f"ℹ Local embeddings using CPU (this will be slower)")
-            print(f"ℹ Using fp16 precision (auto-casts on CPU)")
+            print(f"{SYMBOLS['info']} Local embeddings using CPU (this will be slower)")
+            print(f"{SYMBOLS['info']} Using fp16 precision (auto-casts on CPU)")
         
         # Store torch reference for later use
         self.torch = torch
@@ -165,13 +171,13 @@ class JinaCodeEmbedder(Embedder):
             )
         
         # Generate embeddings in batch with no_grad to prevent gradient accumulation
-        # Use larger batch_size (64) for better GPU utilization
+        # Use larger batch_size for more GPU utilization
         with self.torch.no_grad():
             embeddings = self.model.encode(
                 prefixed_texts,
                 convert_to_numpy=True,
                 show_progress_bar=False,
-                batch_size=64
+                batch_size=12
             )
         
         # Truncate to target dimension (Matryoshka) and convert to lists

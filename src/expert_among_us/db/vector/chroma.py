@@ -153,15 +153,15 @@ class ChromaVectorDB(VectorDB):
             
         Returns:
             List of VectorSearchResult objects with diff embeddings only,
-            with changelist_id having the '_diff' suffix removed
+            with changelist_id having the '_diff' suffix removed and chroma_id preserved
         """
         self._ensure_client(require_exists=True)
         if not self.collection:
             raise RuntimeError("Collection not initialized. Call initialize() first.")
         
-        # Request more results to account for filtering
+        # Request more results to account for filtering and multiple chunks per commit
         # We need to fetch enough to get top_k diff results after filtering out metadata
-        fetch_count = top_k * 2
+        fetch_count = top_k * 5
         
         results = self.collection.query(
             query_embeddings=[query_vector],
@@ -173,20 +173,27 @@ class ChromaVectorDB(VectorDB):
             for i in range(len(results['ids'][0])):
                 result_id = results['ids'][0][i]
                 
-                # Filter: only include IDs that end with '_diff'
-                if not result_id.endswith('_diff'):
+                # Filter: include IDs ending with '_diff' or containing '_diff_chunk_'
+                is_diff = result_id.endswith('_diff')
+                is_chunk = '_diff_chunk_' in result_id
+                
+                if not (is_diff or is_chunk):
                     continue
                 
                 # Convert distance to similarity score
                 distance = results['distances'][0][i] if results['distances'] else 0.0
                 similarity = max(0.0, min(1.0, 1.0 - distance))
                 
-                # Strip the '_diff' suffix to get the changelist_id
-                changelist_id = result_id[:-5]  # Remove '_diff' (5 characters)
+                # Extract changelist_id from chunk IDs
+                if is_chunk:
+                    changelist_id = result_id.split('_diff_chunk_')[0]
+                else:
+                    changelist_id = result_id[:-5]  # Remove '_diff'
                 
                 vector_results.append(VectorSearchResult(
                     changelist_id=changelist_id,
-                    similarity_score=similarity
+                    similarity_score=similarity,
+                    chroma_id=result_id  # Preserve full ChromaDB ID for debugging
                 ))
                 
                 # Stop once we have enough diff results

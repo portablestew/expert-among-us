@@ -26,6 +26,8 @@ dependencies = [
     # Embeddings
     "sentence-transformers>=2.2.0",
     "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "torchaudio>=2.0.0",
     # Databases
     "chromadb>=0.4,<0.5",
     "numpy>=1.22,<2.0",  # Pin numpy < 2.0 for ChromaDB compatibility
@@ -34,6 +36,7 @@ dependencies = [
     # Utilities
     "python-dateutil>=2.8,<3.0",
     "pyyaml>=6.0,<7.0",
+    "httpx>=0.27,<1.0",  # For Ollama health check
 ]
 
 [project.optional-dependencies]

@@ -54,7 +54,9 @@ class SQLiteMetadataDB(MetadataDB):
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_indexed_at TIMESTAMP,
                 last_commit_time TIMESTAMP,
+                last_commit_hash TEXT,
                 first_commit_time TIMESTAMP,
+                first_commit_hash TEXT,
                 max_commits INTEGER DEFAULT 10000
             );
         """)
@@ -104,7 +106,7 @@ class SQLiteMetadataDB(MetadataDB):
         self._connect(require_exists=True)
         cursor = self.conn.cursor()
         cursor.execute("""
-            SELECT name, workspace_path, subdirs, vcs_type, last_indexed_at, last_commit_time, first_commit_time
+            SELECT name, workspace_path, subdirs, vcs_type, last_indexed_at, last_commit_time, last_commit_hash, first_commit_time, first_commit_hash
             FROM experts
             WHERE name = ?
         """, (name,))
@@ -139,7 +141,9 @@ class SQLiteMetadataDB(MetadataDB):
                 'vcs_type': row['vcs_type'],
                 'last_indexed_at': last_indexed_at,
                 'last_commit_time': last_commit_time,
-                'first_commit_time': first_commit_time
+                'last_commit_hash': row['last_commit_hash'],
+                'first_commit_time': first_commit_time,
+                'first_commit_hash': row['first_commit_hash']
             }
         return None
     
@@ -153,26 +157,26 @@ class SQLiteMetadataDB(MetadataDB):
         """, (timestamp.isoformat(), name))
         self.conn.commit()
     
-    def update_expert_last_commit(self, name: str, last_commit_time: datetime) -> None:
-        """Update the last commit time for an expert."""
+    def update_expert_last_commit(self, name: str, last_commit_time: datetime, last_commit_hash: str) -> None:
+        """Update the last commit time and hash for an expert."""
         self._connect()
         cursor = self.conn.cursor()
         cursor.execute("""
             UPDATE experts
-            SET last_commit_time = ?
+            SET last_commit_time = ?, last_commit_hash = ?
             WHERE name = ?
-        """, (last_commit_time.isoformat(), name))
+        """, (last_commit_time.isoformat(), last_commit_hash, name))
         self.conn.commit()
     
-    def update_expert_first_commit(self, name: str, first_commit_time: datetime) -> None:
-        """Update the first commit time for an expert."""
+    def update_expert_first_commit(self, name: str, first_commit_time: datetime, first_commit_hash: str) -> None:
+        """Update the first commit time and hash for an expert."""
         self._connect()
         cursor = self.conn.cursor()
         cursor.execute("""
             UPDATE experts
-            SET first_commit_time = ?
+            SET first_commit_time = ?, first_commit_hash = ?
             WHERE name = ?
-        """, (first_commit_time.isoformat(), name))
+        """, (first_commit_time.isoformat(), first_commit_hash, name))
         self.conn.commit()
         
     def insert_changelists(self, changelists: list[Changelist]) -> None:
@@ -231,6 +235,14 @@ class SQLiteMetadataDB(MetadataDB):
             # Always decompress - all diffs are stored compressed
             diff = decompress_diff(row['diff'])
             
+            # Parse files list, ensuring at least one element to satisfy validation
+            # This matches the write behavior in git.py where empty files get [""]
+            files_str = row['files']
+            if files_str:
+                files = files_str.split(',')
+            else:
+                files = [""]  # Ensure at least one file to satisfy validation
+            
             changelist = Changelist(
                 id=row['id'],
                 expert_name=row['expert_name'],
@@ -238,7 +250,7 @@ class SQLiteMetadataDB(MetadataDB):
                 author=row['author'],
                 message=row['message'],
                 diff=diff,
-                files=row['files'].split(',') if row['files'] else [],
+                files=files,
                 review_comments=row['review_comments'],
                 generated_prompt=row['generated_prompt']
             )

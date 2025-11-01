@@ -25,6 +25,7 @@ from expert_among_us.utils.progress import (
     log_error,
     log_info,
     log_success,
+    log_warning,
     create_progress_bar,
     update_progress
 )
@@ -33,12 +34,13 @@ from expert_among_us.utils.truncate import truncate_diff_for_embedding
 console = Console()
 
 
-def create_embedder(provider: str, settings: Settings):
+def create_embedder(provider: str, settings: Settings, compile_model: bool = True):
     """Factory function to create embedder based on provider.
     
     Args:
         provider: "local" for Jina Code embeddings or "bedrock" for AWS Titan
         settings: Settings instance with configuration
+        compile_model: Whether to use torch.compile for local embedder (default: True)
         
     Returns:
         Embedder instance
@@ -47,7 +49,8 @@ def create_embedder(provider: str, settings: Settings):
         from expert_among_us.embeddings.local import JinaCodeEmbedder
         return JinaCodeEmbedder(
             model_id=settings.local_embedding_model,
-            dimension=settings.local_embedding_dimension
+            dimension=settings.local_embedding_dimension,
+            compile_model=compile_model
         )
     elif provider == "bedrock":
         return BedrockEmbedder(model_id=settings.embedding_model)
@@ -61,7 +64,8 @@ def _process_changelist_batch(
     embedder,
     metadata_db,
     vector_db,
-    max_embedding_tokens: int
+    max_embedding_tokens: int,
+    debug: bool = False
 ) -> None:
     """Helper function to process a batch of changelists: generate embeddings and store.
     
@@ -72,6 +76,7 @@ def _process_changelist_batch(
         metadata_db: Metadata database instance
         vector_db: Vector database instance
         max_embedding_tokens: Maximum tokens for embedding
+        debug: Enable debug logging
     """
     if not changelists:
         return
@@ -87,7 +92,7 @@ def _process_changelist_batch(
             metadata_text = changelist.get_metadata_text()
             metadata_text_truncated, _ = truncate_diff_for_embedding(
                 metadata_text,
-                max_bytes=expert_config.max_embedding_text_size,
+                max_bytes=expert_config.max_metadata_embedding_size,
                 max_tokens=max_embedding_tokens
             )
             metadata_texts.append(metadata_text_truncated)
@@ -104,16 +109,44 @@ def _process_changelist_batch(
     
     # Generate metadata embeddings in batch
     if metadata_texts and expert_config.embed_metadata:
+        metadata_start = time.perf_counter()
         metadata_embeddings = embedder.embed_batch(metadata_texts)
+        metadata_embed_time = time.perf_counter() - metadata_start
+        if debug:
+            total_metadata_bytes = sum(len(text.encode('utf-8')) for text in metadata_texts)
+            log_info(f"[DEBUG] Metadata embedding took {metadata_embed_time:.3f}s for {len(metadata_texts)} items ({total_metadata_bytes:,} bytes total)")
         for i, embedding in enumerate(metadata_embeddings):
             changelists[i].metadata_embedding = embedding
     
-    # Generate diff embeddings in batch
+    # Generate diff embeddings in batch (WITH CHUNKING)
     if diff_texts and expert_config.embed_diffs:
-        diff_embeddings = embedder.embed_batch(diff_texts)
-        for i, embedding in enumerate(diff_embeddings):
+        from expert_among_us.utils.chunking import chunk_text
+        
+        # Collect all chunks from all diffs
+        all_chunks = []
+        chunk_metadata = []  # (changelist_id, chunk_index)
+        
+        for i, diff_text in enumerate(diff_texts):
             changelist_idx = diff_indices[i]
-            changelists[changelist_idx].diff_embedding = embedding
+            changelist = changelists[changelist_idx]
+            
+            # Split diff into chunks
+            chunks = chunk_text(diff_text, chunk_size=expert_config.diff_chunk_size_bytes)
+            
+            for chunk_idx, chunk in enumerate(chunks):
+                all_chunks.append(chunk)
+                chunk_metadata.append((changelist.id, chunk_idx))
+        
+        # Embed all chunks in one batch
+        diff_start = time.perf_counter()
+        chunk_embeddings = embedder.embed_batch(all_chunks)
+        diff_embed_time = time.perf_counter() - diff_start
+        
+        if debug:
+            total_bytes = sum(len(c.encode('utf-8')) for c in all_chunks)
+            log_info(f"[DEBUG] Chunked diff embedding: {len(all_chunks)} chunks "
+                    f"from {len(diff_texts)} diffs in {diff_embed_time:.3f}s "
+                    f"({total_bytes:,} bytes total)")
     
     # Clear GPU cache after batch processing
     if hasattr(embedder, 'device') and embedder.device == "cuda" and hasattr(embedder, 'torch'):
@@ -134,14 +167,253 @@ def _process_changelist_batch(
     
     if metadata_vectors:
         vector_db.insert_vectors(metadata_vectors)
-    if diff_vectors:
-        vector_db.insert_vectors(diff_vectors)
+    
+    # Store chunk embeddings with IDs like {commit_id}_diff_chunk_0
+    if expert_config.embed_diffs and 'chunk_embeddings' in locals():
+        chunk_vectors = [
+            (f"{chunk_metadata[i][0]}_diff_chunk_{chunk_metadata[i][1]}", emb)
+            for i, emb in enumerate(chunk_embeddings)
+        ]
+        if chunk_vectors:
+            vector_db.insert_vectors(chunk_vectors)
+
+
+def _process_commits_incrementally(
+    vcs_provider,
+    workspace_path: str,
+    subdirs_list: Optional[list[str]],
+    batch_size: int,
+    expert_config,
+    embedder,
+    metadata_db,
+    vector_db,
+    max_embedding_tokens: int,
+    is_newer: bool,
+    boundary_hash: Optional[str],
+    max_commits: int,
+    track_both_boundaries: bool = False,
+    debug: bool = False,
+) -> tuple[int, Optional[datetime], Optional[str], Optional[datetime], Optional[str]]:
+    """Process commits incrementally using topological traversal.
+    
+    Uses Git's default topological ordering with --no-merges to traverse all non-merge commits:
+    - Phase 1 (newer): Moves boundary forward from last_commit_hash toward HEAD
+    - Phase 2 (older): Moves boundary backward from first_commit_hash toward repo root
+    
+    After each batch, the boundary is updated based on Git's topological ordering (parent-child relationships).
+    
+    Args:
+        vcs_provider: VCS provider instance
+        workspace_path: Path to repository
+        subdirs_list: Optional list of subdirectories to filter
+        batch_size: Maximum commits per batch (also triggers embedding)
+        expert_config: Expert configuration
+        embedder: Embedder instance
+        metadata_db: Metadata database instance
+        vector_db: Vector database instance
+        max_embedding_tokens: Maximum tokens for embedding
+        is_newer: True for newer commits (after boundary), False for older (before boundary)
+        boundary_hash: The boundary commit hash (last_commit_hash or first_commit_hash)
+        max_commits: Maximum total commits to process
+        track_both_boundaries: If True, track both boundaries (for initial indexing)
+        
+    Returns:
+        Tuple of (total_processed, new_boundary_time, new_boundary_hash, optional_second_boundary_time, optional_second_boundary_hash)
+    """
+    total_processed = 0
+    new_boundary_time = None
+    new_boundary_hash = boundary_hash
+    second_boundary_time = None
+    second_boundary_hash = None
+    
+    # Track if we've set the last_commit during initial indexing
+    last_commit_set = False
+    
+    # Moving boundary: updated after each batch to track progress
+    current_boundary_hash = boundary_hash
+    current_boundary_time = None
+    
+    # Cycle detection: track recent boundaries to detect infinite loops
+    boundary_history = []
+    max_boundary_history = 10
+    
+    # Counter for display purposes
+    total_examined = 0
+    
+    while total_processed < max_commits:
+        # Fetch one page of commits using the moving boundary
+        # Boundary advances after each batch for continuous pagination
+        print(f"\r{total_examined} commits - paging...    {current_boundary_time if current_boundary_time else ''}", end='', flush=True)
+        if is_newer:
+            if current_boundary_hash is None:
+                # Initial indexing - fetch recent commits
+                page = vcs_provider.get_commits_page(
+                    workspace_path=workspace_path,
+                    subdirs=subdirs_list,
+                    page_size=batch_size,
+                    since_hash=None,
+                    debug=debug
+                )
+            else:
+                # Fetch newer commits after current boundary
+                page = vcs_provider.get_commits_page(
+                    workspace_path=workspace_path,
+                    subdirs=subdirs_list,
+                    page_size=batch_size,
+                    since_hash=current_boundary_hash,
+                    debug=debug
+                )
+        else:
+            # Fetch older commits before current boundary
+            page = vcs_provider.get_commits_page_before(
+                workspace_path=workspace_path,
+                subdirs=subdirs_list,
+                page_size=batch_size,
+                before_hash=current_boundary_hash,
+                debug=debug
+            )
+        
+        # If no more commits, we're done
+        if not page:
+            print()  # Newline after progress
+            break
+        
+        # Filter out already-indexed commits
+        new_commits = []
+        for changelist in page:
+            total_examined += 1
+            print(f"\r{total_examined} commits - fetching...  {changelist.timestamp}", end='', flush=True)
+            
+            existing = metadata_db.get_changelist(changelist.id)
+            if existing:
+                if debug:
+                    log_info(f"\n[DEBUG] Found existing commit {changelist.id[:8]} at {changelist.timestamp}")
+                # Skip already-indexed commits
+                continue
+            
+            new_commits.append(changelist)
+        
+        # If no new commits in this page, advance the boundary and continue
+        # This handles cases where merge commits pull in already-indexed commits
+        if not new_commits:
+            # Update boundary to skip past these already-indexed commits
+            if page:
+                # Use the first commit in the page to advance the boundary
+                # Phase 1: page[0] is newest (git log returns newest-first)
+                # Phase 2: page[0] is oldest (git log --reverse returns oldest-first)
+                last_commit = page[0]
+                current_boundary_hash = last_commit.id
+                current_boundary_time = last_commit.timestamp
+                
+                # Check for boundary cycles (indicates we're stuck between branches)
+                if current_boundary_hash in boundary_history:
+                    if debug:
+                        log_info(f"\n[DEBUG] Cycle detected: {current_boundary_hash[:8]} seen before in boundary history")
+                        log_info(f"[DEBUG] Boundary history: {[h[:8] for h in boundary_history]}")
+                    print()  # Newline after progress
+                    break  # Exit the loop to prevent infinite cycling
+                
+                # Add to boundary history (ring buffer)
+                boundary_history.append(current_boundary_hash)
+                if len(boundary_history) > max_boundary_history:
+                    boundary_history.pop(0)  # Remove oldest entry
+                
+                if debug:
+                    direction = "forward" if is_newer else "backward"
+                    phase = "Phase 1" if is_newer else "Phase 2"
+                    commit_info = f"{current_boundary_hash[:8]} (timestamp: {last_commit.timestamp}, message: {last_commit.message[:50]})"
+                    log_info(f"\n[DEBUG] {phase}: All commits in batch already indexed, advancing boundary {direction} to {commit_info}")
+                continue  # Try next batch
+            else:
+                # No more commits available
+                print()  # Newline after progress
+                break
+        
+        # Embed the batch
+        print(f"\r{total_examined} commits - embedding... {current_boundary_time if current_boundary_time else ''}", end='', flush=True)
+        _process_changelist_batch(new_commits, expert_config, embedder, metadata_db, vector_db, max_embedding_tokens, debug)
+        total_processed += len(new_commits)
+        
+        # Update boundaries based on Git's topological ordering (ignoring timestamps)
+        if track_both_boundaries:
+            # Initial indexing with git log --reverse goes from HEAD backwards
+            # Batch 1 has newest commits, later batches have progressively older commits
+            
+            # Only set last_commit from FIRST batch (newest commits, closest to HEAD)
+            if new_boundary_hash is None:
+                newest_in_batch = new_commits[-1]
+                new_boundary_time = newest_in_batch.timestamp
+                new_boundary_hash = newest_in_batch.id
+                last_commit_set = True  # Mark that we've set it
+            
+            # Update first_commit with EVERY batch (tracks oldest commit seen so far)
+            oldest_in_batch = new_commits[0]
+            second_boundary_time = oldest_in_batch.timestamp
+            second_boundary_hash = oldest_in_batch.id
+        elif is_newer:
+            # Phase 1: track newest (first in list from git log, which returns newest-first)
+            newest_commit = new_commits[0]
+            new_boundary_time = newest_commit.timestamp
+            new_boundary_hash = newest_commit.id
+        else:
+            # Phase 2: track oldest (first in list from git log --reverse)
+            oldest_commit = new_commits[0]
+            new_boundary_time = oldest_commit.timestamp
+            new_boundary_hash = oldest_commit.id
+        
+        # Save boundaries incrementally for resumability
+        if new_boundary_time and new_boundary_hash:
+            if track_both_boundaries:
+                # Initial indexing: Update last_commit only on first batch, first_commit on every batch
+                if last_commit_set:
+                    metadata_db.update_expert_last_commit(expert_config.name, new_boundary_time, new_boundary_hash)
+                    if debug:
+                        log_info(f"[DEBUG] Saved last_commit: {new_boundary_hash[:8]} at {new_boundary_time}")
+                    last_commit_set = False  # Only write it once
+                if second_boundary_time and second_boundary_hash:
+                    metadata_db.update_expert_first_commit(expert_config.name, second_boundary_time, second_boundary_hash)
+                    if debug:
+                        log_info(f"[DEBUG] Saved first_commit: {second_boundary_hash[:8]} at {second_boundary_time}")
+                elif debug:
+                    log_info(f"[DEBUG] WARNING: second_boundary not set! second_time={second_boundary_time}, second_hash={second_boundary_hash}")
+            elif is_newer:
+                # Phase 1: Write new last_commit after every batch
+                metadata_db.update_expert_last_commit(expert_config.name, new_boundary_time, new_boundary_hash)
+                if debug:
+                    log_info(f"[DEBUG] Phase 1 saved last_commit: {new_boundary_hash[:8]} at {new_boundary_time}")
+            else:
+                # Phase 2: Write first_commit after every batch
+                metadata_db.update_expert_first_commit(expert_config.name, new_boundary_time, new_boundary_hash)
+                if debug:
+                    log_info(f"[DEBUG] Phase 2 saved first_commit: {new_boundary_hash[:8]} at {new_boundary_time}")
+        
+        # Update moving boundary for next iteration using raw page data (not filtered)
+        # This ensures boundary follows Git's topological order exactly
+        # Phase 1: git log returns newest-first, so use [0] for newest
+        # Phase 2: git log --reverse returns oldest-first, so use [0] for oldest
+        current_boundary_hash = page[0].id
+        current_boundary_time = page[0].timestamp
+        
+        if debug:
+            direction = "forward" if is_newer else "backward"
+            phase = "Phase 1" if is_newer else "Phase 2"
+            commit_info = f"{current_boundary_hash[:8]} (timestamp: {page[0].timestamp}, message: {page[0].message[:50]})"
+            log_info(f"[DEBUG] {phase}: Moving boundary {direction} to {commit_info}")
+        
+        print(f"\r{total_examined} commits - batch done.  ", end='', flush=True)
+        
+        # Check if we've reached max_commits
+        if total_processed >= max_commits:
+            print()  # Newline after progress
+            break
+    
+    return total_processed, new_boundary_time, new_boundary_hash, second_boundary_time, second_boundary_hash
 
 
 @click.group()
 @click.option('--debug', is_flag=True, help='Enable debug logging for all Bedrock API calls')
 @click.option('--data-dir', type=click.Path(path_type=Path), help='Base directory for expert data storage (default: ~/.expert-among-us)')
-@click.option('--llm-provider', type=click.Choice(['openai', 'openrouter', 'ollama', 'bedrock', 'claude-code']), help='LLM provider for AI recommendations (required for prompt command)')
+@click.option('--llm-provider', type=click.Choice(['auto', 'openai', 'openrouter', 'ollama', 'bedrock', 'claude-code']), default='auto', help='LLM provider for AI recommendations (auto-detects by default)')
 @click.option('--base-url-override', type=str, help='Override base URL for OpenAI-compatible providers (openai, openrouter, ollama)')
 @click.option('--embedding-provider', type=click.Choice(['local', 'bedrock']), default='local', help='Embedding provider: local=Jina Code, bedrock=AWS Titan (default: local)')
 @click.option('--expert-model', type=str, help='Override default expert model for the selected provider')
@@ -155,7 +427,8 @@ def main(ctx, debug: bool, data_dir: Optional[Path], llm_provider: str, base_url
     AI-powered recommendations based on historical development patterns.
     
     Global Options:
-        --llm-provider: Choose LLM provider (required for prompt command)
+        --llm-provider: Choose LLM provider (auto-detects by default)
+            - auto: Auto-detect available provider (default)
             - openai: OpenAI API (requires OPENAI_API_KEY)
             - openrouter: OpenRouter API (requires OPENROUTER_API_KEY)
             - ollama: Ollama LLM server (default: http://127.0.0.1:11434/v1)
@@ -186,7 +459,7 @@ def main(ctx, debug: bool, data_dir: Optional[Path], llm_provider: str, base_url
 @click.argument("subdirs", nargs=-1, type=str)
 @click.option("--max-commits", default=10000, type=int, help="Maximum commits to index")
 @click.option("--vcs-type", type=click.Choice(["git", "p4"]), default="git", help="Version control system type")
-@click.option("--batch-size", default=10, type=int, help="Number of commits to process per batch (default: 10)")
+@click.option("--batch-size", default=50, type=int, help="Maximum commits per embedding batch")
 @click.pass_context
 def populate(
     ctx,
@@ -227,9 +500,9 @@ def populate(
         # Get global options from context
         data_dir = ctx.obj.get('data_dir')
         embedding_provider = ctx.obj.get('embedding_provider')
+        debug = ctx.obj.get('debug', False)
         
         # Step 1: Initialize components and settings
-        # Only pass data_dir if it's not None to allow default_factory to work
         settings_kwargs = {'embedding_provider': embedding_provider}
         if data_dir is not None:
             settings_kwargs['data_dir'] = data_dir
@@ -241,8 +514,8 @@ def populate(
         if data_dir:
             log_info(f"Using data directory: {data_dir}")
         
-        # Initialize embedder
-        embedder = create_embedder(embedding_provider, settings)
+        # Initialize embedder (torch.compile always enabled)
+        embedder = create_embedder(embedding_provider, settings, compile_model=True)
         
         # Determine max tokens based on provider
         max_embedding_tokens = (
@@ -284,304 +557,117 @@ def populate(
         # Step 3: Check if expert already exists and get commit time boundaries
         existing_expert = metadata_db.get_expert(expert_name)
         last_commit_time = None
+        last_commit_hash = None
         first_commit_time = None
+        first_commit_hash = None
         
         if existing_expert:
             log_info(f"Updating existing expert '{expert_name}'")
             last_commit_time = existing_expert.get('last_commit_time')
+            last_commit_hash = existing_expert.get('last_commit_hash')
             first_commit_time = existing_expert.get('first_commit_time')
+            first_commit_hash = existing_expert.get('first_commit_hash')
             if last_commit_time:
-                log_info(f"Last indexed commit: {last_commit_time}")
+                hash_display = f" ({last_commit_hash[:8]})" if last_commit_hash else ""
+                log_info(f"Last indexed commit: {last_commit_time}{hash_display}")
             if first_commit_time:
-                log_info(f"First indexed commit: {first_commit_time}")
+                hash_display = f" ({first_commit_hash[:8]})" if first_commit_hash else ""
+                log_info(f"First indexed commit: {first_commit_time}{hash_display}")
         else:
             log_info(f"Creating new expert '{expert_name}'")
-            # Store initial expert configuration
             metadata_db.create_expert(expert_config.name, str(expert_config.workspace_path), expert_config.subdirs, expert_config.vcs_type)
         
         subdirs_list = list(subdirs) if subdirs else None
         total_processed = 0
         
-        # Step 4: Phase 1 - Process newer commits (if last_commit_time exists)
-        if last_commit_time is not None:
+        # Step 4: Phase 1 - Process newer commits (if last_commit_hash exists)
+        if last_commit_hash is not None:
             log_info("Phase 1: Processing newer commits...")
             
-            newer_changelists = vcs_provider.get_commits(
+            phase1_processed, new_last_time, new_last_hash, _, _ = _process_commits_incrementally(
+                vcs_provider=vcs_provider,
                 workspace_path=str(workspace),
-                subdirs=subdirs_list,
+                subdirs_list=subdirs_list,
+                batch_size=batch_size,
+                expert_config=expert_config,
+                embedder=embedder,
+                metadata_db=metadata_db,
+                vector_db=vector_db,
+                max_embedding_tokens=max_embedding_tokens,
+                is_newer=True,
+                boundary_hash=last_commit_hash,
                 max_commits=max_commits,
-                since=last_commit_time
+                track_both_boundaries=False,
+                debug=debug
             )
             
-            if newer_changelists:
-                log_success(f"Found {len(newer_changelists)} newer commits to process")
-                
-                progress, task_id = create_progress_bar(
-                    description="Processing newer commits",
-                    total=len(newer_changelists)
-                )
-                progress.start()
-                
-                # Track the maximum (newest) timestamp processed so far
-                current_max_timestamp = last_commit_time
-                
-                # Batch processing
-                batch = []
-                
-                try:
-                    for changelist in newer_changelists:
-                        # Skip if already processed (handles interrupted runs)
-                        existing = metadata_db.get_changelist(changelist.id)
-                        if existing:
-                            # Still update timestamp to advance past this commit
-                            if changelist.timestamp > current_max_timestamp:
-                                current_max_timestamp = changelist.timestamp
-                                metadata_db.update_expert_last_commit(expert_config.name, current_max_timestamp)
-                            update_progress(
-                                progress,
-                                task_id,
-                                advance=1,
-                                description=f"Skipping {changelist.id[:12]}..."
-                            )
-                            continue
-                        
-                        # Add to batch
-                        batch.append(changelist)
-                        
-                        # Process batch when it reaches batch_size
-                        if len(batch) >= batch_size:
-                            _process_changelist_batch(batch, expert_config, embedder, metadata_db, vector_db, max_embedding_tokens)
-                            total_processed += len(batch)
-                            
-                            # Update timestamps
-                            for cl in batch:
-                                if cl.timestamp > current_max_timestamp:
-                                    current_max_timestamp = cl.timestamp
-                                    metadata_db.update_expert_last_commit(expert_config.name, current_max_timestamp)
-                            
-                            update_progress(
-                                progress,
-                                task_id,
-                                advance=len(batch),
-                                description=f"Processed batch of {len(batch)} commits..."
-                            )
-                            batch = []
-                    
-                    # Process remaining partial batch
-                    if batch:
-                        _process_changelist_batch(batch, expert_config, embedder, metadata_db, vector_db, max_embedding_tokens)
-                        total_processed += len(batch)
-                        
-                        # Update timestamps
-                        for cl in batch:
-                            if cl.timestamp > current_max_timestamp:
-                                current_max_timestamp = cl.timestamp
-                                metadata_db.update_expert_last_commit(expert_config.name, current_max_timestamp)
-                        
-                        update_progress(
-                            progress,
-                            task_id,
-                            advance=len(batch),
-                            description=f"Processed final batch of {len(batch)} commits..."
-                        )
-                finally:
-                    progress.stop()
-                
-                log_info(f"Phase 1 complete - indexed up to {current_max_timestamp.isoformat()}")
+            total_processed += phase1_processed
+            
+            if phase1_processed > 0 and new_last_hash:
+                # Save the boundary at the end of Phase 1
+                metadata_db.update_expert_last_commit(expert_config.name, new_last_time, new_last_hash)
+                log_info(f"Phase 1 complete - indexed up to {new_last_time.isoformat()}")
             else:
                 log_info("No newer commits found")
         
         # Step 5: Phase 2 - Process older commits
-        oldest_commit_time = None
-        
         if first_commit_time is not None:
-            # Existing expert with first_commit_time: fetch commits before it
             log_info("Phase 2: Processing older commits...")
             
-            older_changelists = vcs_provider.get_commits_before(
+            phase2_processed, new_first_time, new_first_hash, _, _ = _process_commits_incrementally(
+                vcs_provider=vcs_provider,
                 workspace_path=str(workspace),
-                before=first_commit_time,
-                subdirs=subdirs_list,
-                limit=max_commits
+                subdirs_list=subdirs_list,
+                batch_size=batch_size,
+                expert_config=expert_config,
+                embedder=embedder,
+                metadata_db=metadata_db,
+                vector_db=vector_db,
+                max_embedding_tokens=max_embedding_tokens,
+                is_newer=False,
+                boundary_hash=first_commit_hash,
+                max_commits=max_commits,
+                track_both_boundaries=False,
+                debug=debug
             )
             
-            if older_changelists:
-                log_success(f"Found {len(older_changelists)} older commits to process")
-                
-                progress, task_id = create_progress_bar(
-                    description="Processing older commits",
-                    total=len(older_changelists)
-                )
-                progress.start()
-                
-                # Track the minimum (oldest) timestamp processed so far
-                current_min_timestamp = first_commit_time
-                
-                # Batch processing
-                batch = []
-                
-                try:
-                    for changelist in older_changelists:
-                        # Skip if already processed (handles interrupted runs)
-                        existing = metadata_db.get_changelist(changelist.id)
-                        if existing:
-                            # Still update timestamp to advance past this commit
-                            if changelist.timestamp < current_min_timestamp:
-                                current_min_timestamp = changelist.timestamp
-                                metadata_db.update_expert_first_commit(expert_config.name, current_min_timestamp)
-                            update_progress(
-                                progress,
-                                task_id,
-                                advance=1,
-                                description=f"Skipping {changelist.id[:12]}..."
-                            )
-                            continue
-                        
-                        # Add to batch
-                        batch.append(changelist)
-                        
-                        # Process batch when it reaches batch_size
-                        if len(batch) >= batch_size:
-                            _process_changelist_batch(batch, expert_config, embedder, metadata_db, vector_db, max_embedding_tokens)
-                            total_processed += len(batch)
-                            
-                            # Update timestamps
-                            for cl in batch:
-                                if cl.timestamp < current_min_timestamp:
-                                    current_min_timestamp = cl.timestamp
-                                    metadata_db.update_expert_first_commit(expert_config.name, current_min_timestamp)
-                            
-                            update_progress(
-                                progress,
-                                task_id,
-                                advance=len(batch),
-                                description=f"Processed batch of {len(batch)} commits..."
-                            )
-                            batch = []
-                    
-                    # Process remaining partial batch
-                    if batch:
-                        _process_changelist_batch(batch, expert_config, embedder, metadata_db, vector_db, max_embedding_tokens)
-                        total_processed += len(batch)
-                        
-                        # Update timestamps
-                        for cl in batch:
-                            if cl.timestamp < current_min_timestamp:
-                                current_min_timestamp = cl.timestamp
-                                metadata_db.update_expert_first_commit(expert_config.name, current_min_timestamp)
-                        
-                        update_progress(
-                            progress,
-                            task_id,
-                            advance=len(batch),
-                            description=f"Processed final batch of {len(batch)} commits..."
-                        )
-                finally:
-                    progress.stop()
-                
-                log_info(f"Phase 2 complete - indexed back to {current_min_timestamp.isoformat()}")
+            total_processed += phase2_processed
+            
+            if phase2_processed > 0 and new_first_hash:
+                # Save the boundary at the end of Phase 2
+                metadata_db.update_expert_first_commit(expert_config.name, new_first_time, new_first_hash)
+                log_info(f"Phase 2 complete - indexed back to {new_first_time.isoformat()}")
             else:
                 log_info("No older commits found")
         else:
-            # First run: fetch recent commits
+            # Initial indexing - fetch and process recent commits going backwards from HEAD
             log_info("Phase 2: Initial indexing - fetching recent commits...")
             
-            recent_changelists = vcs_provider.get_commits(
+            phase2_processed, min_time, min_hash, max_time, max_hash = _process_commits_incrementally(
+                vcs_provider=vcs_provider,
                 workspace_path=str(workspace),
-                subdirs=subdirs_list,
+                subdirs_list=subdirs_list,
+                batch_size=batch_size,
+                expert_config=expert_config,
+                embedder=embedder,
+                metadata_db=metadata_db,
+                vector_db=vector_db,
+                max_embedding_tokens=max_embedding_tokens,
+                is_newer=False,  # Use Phase 2 logic to go backwards from HEAD
+                boundary_hash=None,
                 max_commits=max_commits,
-                since=None
+                track_both_boundaries=True,
+                debug=debug
             )
             
-            if recent_changelists:
-                log_success(f"Found {len(recent_changelists)} commits to process")
-                
-                progress, task_id = create_progress_bar(
-                    description="Processing recent commits",
-                    total=len(recent_changelists)
-                )
-                progress.start()
-                
-                # Track both max (newest) and min (oldest) timestamps
-                current_max_timestamp = None
-                current_min_timestamp = None
-                
-                # Batch processing
-                batch = []
-                
-                try:
-                    for changelist in recent_changelists:
-                        # Skip if already processed (handles interrupted runs)
-                        existing = metadata_db.get_changelist(changelist.id)
-                        if existing:
-                            # Still update timestamps to advance past this commit
-                            if current_max_timestamp is None or changelist.timestamp > current_max_timestamp:
-                                current_max_timestamp = changelist.timestamp
-                                metadata_db.update_expert_last_commit(expert_config.name, current_max_timestamp)
-                            
-                            if current_min_timestamp is None or changelist.timestamp < current_min_timestamp:
-                                current_min_timestamp = changelist.timestamp
-                                metadata_db.update_expert_first_commit(expert_config.name, current_min_timestamp)
-                            
-                            update_progress(
-                                progress,
-                                task_id,
-                                advance=1,
-                                description=f"Skipping {changelist.id[:12]}..."
-                            )
-                            continue
-                        
-                        # Add to batch
-                        batch.append(changelist)
-                        
-                        # Process batch when it reaches batch_size
-                        if len(batch) >= batch_size:
-                            _process_changelist_batch(batch, expert_config, embedder, metadata_db, vector_db, max_embedding_tokens)
-                            total_processed += len(batch)
-                            
-                            # Update timestamps
-                            for cl in batch:
-                                if current_max_timestamp is None or cl.timestamp > current_max_timestamp:
-                                    current_max_timestamp = cl.timestamp
-                                    metadata_db.update_expert_last_commit(expert_config.name, current_max_timestamp)
-                                
-                                if current_min_timestamp is None or cl.timestamp < current_min_timestamp:
-                                    current_min_timestamp = cl.timestamp
-                                    metadata_db.update_expert_first_commit(expert_config.name, current_min_timestamp)
-                            
-                            update_progress(
-                                progress,
-                                task_id,
-                                advance=len(batch),
-                                description=f"Processed batch of {len(batch)} commits..."
-                            )
-                            batch = []
-                    
-                    # Process remaining partial batch
-                    if batch:
-                        _process_changelist_batch(batch, expert_config, embedder, metadata_db, vector_db, max_embedding_tokens)
-                        total_processed += len(batch)
-                        
-                        # Update timestamps
-                        for cl in batch:
-                            if current_max_timestamp is None or cl.timestamp > current_max_timestamp:
-                                current_max_timestamp = cl.timestamp
-                                metadata_db.update_expert_last_commit(expert_config.name, current_max_timestamp)
-                            
-                            if current_min_timestamp is None or cl.timestamp < current_min_timestamp:
-                                current_min_timestamp = cl.timestamp
-                                metadata_db.update_expert_first_commit(expert_config.name, current_min_timestamp)
-                        
-                        update_progress(
-                            progress,
-                            task_id,
-                            advance=len(batch),
-                            description=f"Processed final batch of {len(batch)} commits..."
-                        )
-                finally:
-                    progress.stop()
-                
-                log_info(f"Initial indexing complete - processed {len(recent_changelists)} commits")
+            total_processed += phase2_processed
+            
+            if phase2_processed > 0 and max_hash and min_hash:
+                # Save both boundaries at the end of initial indexing
+                metadata_db.update_expert_last_commit(expert_config.name, max_time, max_hash)
+                metadata_db.update_expert_first_commit(expert_config.name, min_time, min_hash)
+                log_info(f"Initial indexing complete - processed {phase2_processed} commits")
+                log_info(f"Time range: {min_time.isoformat()} to {max_time.isoformat()}")
             else:
                 log_info("No commits found")
         
@@ -601,7 +687,7 @@ def populate(
         
     except Exception as e:
         log_error(f"Failed to populate expert: {str(e)}")
-        raise  # Always reraise to show full stack trace
+        raise
 
 
 @main.command()
@@ -782,24 +868,42 @@ def query(
         if results:
             log_success(f"Found {len(results)} matching changes")
             
+            # Get debug flag from context
+            debug = ctx.obj.get('debug', False)
+            
             # Create rich table
             table = Table(title=f"Search Results for '{expert_name}'")
             table.add_column("ID", style="cyan", no_wrap=True, width=12)
             table.add_column("Author", style="green")
             table.add_column("Score", style="yellow", justify="right")
             table.add_column("Source", style="magenta")
+            
+            # Add ChromaDB ID column when debug is enabled
+            if debug:
+                table.add_column("ChromaDB ID", style="dim cyan", overflow="fold", max_width=40)
+            
             table.add_column("Timestamp", style="blue", width=19)
             table.add_column("Message", style="white")
             
             for result in results:
-                table.add_row(
+                row_data = [
                     result.changelist.id[:12],
                     result.changelist.author,
                     f"{result.similarity_score:.3f}",
                     result.source,
+                ]
+                
+                # Add ChromaDB ID if debug is enabled
+                if debug:
+                    chroma_id_display = result.chroma_id if result.chroma_id else "N/A"
+                    row_data.append(chroma_id_display)
+                
+                row_data.extend([
                     result.changelist.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
                     result.changelist.message[:60] + "..." if len(result.changelist.message) > 60 else result.changelist.message
-                )
+                ])
+                
+                table.add_row(*row_data)
             
             console.print(table)
             

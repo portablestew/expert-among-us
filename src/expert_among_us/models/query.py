@@ -77,6 +77,7 @@ class VectorSearchResult(BaseModel):
         changelist_id: ID of matching changelist
         similarity_score: Cosine similarity score (0.0-1.0)
         source: Which collection matched ('metadata' or 'diff')
+        chroma_id: Optional ChromaDB ID (for debugging chunk-level matching)
     """
 
     changelist_id: str = Field(..., description="ID of matching changelist")
@@ -85,6 +86,9 @@ class VectorSearchResult(BaseModel):
     )
     source: Literal["metadata", "diff"] = Field(
         default="metadata", description="Which collection matched"
+    )
+    chroma_id: Optional[str] = Field(
+        default=None, description="ChromaDB ID (for debugging chunked diffs)"
     )
 
     model_config = ConfigDict(

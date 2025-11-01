@@ -1,6 +1,5 @@
 """Progress reporting utilities for consistent output across CLI and MCP."""
 
-import sys
 from typing import Any, Optional
 
 from rich.console import Console
@@ -14,9 +13,12 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 
+from .symbols import SYMBOLS
+
 # Global console instance for consistent output
-console = Console()
-error_console = Console(stderr=True)
+# Force UTF-8 encoding when possible, but with legacy_windows=False to avoid encoding issues
+console = Console(force_terminal=True, legacy_windows=False)
+error_console = Console(stderr=True, force_terminal=True, legacy_windows=False)
 
 
 def create_progress_bar(description: str = "Processing", total: Optional[int] = None) -> tuple[Progress, TaskID]:
@@ -68,7 +70,7 @@ def log_info(message: str, **kwargs: Any) -> None:
         message: Message to log
         **kwargs: Additional arguments passed to rich console
     """
-    console.print(f"[blue]ℹ[/blue] {message}", **kwargs)
+    console.print(f"[blue]{SYMBOLS['info']}[/blue] {message}", **kwargs)
 
 
 def log_warning(message: str, **kwargs: Any) -> None:
@@ -78,7 +80,7 @@ def log_warning(message: str, **kwargs: Any) -> None:
         message: Warning message to log
         **kwargs: Additional arguments passed to rich console
     """
-    console.print(f"[yellow]⚠[/yellow] {message}", **kwargs)
+    console.print(f"[yellow]{SYMBOLS['warning']}[/yellow] {message}", **kwargs)
 
 
 def log_error(message: str, **kwargs: Any) -> None:
@@ -88,7 +90,7 @@ def log_error(message: str, **kwargs: Any) -> None:
         message: Error message to log
         **kwargs: Additional arguments passed to rich console
     """
-    error_console.print(f"[red]✗[/red] {message}", **kwargs)
+    error_console.print(f"[red]{SYMBOLS['error']}[/red] {message}", **kwargs)
 
 
 def log_success(message: str, **kwargs: Any) -> None:
@@ -98,4 +100,4 @@ def log_success(message: str, **kwargs: Any) -> None:
         message: Success message to log
         **kwargs: Additional arguments passed to rich console
     """
-    console.print(f"[green]✓[/green] {message}", **kwargs)
+    console.print(f"[green]{SYMBOLS['success']}[/green] {message}", **kwargs)

@@ -34,24 +34,48 @@ class VCSProvider(ABC):
         pass
 
     @abstractmethod
-    def get_commits(
+    def get_commits_page(
         self,
         workspace_path: str,
-        subdirs: Optional[list[str]] = None,
-        max_commits: Optional[int] = None,
-        since: Optional[datetime] = None,
+        subdirs: Optional[list[str]],
+        page_size: int,
+        skip: int,
+        since: Optional[datetime],
     ) -> list[Changelist]:
-        """Retrieve commits from the VCS, optionally filtered.
+        """Retrieve a page of commits from the VCS.
         
         Args:
             workspace_path: Path to the workspace/repository
-            subdirs: Optional list of subdirectories to filter commits by.
-                    Only commits that touched files in these directories will be included.
-            max_commits: Optional maximum number of commits to retrieve
+            subdirs: Optional list of subdirectories to filter commits by
+            page_size: Number of commits to retrieve in this page
+            skip: Number of commits to skip (for pagination)
             since: Optional datetime to filter commits after this time
             
         Returns:
-            List of Changelist objects representing the commits
+            List of Changelist objects representing the commits (up to page_size)
+        """
+        pass
+
+    @abstractmethod
+    def get_commits_page_before(
+        self,
+        workspace_path: str,
+        subdirs: Optional[list[str]],
+        page_size: int,
+        skip: int,
+        before: datetime,
+    ) -> list[Changelist]:
+        """Retrieve a page of commits older than the specified timestamp.
+        
+        Args:
+            workspace_path: Path to the workspace/repository
+            subdirs: Optional list of subdirectories to filter commits by
+            page_size: Number of commits to retrieve in this page
+            skip: Number of commits to skip (for pagination)
+            before: Fetch commits before this timestamp
+            
+        Returns:
+            List of Changelist objects in chronological order (oldest first, up to page_size)
         """
         pass
 

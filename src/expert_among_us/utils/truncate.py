@@ -150,17 +150,17 @@ def extract_all_filenames_from_diff(diff: str) -> List[str]:
 
 def truncate_diff_for_embedding(
     diff: str,
-    max_bytes: int = 30000,
+    max_bytes: int = 100000,
     max_tokens: int = TITAN_MAX_EMBEDDING_TOKENS,
 ) -> tuple[str, bool]:
     """Truncate diff content for embedding generation.
     
     Applies both byte and token limits to ensure diff content fits
-    within embedding model constraints (Titan token limit, ~30KB).
+    within embedding model constraints (Titan token limit, ~100KB).
     
     Args:
         diff: Diff content to truncate
-        max_bytes: Maximum bytes (default 30000 for ~8K tokens)
+        max_bytes: Maximum bytes (default 100000 for ~25K tokens)
         max_tokens: Maximum estimated tokens (default 8000)
         
     Returns:

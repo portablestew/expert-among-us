@@ -15,127 +15,110 @@ class Git(VCSProvider):
         git_dir = Path(workspace_path) / ".git"
         return git_dir.exists() and git_dir.is_dir()
     
-    def get_commits(
+    def get_commits_page(
         self,
         workspace_path: str,
-        subdirs: Optional[list[str]] = None,
-        max_commits: Optional[int] = None,
-        since: Optional[datetime] = None,
+        subdirs: Optional[list[str]],
+        page_size: int,
+        since_hash: Optional[str] = None,
+        debug: bool = False,
     ) -> list[Changelist]:
-        """Retrieve commits from Git repository."""
-        # Handle max_commits=0 case
-        if max_commits is not None and max_commits == 0:
-            return []
-        
-        cmd = ["git", "-C", workspace_path, "log", "--pretty=format:%H|%an|%ae|%at|%s"]
-        
-        if max_commits:
-            cmd.extend(["-n", str(max_commits)])
-        
-        if since:
-            # Use --after instead of --since to exclude the boundary commit
-            # Add 1 second to ensure we don't re-process the last commit
-            since_after = since + timedelta(seconds=1)
-            cmd.append(f"--after={since_after.isoformat()}")
-        
-        if subdirs:
-            cmd.append("--")
-            cmd.extend(subdirs)
-        
-        result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8')
-        if result.returncode != 0:
-            return []
-        
-        changelists = []
-        for line in result.stdout.strip().split('\n'):
-            if not line:
-                continue
-            
-            parts = line.split('|', 4)
-            if len(parts) < 5:
-                continue
-            
-            commit_hash, author_name, author_email, timestamp_str, message = parts
-            # Create timezone-aware datetime in UTC
-            timestamp = datetime.fromtimestamp(int(timestamp_str), tz=timezone.utc)
-            
-            # Get diff and files for this commit
-            diff_cmd = ["git", "-C", workspace_path, "show", "--format=", commit_hash]
-            diff_result = subprocess.run(diff_cmd, capture_output=True, text=True, encoding='utf-8')
-            diff = diff_result.stdout if diff_result.returncode == 0 else ""
-            
-            # Filter binary content from diff
-            diff, binary_files = filter_binary_from_diff(diff)
-            
-            # Get list of changed files
-            files_cmd = ["git", "-C", workspace_path, "show", "--name-status", "--format=", commit_hash]
-            files_result = subprocess.run(files_cmd, capture_output=True, text=True, encoding='utf-8')
-            
-            files = []
-            if files_result.returncode == 0:
-                for file_line in files_result.stdout.strip().split('\n'):
-                    if not file_line:
-                        continue
-                    parts = file_line.split('\t', 1)
-                    if len(parts) == 2:
-                        status, filepath = parts
-                        files.append(filepath)
-            
-            changelist = Changelist(
-                id=commit_hash,
-                expert_name="",  # Will be set by the caller
-                timestamp=timestamp,
-                author=f"{author_name} <{author_email}>",
-                message=message,
-                diff=diff,
-                files=files if files else [""]  # Ensure at least one file to satisfy validation
-            )
-            changelists.append(changelist)
-        
-        return changelists
-    
-    def get_commits_before(
-        self,
-        workspace_path: str,
-        before: datetime,
-        subdirs: Optional[list[str]] = None,
-        limit: Optional[int] = None,
-    ) -> list[Changelist]:
-        """Retrieve commits older than the specified timestamp in chronological order (oldest first).
+        """Retrieve a page of commits from Git repository using topological traversal.
         
         Args:
-            workspace_path: Path to the repository
-            before: Fetch commits before this timestamp
-            subdirs: Optional list of subdirectories to filter
-            limit: Optional maximum number of commits to fetch
-            
+            workspace_path: Path to the git repository
+            subdirs: Optional subdirectories to filter
+            page_size: Number of commits to fetch
+            since_hash: Optional commit hash to use as exclusive boundary
+            debug: Enable debug logging
+        
         Returns:
-            List of Changelist objects in chronological order (oldest first)
+            List of Changelist objects (excludes merge commits)
         """
-        # Handle limit=0 case
-        if limit is not None and limit == 0:
+        if page_size == 0:
             return []
         
-        cmd = ["git", "-C", workspace_path, "log", "--reverse", "--pretty=format:%H|%an|%ae|%at|%s"]
+        cmd = ["git", "-C", workspace_path, "log", "--no-merges", "--pretty=format:%H|%an|%ae|%at|%s"]
         
-        if limit:
-            cmd.extend(["-n", str(limit)])
+        # Limit number of commits
+        cmd.extend(["-n", str(page_size)])
         
-        # Use --before to exclude the boundary commit
-        # Subtract 1 second to ensure we don't re-process the first commit
-        before_minus = before - timedelta(seconds=1)
-        cmd.append(f"--before={before_minus.isoformat()}")
+        # Use commit hash range if provided
+        if since_hash:
+            # Use hash..HEAD syntax to get commits after since_hash (exclusive)
+            # Topological ordering respects parent-child relationships
+            cmd.append(f"{since_hash}..HEAD")
         
         if subdirs:
             cmd.append("--")
             cmd.extend(subdirs)
         
-        result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8')
+        if debug:
+            from expert_among_us.utils.progress import log_info
+            log_info(f"[DEBUG] Git command: {' '.join(cmd)}")
+        
+        # Use errors='replace' to handle non-UTF-8 characters gracefully
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
         if result.returncode != 0:
             return []
         
+        return self._parse_commits(workspace_path, result.stdout)
+    
+    def get_commits_page_before(
+        self,
+        workspace_path: str,
+        subdirs: Optional[list[str]],
+        page_size: int,
+        before_hash: Optional[str] = None,
+        debug: bool = False,
+    ) -> list[Changelist]:
+        """Retrieve a page of commits older than the specified boundary using topological traversal.
+        
+        Args:
+            workspace_path: Path to the git repository
+            subdirs: Optional subdirectories to filter
+            page_size: Number of commits to fetch
+            before_hash: Optional commit hash to use as exclusive boundary
+            debug: Enable debug logging
+        
+        Returns:
+            List of Changelist objects in topological order (oldest first, excludes merge commits)
+        """
+        if page_size == 0:
+            return []
+        
+        cmd = ["git", "-C", workspace_path, "log", "--no-merges", "--reverse", "--pretty=format:%H|%an|%ae|%at|%s"]
+        
+        # Limit number of commits
+        cmd.extend(["-n", str(page_size)])
+        
+        # Use commit hash range if provided
+        if before_hash:
+            # Use hash^ to start from the parent of before_hash
+            # This gives us commits older than before_hash
+            # Topological ordering respects parent-child relationships
+            cmd.append(f"{before_hash}^")
+        # else: No boundary - fetch from repository beginning (for initial indexing)
+        
+        if subdirs:
+            cmd.append("--")
+            cmd.extend(subdirs)
+        
+        if debug:
+            from expert_among_us.utils.progress import log_info
+            log_info(f"[DEBUG] Git command: {' '.join(cmd)}")
+        
+        # Use errors='replace' to handle non-UTF-8 characters gracefully
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
+        if result.returncode != 0:
+            return []
+        
+        return self._parse_commits(workspace_path, result.stdout)
+    
+    def _parse_commits(self, workspace_path: str, stdout: str) -> list[Changelist]:
+        """Parse commit output and return list of Changelist objects."""
         changelists = []
-        for line in result.stdout.strip().split('\n'):
+        for line in stdout.strip().split('\n'):
             if not line:
                 continue
             
@@ -149,15 +132,21 @@ class Git(VCSProvider):
             
             # Get diff and files for this commit
             diff_cmd = ["git", "-C", workspace_path, "show", "--format=", commit_hash]
-            diff_result = subprocess.run(diff_cmd, capture_output=True, text=True, encoding='utf-8')
+            # Use errors='replace' to handle non-UTF-8 characters in diffs
+            diff_result = subprocess.run(diff_cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
             diff = diff_result.stdout if diff_result.returncode == 0 else ""
             
             # Filter binary content from diff
             diff, binary_files = filter_binary_from_diff(diff)
             
+            # Skip commits with empty diffs (merge commits are already excluded by --no-merges)
+            if not diff or len(diff.strip()) == 0:
+                continue
+            
             # Get list of changed files
             files_cmd = ["git", "-C", workspace_path, "show", "--name-status", "--format=", commit_hash]
-            files_result = subprocess.run(files_cmd, capture_output=True, text=True, encoding='utf-8')
+            # Use errors='replace' to handle non-UTF-8 characters in file names
+            files_result = subprocess.run(files_cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
             
             files = []
             if files_result.returncode == 0:
@@ -194,7 +183,8 @@ class Git(VCSProvider):
             cmd.append("--")
             cmd.extend(subdirs)
         
-        result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8')
+        # Use errors='replace' to handle non-UTF-8 characters gracefully
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
         if result.returncode != 0 or not result.stdout.strip():
             return None
         

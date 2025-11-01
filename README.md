@@ -16,73 +16,15 @@ Expert Among Us creates a queryable "expert" from your repository's commit histo
 
 - **Semantic Search**: Find commits by meaning, not just keywords, using vector embeddings
 - **Metadata Extraction**: Index commit messages, authors, files, and code diffs
-- **Vector Embeddings**: Local (Jina Code) or cloud (AWS Bedrock Titan) embedding models
+- **Vector Embeddings**: Supports local (GPU-accelerated) or cloud (AWS Bedrock) embedding models
 - **Flexible Filtering**: Search by author, files, or time period
-- **Multiple Storage**: Combines ChromaDB for vectors and SQLite for metadata
 - **Version Control Support**: Works with Git repositories (Perforce support planned)
-
-### Embedding Providers
-
-Expert Among Us supports two embedding providers:
-
-#### Local Embeddings (Default)
-- **Model**: Jina Code Embeddings v0.5b
-- **Dimension**: 512 (Matryoshka truncation)
-- **Task**: `code2code` - optimized for code similarity
-- **Advantages**:
-  - No API costs or rate limits
-  - Works offline after initial model download
-  - Fast inference on CPU
-  - Specialized for code embeddings
-- **First Run**: Downloads model (~1.2GB) automatically
-- **Requirements**: No AWS credentials needed
-
-#### AWS Bedrock (Cloud)
-- **Model**: Amazon Titan Embed Text v2
-- **Dimension**: 1024
-- **Advantages**:
-  - Managed service with high availability
-  - No local model storage needed
-  - Consistent results across environments
-- **Requirements**: AWS credentials and Bedrock access
-
-**Switching Providers**: Use the `--embedding-provider` flag with `local` or `bedrock`:
-
-```bash
-# Use local embeddings (default)
-./run.sh populate /path/to/repo MyExpert
-
-# Use AWS Bedrock embeddings
-./run.sh populate /path/to/repo MyExpert --embedding-provider bedrock
-```
-
-**Note**: You must use the same embedding provider for both indexing (`populate`) and querying (`query`/`prompt`), as different providers produce incompatible embeddings.
 
 ## Requirements
 
 - **Python**: 3.12 or higher
 - **Git**: For repository access
 - **uv**: Package manager (>=0.1)
-
-### For Local Embeddings (Default)
-- **No additional setup required** - model downloads automatically on first run
-- **Storage**: ~1.2GB for Jina Code model
-- **Dependencies**: PyTorch and sentence-transformers (installed automatically)
-
-### For AWS Bedrock Embeddings (Optional)
-- **AWS Credentials**: Required for Bedrock API access
-
-Export your AWS credentials as environment variables:
-```bash
-export AWS_ACCESS_KEY_ID=your_access_key
-export AWS_SECRET_ACCESS_KEY=your_secret_key
-export AWS_REGION=us-east-1  # or your preferred region
-```
-
-Or configure AWS CLI with:
-```bash
-aws configure
-```
 
 ## Installation
 
@@ -94,7 +36,6 @@ Use the provided installation scripts to automate the setup process:
 
 **Linux/macOS:**
 ```bash
-chmod +x install-cpu.sh
 ./install-cpu.sh
 ```
 
@@ -109,7 +50,6 @@ For 10-20x faster local embeddings with NVIDIA GPU support:
 
 **Linux/macOS:**
 ```bash
-chmod +x install-gpu.sh
 ./install-gpu.sh
 ```
 
@@ -127,20 +67,6 @@ The GPU installation scripts will:
 **Performance Impact:**
 - **With GPU**: ~0.5s per commit embedding
 - **CPU only**: ~4s per commit embedding
-
-**Important Usage Note**: After GPU setup, you can use the run scripts which automatically use the virtual environment:
-
-**Linux/macOS:**
-```bash
-./run.sh populate /path/to/repo MyExpert
-```
-
-**Windows:**
-```powershell
-.\run.ps1 populate /path/to/repo MyExpert
-```
-
-**Why not use `uv run`?** The `uv run` command resyncs the environment to the lock file, which would revert to CPU-only PyTorch. To preserve GPU PyTorch, use the run scripts which automatically use the venv without resyncing.
 
 ### Quick Run Scripts
 
@@ -161,6 +87,8 @@ For convenience, you can use the provided run scripts instead of activating the 
 ```
 
 These scripts automatically use the virtual environment without activating it, leaving no side effects after execution. They work with both CPU and GPU installations.
+
+**Why not use `uv run`?** The `uv run` command resyncs the environment to the lock file, which would revert to CPU-only PyTorch. To preserve GPU PyTorch, use the run scripts which automatically use the venv without resyncing.
 
 ## Quick Start
 
@@ -216,29 +144,31 @@ Find commits similar to your query:
 Get AI-powered recommendations that impersonate the expert based on their historical commit patterns:
 
 ```bash
-# Get recommendations based on expert's patterns (must specify provider)
+# Get recommendations (auto-detects provider by default)
+./run.sh prompt /path/to/repo MyExpert "How should I implement authentication?"
+
+# Explicitly specify provider if needed
 ./run.sh --llm-provider openai prompt /path/to/repo MyExpert "How should I implement authentication?"
 
 # With filters for specific context
-./run.sh --llm-provider openrouter prompt /path/to/repo MyExpert "How to handle errors?" \
+./run.sh prompt /path/to/repo MyExpert "How to handle errors?" \
     --users alice,bob \
     --files src/handlers/
 
-# With Among Us mode (occasionally gives intentionally incorrect advice)
-./run.sh --llm-provider ollama prompt /path/to/repo MyExpert "Add caching" \
+# With Among Us mode (the expert is an impostor)
+./run.sh prompt /path/to/repo MyExpert "Add caching" \
     --amogus
 
 # With debug logging to inspect API calls
-./run.sh --debug --llm-provider openai prompt /path/to/repo MyExpert "Optimize queries"
+./run.sh --debug prompt /path/to/repo MyExpert "Optimize queries"
 ```
 
 **How It Works:**
-1. Searches for relevant commits using semantic similarity
-2. Generates conversational prompts from historical diffs
-3. Builds a conversation showing the expert's past work
-4. Streams an AI response impersonating the expert's style
-
-**Important:** The `--llm-provider` argument is **required**. If you don't specify it, or if the required environment variables for the chosen provider are missing, you'll receive an error message.
+1. Auto-detects available LLM provider (or use explicit `--llm-provider`)
+2. Searches for relevant commits using semantic similarity
+3. Generates conversational prompts from historical diffs
+4. Builds a conversation showing the expert's past work
+5. Streams an AI response impersonating the expert's style
 
 ## CLI Command Reference
 
@@ -321,14 +251,15 @@ Search for commits similar to your query using semantic search.
 
 ### `prompt` - AI Recommendations
 
-Get AI-powered recommendations that impersonate the expert based on their historical commit patterns. The system uses relevant past commits as examples to generate responses that match the expert's coding style and approach.
+Get AI-powered recommendations that impersonate the expert based on their historical commit patterns.
+The system uses relevant past commits as examples to generate responses that match the expert's coding style and approach.
 
 ```bash
-./run.sh --llm-provider PROVIDER prompt WORKSPACE EXPERT_NAME PROMPT [OPTIONS]
+./run.sh [--llm-provider PROVIDER] prompt WORKSPACE EXPERT_NAME PROMPT [OPTIONS]
 ```
 
 **Global Options (must come before command):**
-- `--llm-provider [openai|openrouter|ollama|bedrock|claude-code]`: **(REQUIRED)** LLM provider to use for generating recommendations
+- `--llm-provider [auto|openai|openrouter|ollama|bedrock|claude-code]`: LLM provider to use (auto-detects by default)
 - `--base-url-override TEXT`: Override base URL for OpenAI-compatible providers (openai, openrouter, ollama)
 - `--debug`: Enable debug logging of API calls
 - `--embedding-provider [local|bedrock]`: Embedding provider - must match what was used during indexing (default: local)
@@ -343,11 +274,12 @@ Get AI-powered recommendations that impersonate the expert based on their histor
 - `--max-changes INTEGER`: Maximum context changes to use (default: 10)
 - `--users TEXT`: Filter by commit authors (comma-separated)
 - `--files TEXT`: Filter by file paths (comma-separated)
-- `--amogus`: Enable Among Us mode (task is performed as a crewmate)
-- `--temperature FLOAT`: LLM temperature for generation (0.0-1.0, default: 0.7)
+- `--amogus`: Enable Among Us mode (the expert is a crewmate.. or are they?)
+- `--temperature FLOAT`: LLM temperature for generation (0.0-1.0, default: 0.7), if the provider supports it
 
 **LLM Provider Selection:**
-The `--llm-provider` argument is **required** for all prompt commands. Each provider requires specific environment variables:
+By default, the system auto-detects an available provider. You can explicitly specify a provider with `--llm-provider`. Each provider requires specific environment variables:
+- `auto`: Auto-detect available provider (default)
 - `openai`: Requires `OPENAI_API_KEY`
 - `openrouter`: Requires `OPENROUTER_API_KEY`
 - `ollama`: Uses default endpoint at `http://127.0.0.1:11434/v1` (override with `--base-url-override`)
@@ -355,31 +287,30 @@ The `--llm-provider` argument is **required** for all prompt commands. Each prov
 - `claude-code`: Requires Claude Code CLI to be installed
 
 **Base URL Override:**
-The `--base-url-override` option works for all OpenAI-compatible providers (openai, openrouter, ollama):
-- For `openai`: Override the default OpenAI API endpoint
-- For `openrouter`: Override the default OpenRouter endpoint
-- For `ollama`: Override the default Ollama endpoint (http://127.0.0.1:11434/v1)
-
-If the required environment variables are missing, the command will fail with a clear error message.
+Use `--base-url-override` to use a different API endpoint, for example a custom proxy, router, or localhost port.
+It works with any OpenAI-compatible provider (openai, openrouter, ollama).
 
 **Debug Logging:**
 When `--debug` is enabled, all API requests and responses are logged to JSON files in `~/.expert-among-us/logs/` for troubleshooting and analysis.
 
 **Examples:**
 ```bash
-# Basic usage with OpenAI
+# Basic usage (auto-detects provider)
+./run.sh prompt ~/projects/myapp "AppExpert" "How to implement caching?"
+
+# Explicitly specify OpenAI
 ./run.sh --llm-provider openai prompt ~/projects/myapp "AppExpert" "How to implement caching?"
 
-# With OpenRouter and filters
-./run.sh --llm-provider openrouter prompt ~/projects/myapp "AppExpert" "Optimize database queries" \
+# With filters (auto-detects provider)
+./run.sh prompt ~/projects/myapp "AppExpert" "Optimize database queries" \
     --users alice,bob \
     --files src/db/
 
-# Using Ollama with debug mode
-./run.sh --debug --llm-provider ollama prompt ~/projects/myapp "AppExpert" "Add error handling"
+# Using debug mode
+./run.sh --debug prompt ~/projects/myapp "AppExpert" "Add error handling"
 
-# With Among Us mode for training
-./run.sh --llm-provider openai prompt ~/projects/myapp "AppExpert" "Implement authentication" \
+# With Among Us mode
+./run.sh prompt ~/projects/myapp "AppExpert" "Implement authentication" \
     --amogus
 ```
 
@@ -408,49 +339,64 @@ Each expert creates two databases within the data directory:
 
 ### Embedding Models
 
+Expert Among Us supports two embedding providers. Use `--embedding-provider` flag to switch between them.
+**Important**: You must use the same provider for both indexing and querying, as different providers produce incompatible embeddings.
+
 **Local (Default):**
-- **Model**: `jinaai/jina-code-embeddings-0.5b`
+- **Model**: `jinaai/jina-code-embeddings-0.5b` (`code2code` task, optimized for code similarity)
 - **Dimension**: 512 (Matryoshka truncation from 896)
 - **Max tokens**: 32,768
-- **Download size**: ~1.2GB (one-time)
+- **Download**: ~1.2GB (one-time, automatic on first run)
+- **Advantages**: No API costs, works offline, fast CPU inference, no credentials needed
 
 **AWS Bedrock:**
 - **Model**: `amazon.titan-embed-text-v2:0`
 - **Dimension**: 1024
 - **Max tokens**: 8,000
+- **Advantages**: Managed service with high availability, no local storage needed
+- **Requirements**: AWS credentials and Bedrock access
+
+**Usage Examples:**
+```bash
+# Use local embeddings (default)
+./run.sh populate /path/to/repo MyExpert
+
+# Use AWS Bedrock embeddings
+./run.sh populate /path/to/repo MyExpert --embedding-provider bedrock
+
+# Query must use same provider as indexing
+./run.sh query /path/to/repo MyExpert "query" --embedding-provider bedrock
+```
 
 ### LLM Providers
 
-Expert Among Us supports multiple LLM providers for prompt generation and recommendations. **You must explicitly specify which provider to use** via the `--llm-provider` CLI argument when running the `prompt` command.
+Expert Among Us supports multiple LLM providers for prompt generation and recommendations. By default, it **auto-detects** an available provider, or you can explicitly specify one with `--llm-provider`.
 
-#### Provider Selection
+#### Auto-Detection (Default)
 
-The `--llm-provider` argument is **required** to specify which LLM provider to use:
+When you run `prompt` without specifying `--llm-provider`, the system automatically detects available providers in this order:
 
-```bash
-./run.sh --llm-provider [provider] prompt /path/to/repo MyExpert "your question"
-```
+1. **Environment Variables** (must be exactly one):
+   - `AWS_ACCESS_KEY_ID` → Uses AWS Bedrock
+   - `OPENROUTER_API_KEY` → Uses OpenRouter
+   - `OPENAI_API_KEY` → Uses OpenAI
+   - If multiple are set, you must explicitly specify with `--llm-provider`
 
-**Available providers:**
-- `openai` - OpenAI GPT models
-- `openrouter` - OpenRouter (access multiple LLM providers)
-- `ollama` - Ollama LLM server (local inference)
-- `bedrock` - AWS Bedrock managed LLMs
-- `claude-code` - Anthropic Claude Code CLI interface
+2. **AWS Default Credentials**: Checks for boto3 default profile → Uses Bedrock
 
-**Note:** Each provider requires specific environment variables to be set. If the required credentials are missing, the command will fail with a clear error message indicating which environment variable needs to be configured.
+3. **Claude Code CLI**: Checks if `claude` command is on PATH → Uses Claude Code
+
+4. **Ollama Server**: Checks if Ollama is running on `localhost:11434` → Uses Ollama
+
+5. **Error**: If none found, shows error message with setup instructions
 
 #### OpenAI Provider
 
 Use OpenAI's GPT models for AI recommendations:
 
-**Usage:**
-```bash
-./run.sh --llm-provider openai prompt /path/to/repo MyExpert "your question"
-```
-
 **Required Environment Variables:**
 - `OPENAI_API_KEY`: (required) Your OpenAI API key
+- Create one at https://platform.openai.com/api-keys -- Add credit before using
 
 **Example Configuration:**
 ```bash
@@ -460,27 +406,20 @@ export OPENAI_API_KEY=sk-proj-...
 ./run.sh --llm-provider openai prompt ~/projects/myapp "AppExpert" "How to implement auth?"
 ```
 
-**Error Handling:**
-If `OPENAI_API_KEY` is not set, you'll receive a fatal error:
-```
-Error: OPENAI_API_KEY environment variable is required for OpenAI provider
-```
-
 #### OpenRouter Provider
 
 Use OpenRouter to access multiple LLM providers through a single API:
 
-**Usage:**
-```bash
-./run.sh --llm-provider openrouter prompt /path/to/repo MyExpert "your question"
-```
-
 **Required Environment Variables:**
 - `OPENROUTER_API_KEY`: (required) Your OpenRouter API key
+- Get one for free at https://openrouter.ai/settings/keys -- Improved rate limits with one-time $10
 
 **Base URL:** `https://openrouter.ai/api/v1`
 
-**Supported Models:** See available models at [openrouter.ai/models](https://openrouter.ai/models)
+**Supported Models:**
+- Use `--promptgen-model` and `--expert-model` to select the LLM models to invoke
+- Suitable free models are used by default: meta-llama/llama-3.3-70b-instruct:free, minimax/minimax-m2:free
+- See more available models at [openrouter.ai/models](https://openrouter.ai/models)
 
 **Example Configuration:**
 ```bash
@@ -490,20 +429,9 @@ export OPENROUTER_API_KEY=sk-or-v1-...
 ./run.sh --llm-provider openrouter prompt ~/projects/myapp "AppExpert" "Optimize database queries"
 ```
 
-**Error Handling:**
-If `OPENROUTER_API_KEY` is not set, you'll receive a fatal error:
-```
-Error: OPENROUTER_API_KEY environment variable is required for OpenRouter provider
-```
-
 #### Ollama Provider
 
 Use Ollama for local LLM inference with an OpenAI-compatible API:
-
-**Usage:**
-```bash
-./run.sh --llm-provider ollama prompt /path/to/repo MyExpert "your question"
-```
 
 **Installation:**
 
@@ -529,8 +457,6 @@ Use Ollama for local LLM inference with an OpenAI-compatible API:
 
 **Override Endpoint:** Use `--base-url-override` flag if Ollama is running on a different host/port
 
-**No API Key Required** - Ollama runs locally and doesn't require authentication.
-
 **Example Configurations:**
 
 ```bash
@@ -543,11 +469,11 @@ Use Ollama for local LLM inference with an OpenAI-compatible API:
 
 # Use with specific models
 ./run.sh --llm-provider ollama \
-    --expert-model gpt-oss:20b \
-    --promptgen-model deepseek-r1:8b \
+    --expert-model devstral:24b \
+    --promptgen-model llama3:8b \
     prompt ~/projects/myapp "AppExpert" "Implement authentication"
 
-# Override endpoint for any OpenAI-compatible provider
+# Override endpoint for any OpenAI-compatible local LLM
 ./run.sh --llm-provider openai --base-url-override http://localhost:8080/v1 \
     prompt ~/projects/myapp "AppExpert" "Add feature"
 ```
@@ -558,20 +484,15 @@ Use Ollama for local LLM inference with an OpenAI-compatible API:
 
 Use AWS Bedrock's managed LLM services:
 
-**Usage:**
-```bash
-./run.sh --llm-provider bedrock prompt /path/to/repo MyExpert "your question"
-```
+**Requirements:**
+- Credentials from a billing-enabled AWS credentials and Bedrock access
+- Additional steps in the AWS Bedrock console may be required to opt into certain models
 
 **Required Environment Variables:**
 AWS credentials are required (configured via AWS CLI or environment variables):
 - `AWS_ACCESS_KEY_ID`: Your AWS access key
 - `AWS_SECRET_ACCESS_KEY`: Your AWS secret key
 - `AWS_REGION`: AWS region (e.g., `us-east-1`)
-
-**Models:**
-- **Prompt Generation**: `us.amazon.nova-lite-v1:0`
-- **Impostor Mode**: `global.anthropic.claude-sonnet-4-5-20250929-v1:0`
 
 **Example Configuration:**
 ```bash
@@ -582,72 +503,29 @@ export AWS_REGION=us-east-1
 ./run.sh --llm-provider bedrock prompt ~/projects/myapp "AppExpert" "Implement retry logic"
 ```
 
-**Requirements:** AWS credentials and Bedrock access (see Requirements section above)
+**Default Models:**
+- **Prompt Generation**: `us.amazon.nova-lite-v1:0`
+- **Expert Analysis**: `global.anthropic.claude-sonnet-4-5-20250929-v1:0`
+- Use `--promptgen-model` and `--expert-model` to select diferent LLM models
 
-**Error Handling:**
-If AWS credentials are not configured, you'll receive a fatal error indicating missing AWS configuration.
+#### Claude Code Provider
 
-#### Claude Code CLI
-
-Use Anthropic's Claude Code CLI interface:
-
-**Usage:**
-```bash
-./run.sh --llm-provider claude-code prompt /path/to/repo MyExpert "your question"
-```
+Use a Claude Pro/Max subscription for inference via Anthropic's CLI interface:
 
 **Requirements:**
 - Claude Code CLI must be installed and configured separately
 - The `claude` command must be available in your system PATH
+- https://www.claude.com/product/claude-code
+
+**Usage:**
+```bash
+# Confirm Claude CLI is available
+which claude
+
+./run.sh --llm-provider claude-code prompt /path/to/repo MyExpert "your question"
+```
 
 **Note:** This provider is primarily for users who already have the Claude Code CLI set up. Most users should prefer the other LLM providers.
-
-#### Complete Configuration Examples
-
-**Example 1: OpenAI**
-```bash
-# .env file
-OPENAI_API_KEY=sk-proj-abc123...
-
-# Usage
-./run.sh --llm-provider openai prompt ~/projects/myapp "AppExpert" "How to implement auth?"
-```
-
-**Example 2: OpenRouter**
-```bash
-# .env file
-OPENROUTER_API_KEY=sk-or-v1-xyz789...
-
-# Usage
-./run.sh --llm-provider openrouter prompt ~/projects/myapp "AppExpert" "How to implement auth?"
-```
-
-**Example 3: Ollama Server**
-```bash
-# Basic usage (uses default endpoint)
-./run.sh --llm-provider ollama prompt ~/projects/myapp "AppExpert" "How to implement auth?"
-
-# With custom endpoint
-./run.sh --llm-provider ollama --base-url-override http://192.168.1.100:11434/v1 \
-    prompt ~/projects/myapp "AppExpert" "How to implement auth?"
-```
-
-**Example 4: AWS Bedrock**
-```bash
-# .env file
-AWS_ACCESS_KEY_ID=AKIA...
-AWS_SECRET_ACCESS_KEY=secret...
-AWS_REGION=us-east-1
-
-# Usage
-./run.sh --llm-provider bedrock prompt ~/projects/myapp "AppExpert" "How to implement auth?"
-```
-
-**Important Notes:**
-- The `--llm-provider` argument is **required** for all `prompt` commands
-- Each provider requires its specific environment variables to be set
-- There is no automatic fallback between providers - you must explicitly choose which provider to use
-- If required environment variables are missing, the command will fail immediately with a clear error message
 
 ### Limits and Defaults
 

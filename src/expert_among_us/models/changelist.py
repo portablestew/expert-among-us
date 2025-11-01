@@ -21,7 +21,7 @@ class Changelist(BaseModel):
         timestamp: When the commit was made
         author: Commit author
         message: Commit message
-        diff: Full diff (stored up to max_diff_size)
+        diff: Full diff (compressed before storage in SQLite)
         files: List of affected file paths
         review_comments: Optional code review comments
         metadata_embedding: Optional embedding of message+files+comments (1024D)
@@ -74,10 +74,11 @@ class Changelist(BaseModel):
 
     @field_validator("message", "diff", "author")
     @classmethod
-    def validate_non_empty_string(cls, v: str) -> str:
+    def validate_non_empty_string(cls, v: str, info) -> str:
         """Validate that required string fields are non-empty."""
         if not v or len(v.strip()) == 0:
-            raise ValueError("Field cannot be empty")
+            field_name = info.field_name
+            raise ValueError(f"Field '{field_name}' cannot be empty (received: {repr(v)})")
         return v
 
     @field_validator("files")

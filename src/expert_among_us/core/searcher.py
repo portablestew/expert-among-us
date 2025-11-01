@@ -21,6 +21,7 @@ class SearchResult:
     changelist: Changelist
     similarity_score: float
     source: str  # 'metadata', 'diff', or 'combined'
+    chroma_id: Optional[str] = None  # ChromaDB ID for debugging chunk-level matching
 
 
 class Searcher:
@@ -104,7 +105,12 @@ class Searcher:
         diff_results: List[VectorSearchResult] = []
         if self.enable_diff_search:
             log_info("Searching diff embeddings...")
-            diff_results = self._search_diffs(query_embedding, search_limit)
+            raw_diff_results = self._search_diffs(query_embedding, search_limit)
+            
+            # Aggregate chunk scores using max pooling
+            diff_results = self._aggregate_chunk_scores(raw_diff_results)
+            if len(raw_diff_results) > len(diff_results):
+                log_info(f"Aggregated {len(raw_diff_results)} chunks into {len(diff_results)} commits")
         
         # Step 4: Merge and deduplicate scores
         merged_scores = self._merge_scores(metadata_results, diff_results)
@@ -180,6 +186,44 @@ class Searcher:
         log_info(f"Diff search found {len(results)} results")
         return results
     
+    def _aggregate_chunk_scores(
+        self,
+        chunk_results: List[VectorSearchResult]
+    ) -> List[VectorSearchResult]:
+        """Aggregate chunk scores using max pooling.
+        
+        When multiple chunks from the same commit match, take the max score
+        and preserve the chroma_id of the best-matching chunk.
+        
+        Args:
+            chunk_results: Raw results with multiple chunks per commit
+            
+        Returns:
+            Aggregated results with one score per commit (max pooling)
+        """
+        from typing import Dict, Tuple
+        
+        # Group by changelist_id, tracking both max score and corresponding chroma_id
+        grouped: Dict[str, Tuple[float, Optional[str]]] = {}
+        for result in chunk_results:
+            if result.changelist_id not in grouped:
+                grouped[result.changelist_id] = (result.similarity_score, result.chroma_id)
+            else:
+                # Max pooling: keep the highest score and its chroma_id
+                current_score, current_chroma_id = grouped[result.changelist_id]
+                if result.similarity_score > current_score:
+                    grouped[result.changelist_id] = (result.similarity_score, result.chroma_id)
+        
+        # Convert back to VectorSearchResult list
+        return [
+            VectorSearchResult(
+                changelist_id=cid,
+                similarity_score=score,
+                chroma_id=chroma_id
+            )
+            for cid, (score, chroma_id) in grouped.items()
+        ]
+    
     def _merge_scores(
         self,
         metadata_results: List[VectorSearchResult],
@@ -210,7 +254,8 @@ class Searcher:
                 'score': result.similarity_score,
                 'source': 'metadata',
                 'metadata_score': result.similarity_score,
-                'diff_score': None
+                'diff_score': None,
+                'chroma_id': result.chroma_id
             }
         
         # Merge diff results
@@ -224,17 +269,21 @@ class Searcher:
                 # Determine source based on which individual score is higher
                 if metadata_score > diff_score:
                     source = 'metadata'
+                    chroma_id = merged[result.changelist_id]['chroma_id']
                 elif diff_score > metadata_score:
                     source = 'diff'
+                    chroma_id = result.chroma_id
                 else:
                     # Equal scores - use metadata as tiebreaker
                     source = 'metadata'
+                    chroma_id = merged[result.changelist_id]['chroma_id']
                 
                 merged[result.changelist_id] = {
                     'score': combined_score,
                     'source': source,
                     'metadata_score': metadata_score,
-                    'diff_score': diff_score
+                    'diff_score': diff_score,
+                    'chroma_id': chroma_id
                 }
             else:
                 # Only in diff results
@@ -242,7 +291,8 @@ class Searcher:
                     'score': result.similarity_score,
                     'source': 'diff',
                     'metadata_score': None,
-                    'diff_score': result.similarity_score
+                    'diff_score': result.similarity_score,
+                    'chroma_id': result.chroma_id
                 }
         
         return merged
@@ -291,7 +341,8 @@ class Searcher:
             results.append(SearchResult(
                 changelist=changelist,
                 similarity_score=score_info['score'],
-                source=score_info['source']
+                source=score_info['source'],
+                chroma_id=score_info.get('chroma_id')
             ))
         
         return results

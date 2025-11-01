@@ -17,9 +17,11 @@ class VectorSearchResult:
     Attributes:
         changelist_id: Unique identifier of the matching changelist
         similarity_score: Cosine similarity score (0-1, higher is more similar)
+        chroma_id: Optional ChromaDB ID for debugging chunk-level matching
     """
     changelist_id: str
     similarity_score: float
+    chroma_id: str | None = None
 
 
 class VectorDB(ABC):

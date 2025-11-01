@@ -11,9 +11,10 @@ from ..config.settings import Settings
 
 
 def create_llm_provider(settings: Settings, debug: bool = False) -> LLMProvider:
-    """Create an LLM provider based on explicit settings configuration.
+    """Create an LLM provider based on settings configuration.
     
-    Requires an explicit --llm-provider argument to be set. Supports:
+    Supports auto-detection (default) or explicit provider selection:
+    - "auto": Auto-detect available provider (default)
     - "openai": OpenAI API
     - "openrouter": OpenRouter API
     - "ollama": Ollama LLM server
@@ -30,12 +31,20 @@ def create_llm_provider(settings: Settings, debug: bool = False) -> LLMProvider:
     Raises:
         ValueError: If no provider specified or required configuration missing
     """
-    # Require explicit provider specification
     provider = settings.llm_provider
+    
+    # Handle auto-detection
+    if provider == "auto":
+        from .auto_detect import detect_llm_provider
+        provider = detect_llm_provider()
+        # Update settings object so properties can access the detected provider
+        settings.llm_provider = provider
+    
     if not provider:
         raise ValueError(
             "No LLM provider specified. Please use the --llm-provider argument.\n"
             "Available providers:\n"
+            "  --llm-provider auto        (auto-detect, default)\n"
             "  --llm-provider openai      (requires OPENAI_API_KEY)\n"
             "  --llm-provider openrouter  (requires OPENROUTER_API_KEY)\n"
             "  --llm-provider ollama      (default: http://127.0.0.1:11434/v1)\n"

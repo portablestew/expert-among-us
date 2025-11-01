@@ -333,6 +333,7 @@ class ClaudeCodeLLM(LLMProvider):
                 self.cli_path,
                 "--print",
                 "--output-format", "json",
+                "--max-turns", "1",
                 "--model", model,  # Specify the model to use
                 "--allowed-tools", "",  # Disable all tools to prevent file access
                 "--strict-mcp-config",  # Only use explicit MCP config, ignore defaults
@@ -548,6 +549,7 @@ class ClaudeCodeLLM(LLMProvider):
                 "--print",
                 "--verbose",
                 "--output-format", "stream-json",
+                "--max-turns", "1",
                 "--model", model,  # Specify the model to use
                 "--allowed-tools", "",  # Disable all tools to prevent file access
                 "--strict-mcp-config",  # Only use explicit MCP config, ignore defaults
