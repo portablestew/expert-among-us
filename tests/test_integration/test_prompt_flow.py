@@ -161,7 +161,8 @@ class TestPromptCommandIntegration:
         system_prompt, messages = conv_builder.build_conversation(
             changelists=changelists,
             user_prompt="How should I implement authentication?",
-            amogus=False
+            amogus=False,
+            impostor=True
         )
         
         # Verify conversation structure
@@ -271,7 +272,8 @@ class TestPromptCommandIntegration:
         system_prompt, messages = conv_builder.build_conversation(
             changelists=changelists,
             user_prompt="Test query",
-            amogus=True
+            amogus=True,
+            impostor=True
         )
         
         # Verify Among Us elements in system prompt
@@ -445,7 +447,7 @@ class TestPromptFlowEdgeCases:
         prompt = prompt_gen._generate_single_prompt(changelist)
         assert prompt == "Add internationalization support"
     
-    def test_conversation_with_many_changelists(self, mock_metadata_db):
+    def test_conversation_with_many_changelists(self, mock_metadata_db, mock_llm):
         """Test conversation building with many changelists."""
         
         # Create 20 changelists with incrementing minutes
@@ -463,11 +465,20 @@ class TestPromptFlowEdgeCases:
             for i in range(20)
         ]
         
-        conv_builder = ConversationBuilder(None, TEST_MAX_DIFF_CHARS_CONV)
+        # Create prompt generator (won't be used since prompts are pre-generated)
+        prompt_gen = PromptGenerator(
+            llm_provider=mock_llm,
+            metadata_db=mock_metadata_db,
+            model="test-model",
+            max_diff_chars=TEST_MAX_DIFF_CHARS_PROMPT
+        )
+        
+        conv_builder = ConversationBuilder(prompt_generator=prompt_gen, max_diff_chars=TEST_MAX_DIFF_CHARS_CONV)
         system_prompt, messages = conv_builder.build_conversation(
             changelists=many_changelists,
             user_prompt="Test query",
-            amogus=False
+            amogus=False,
+            impostor=True
         )
         
         # Should have 41 messages: 20 pairs + final user

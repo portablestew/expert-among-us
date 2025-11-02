@@ -829,6 +829,8 @@ def query(
         $ expert-among-us query MyExpert "Bug fix needed" \\
             --users john,jane --files src/main.py --output results.json
     """
+    from expert_among_us.api import query_expert
+    
     log_info(f"Querying similar changes in '{expert_name}'")
     log_info(f"Query: {prompt}")
     
@@ -846,65 +848,24 @@ def query(
         if file_list:
             log_info(f"Filtering by files: {', '.join(file_list)}")
         
-        # Create query parameters
-        params = QueryParams(
-            prompt=prompt,
-            max_changes=max_changes,
-            users=user_list,
-            files=file_list,
-            amogus=False
-        )
-        
-        # Initialize components and settings
-        # Only pass data_dir if it's not None to allow default_factory to work
-        settings_kwargs = {'embedding_provider': embedding_provider}
-        if data_dir is not None:
-            settings_kwargs['data_dir'] = data_dir
-        
-        settings = Settings(**settings_kwargs)
-        
         log_info("Initializing search components...")
         log_info(f"Using embedding provider: {embedding_provider}")
         if data_dir:
             log_info(f"Using data directory: {data_dir}")
-        embedder = create_embedder(embedding_provider, settings)
-        metadata_db = SQLiteMetadataDB(expert_name, data_dir=data_dir)
         
-        # Check if expert database exists before proceeding
-        if not metadata_db.exists():
-            log_error(f"Expert '{expert_name}' does not exist. Please run 'populate' command first to create the expert index.")
-            sys.exit(1)
-        
-        vector_db = ChromaVectorDB(expert_name, data_dir=data_dir)
-        vector_db.initialize(dimension=embedder.dimension, require_exists=True)
-        
-        
-        # Verify expert exists in database (matches prompt command validation)
-        expert_info = metadata_db.get_expert(expert_name)
-        if not expert_info:
-            log_error(f"✗ Expert '{expert_name}' not found. Run 'populate' first.")
-            sys.exit(1)
-        # Determine search scope
-        search_scope_lower = search_scope.lower()
-        enable_metadata_search = search_scope_lower in ("both", "metadata")
-        enable_diff_search = search_scope_lower in ("both", "diffs")
-        
-        log_info(f"Search scope: {search_scope} (metadata={enable_metadata_search}, diffs={enable_diff_search})")
-        
-        # Create searcher
-        searcher = Searcher(
+        # Call API function
+        results = query_expert(
             expert_name=expert_name,
-            embedder=embedder,
-            metadata_db=metadata_db,
-            vector_db=vector_db,
-            enable_metadata_search=enable_metadata_search,
-            enable_diff_search=enable_diff_search,
-            min_similarity_score=min_score,
-            relative_threshold=relative_threshold
+            prompt=prompt,
+            max_changes=max_changes,
+            users=user_list,
+            files=file_list,
+            search_scope=search_scope,
+            min_score=min_score,
+            relative_threshold=relative_threshold,
+            data_dir=data_dir,
+            embedding_provider=embedding_provider,
         )
-        
-        # Perform search
-        results = searcher.search(params)
         
         # Display results
         if results:
@@ -981,9 +942,6 @@ def query(
         else:
             log_info("No matching changes found")
         
-        # Cleanup
-        searcher.close()
-        
     except Exception as e:
         log_error(f"Search failed: {str(e)}")
         raise  # Always reraise to show full stack trace
@@ -1044,8 +1002,7 @@ def prompt(
         $ expert-among-us --debug prompt MyExpert "Add feature"
     """
     import asyncio
-    from expert_among_us.core.promptgen import PromptGenerator
-    from expert_among_us.core.conversation import ConversationBuilder
+    from expert_among_us.api import prompt_expert_stream
     from expert_among_us.utils.debug import DebugLogger
     
     log_info(f"Generating AI recommendations for '{expert_name}'")
@@ -1060,172 +1017,80 @@ def prompt(
     llm_provider = ctx.obj.get('llm_provider')
     embedding_provider = ctx.obj.get('embedding_provider')
     
-    try:
-        # Step 1: Show debug logging info if enabled (already configured in main)
-        if debug:
-            log_info(f"Debug logging enabled: {DebugLogger._log_dir}")
+    # Show debug logging info if enabled
+    if debug:
+        log_info(f"Debug logging enabled: {DebugLogger._log_dir}")
+    
+    # Parse filters
+    user_list = [u.strip() for u in users.split(",")] if users else None
+    file_list = [f.strip() for f in files.split(",")] if files else None
+    
+    if user_list:
+        log_info(f"Filtering by users: {', '.join(user_list)}")
+    if file_list:
+        log_info(f"Filtering by files: {', '.join(file_list)}")
+
+    # Auto-detect LLM provider early if needed (before any initialization)
+    # The detect_llm_provider() function prints "Auto-detecting LLM provider: <provider>"
+    if llm_provider == "auto":
+        from expert_among_us.llm.auto_detect import detect_llm_provider
+        llm_provider = detect_llm_provider()
+    
+    # Only print "Using LLM provider" if it wasn't auto-detected (which already printed it)
+    if ctx.obj.get('llm_provider') != "auto":
+        log_info(f"Using LLM provider: {llm_provider}")
+    if data_dir:
+        log_info(f"Using data directory: {data_dir}")
+    log_info(f"Using embedding provider: {embedding_provider}")
+    
+    async def stream_and_display():
+        """Stream response and display to console."""
+        full_response = ""
+        final_usage = None  # Usage only in final chunk
+        first_chunk = True  # Track if this is the first chunk
         
-        # Step 2: Parse filters
-        user_list = [u.strip() for u in users.split(",")] if users else None
-        file_list = [f.strip() for f in files.split(",")] if files else None
-        
-        if user_list:
-            log_info(f"Filtering by users: {', '.join(user_list)}")
-        if file_list:
-            log_info(f"Filtering by files: {', '.join(file_list)}")
-        
-        # Step 3: Initialize components and settings
-        # Only pass data_dir if it's not None to allow default_factory to work
-        settings_kwargs = {
-            'llm_provider': llm_provider,
-            'embedding_provider': embedding_provider,
-            'base_url_override': ctx.obj.get('base_url_override'),
-            'expert_model_override': ctx.obj.get('expert_model'),
-            'promptgen_model_override': ctx.obj.get('promptgen_model'),
-        }
-        if data_dir is not None:
-            settings_kwargs['data_dir'] = data_dir
-        
-        settings = Settings(**settings_kwargs)
-        
-        # Auto-detect LLM provider immediately (fail fast before loading models)
-        if settings.llm_provider == "auto":
-            from expert_among_us.llm.auto_detect import detect_llm_provider
-            detected_provider = detect_llm_provider()
-            settings.llm_provider = detected_provider
-        else:
-            log_info(f"Using LLM provider: {settings.llm_provider}")
-        
-        log_info("Initializing components...")
-        log_info(f"Using embedding provider: {embedding_provider}")
-        if data_dir:
-            log_info(f"Using data directory: {data_dir}")
-        embedder = create_embedder(embedding_provider, settings)
-        metadata_db = SQLiteMetadataDB(expert_name, data_dir=data_dir)
-        
-        # Check if expert database exists before proceeding
-        if not metadata_db.exists():
-            log_error(f"Expert '{expert_name}' does not exist. Please run 'populate' command first to create the expert index.")
-            sys.exit(1)
-        
-        vector_db = ChromaVectorDB(expert_name, data_dir=data_dir)
-        vector_db.initialize(dimension=embedder.dimension, require_exists=True)
-        
-        # Step 4: Verify expert exists
-        expert_info = metadata_db.get_expert(expert_name)
-        if not expert_info:
-            log_error(f"Expert '{expert_name}' not found. Run 'populate' first.")
-            sys.exit(1)
-        
-        # Step 5: Create searcher and find relevant examples
-        log_info("Searching for relevant examples...")
-        searcher = Searcher(
-            expert_name=expert_name,
-            embedder=embedder,
-            metadata_db=metadata_db,
-            vector_db=vector_db
-        )
-        
-        params = QueryParams(
-            prompt=prompt,
-            max_changes=max_changes,
-            users=user_list,
-            files=file_list,
-            amogus=False
-        )
-        
-        search_results = searcher.search(params)
-        
-        if not search_results:
-            log_error("No relevant examples found")
-            searcher.close()
-            sys.exit(1)
-        
-        log_success(f"Found {len(search_results)} relevant examples")
-        
-        # Step 6: Initialize LLM
-        llm = create_llm_provider(settings, debug=debug)
-        
-        # Step 7: Optionally generate prompts for changelists
-        changelists = [result.changelist for result in search_results]
-        
-        if impostor:
-            log_info("Impostor mode: Generating prompts for historical commits...")
-            prompt_gen = PromptGenerator(
-                llm_provider=llm,
-                metadata_db=metadata_db,
-                model=settings.promptgen_model,
-                max_diff_chars=settings.max_diff_chars_for_promptgen
-            )
-            
-            # Generate prompts using the PromptGenerator method
-            prompt_results = prompt_gen.generate_prompts(changelists)
-        else:
-            log_info("Default mode: Skipping prompt generation...")
-            prompt_gen = None
-        
-        # Step 8: Build conversation
-        log_info("Building conversation context...")
-        conv_builder = ConversationBuilder(
-            prompt_generator=prompt_gen,
-            max_diff_chars=settings.max_diff_chars_for_llm
-        )
-        system_prompt, messages = conv_builder.build_conversation(
-            changelists=changelists,
-            user_prompt=prompt,
-            amogus=amogus,
-            impostor=impostor
-        )
-        
-        log_info(f"Using {len(changelists)} examples for context")
-        console.print()
-        
-        # Step 9: Stream response
-        async def stream_response():
-            console.print("[bold cyan]Expert Response:[/bold cyan]\n")
-            
-            full_response = ""
-            input_tokens = 0
-            output_tokens = 0
-            total_tokens = 0
-            cache_read = 0
-            cache_creation = 0
-            
-            async for chunk in llm.stream(
-                messages=messages,
-                model=settings.expert_model,
-                system=system_prompt,
-                max_tokens=4096,
+        try:
+            async for chunk in prompt_expert_stream(
+                expert_name=expert_name,
+                prompt=prompt,
+                max_changes=max_changes,
+                users=user_list,
+                files=file_list,
+                amogus=amogus,
+                impostor=impostor,
                 temperature=temperature,
+                data_dir=data_dir,
+                embedding_provider=embedding_provider,
+                llm_provider=llm_provider,
             ):
                 if chunk.delta:
+                    # Print "Expert Response:" header on first chunk with content
+                    if first_chunk:
+                        console.print("[bold cyan]Expert Response:[/bold cyan]\n")
+                        first_chunk = False
                     console.print(chunk.delta, end="")
                     full_response += chunk.delta
                 
                 if chunk.usage:
-                    input_tokens = chunk.usage.input_tokens
-                    output_tokens = chunk.usage.output_tokens
-                    total_tokens = chunk.usage.total_tokens
-                    cache_read = chunk.usage.cache_read_tokens
-                    cache_creation = chunk.usage.cache_creation_tokens
+                    # Usage is only present in the final chunk
+                    # Already accumulated by the LLM provider
+                    final_usage = chunk.usage
             
             console.print("\n")
             
             # Show token usage and cache metrics only when debug is enabled
-            if debug:
-                # Use Bedrock's totalTokens for the actual API cost
-                debug_msg = f"Tokens used: input={input_tokens}, output={output_tokens}, total={total_tokens}"
-                
-                # Always show cache metrics when prompt caching is enabled
-                debug_msg += f" | Cache: read={cache_read}, creation={cache_creation}"
-                
+            if debug and final_usage:
+                debug_msg = f"Tokens used: input={final_usage.input_tokens}, output={final_usage.output_tokens}, total={final_usage.total_tokens}"
+                debug_msg += f" | Cache: read={final_usage.cache_read_tokens}, creation={final_usage.cache_creation_tokens}"
                 console.print(f"[dim]{debug_msg}[/dim]")
                 console.print(f"[dim]Debug logs written to: {DebugLogger._log_dir}[/dim]")
-        
-        asyncio.run(stream_response())
-        
-        # Cleanup
-        searcher.close()
+                
+        except ValueError as e:
+            log_error(str(e))
+            sys.exit(1)
+    
+    try:
+        asyncio.run(stream_and_display())
         
     except KeyboardInterrupt:
         log_info("\nInterrupted by user")
@@ -1255,56 +1120,19 @@ def list(ctx) -> None:
         # List experts from custom data directory
         $ expert-among-us --data-dir /mnt/data/experts list
     """
+    from expert_among_us.api import list_experts
+    
     try:
-        # Get data directory from context or use default
+        # Get data directory from context
         data_dir = ctx.obj.get('data_dir')
-        if data_dir is None:
-            data_dir = Path.home() / ".expert-among-us"
         
-        experts_dir = data_dir / "data"
+        # Use the API function to get expert info
+        experts_info = list_experts(data_dir=data_dir)
         
-        # Check if experts directory exists
-        if not experts_dir.exists():
-            log_info("No experts found.")
-            log_info("Run 'expert-among-us populate <workspace> <expert_name>' to create your first expert.")
-            return
-        
-        # Find all expert databases
-        expert_dirs = [d for d in experts_dir.iterdir() if d.is_dir() and (d / "metadata.db").exists()]
-        
-        if not expert_dirs:
-            log_info("No experts found.")
-            log_info("Run 'expert-among-us populate <workspace> <expert_name>' to create your first expert.")
-            return
-        
-        # Collect expert information
-        experts_info = []
-        for expert_dir in expert_dirs:
-            expert_name = expert_dir.name
-            metadata_db = SQLiteMetadataDB(expert_name, data_dir=data_dir)
-            
-            # Get expert details
-            experts = metadata_db.list_all_experts()
-            if experts:
-                expert = experts[0]  # Should only be one expert per database
-                commit_count = metadata_db.get_commit_count(expert_name)
-                
-                experts_info.append({
-                    'name': expert['name'],
-                    'vcs_type': expert['vcs_type'],
-                    'workspace_path': expert['workspace_path'],
-                    'subdirs': expert['subdirs'],
-                    'commit_count': commit_count,
-                    'last_indexed_at': expert['last_indexed_at'],
-                    'first_commit_time': expert['first_commit_time'],
-                    'last_commit_time': expert['last_commit_time']
-                })
-            
-            metadata_db.close()
-        
-        # Display results
+        # Display message if no experts found
         if not experts_info:
             log_info("No experts found.")
+            log_info("Run 'expert-among-us populate <workspace> <expert_name>' to create your first expert.")
             return
         
         # Create Rich table
@@ -1319,28 +1147,28 @@ def list(ctx) -> None:
         
         for expert in experts_info:
             # Format subdirectories
-            subdirs_str = ", ".join(expert['subdirs']) if expert['subdirs'] else "(all)"
+            subdirs_str = ", ".join(expert.subdirs) if expert.subdirs else "(all)"
             
             # Format last indexed (UTC with ISO-8601 format)
-            if expert['last_indexed_at']:
-                last_indexed = expert['last_indexed_at'].strftime("%Y-%m-%dT%H:%M:%SZ")
+            if expert.last_indexed_at:
+                last_indexed = expert.last_indexed_at.strftime("%Y-%m-%dT%H:%M:%SZ")
             else:
                 last_indexed = "Never"
             
             # Format commit range
-            if expert['first_commit_time'] and expert['last_commit_time']:
-                commit_range = f"{expert['first_commit_time'].strftime('%Y-%m-%d')} → {expert['last_commit_time'].strftime('%Y-%m-%d')}"
-            elif expert['last_commit_time']:
-                commit_range = f"Only: {expert['last_commit_time'].strftime('%Y-%m-%d')}"
+            if expert.first_commit_time and expert.last_commit_time:
+                commit_range = f"{expert.first_commit_time.strftime('%Y-%m-%d')} → {expert.last_commit_time.strftime('%Y-%m-%d')}"
+            elif expert.last_commit_time:
+                commit_range = f"Only: {expert.last_commit_time.strftime('%Y-%m-%d')}"
             else:
                 commit_range = "No commits"
             
             table.add_row(
-                expert['name'],
-                expert['vcs_type'],
-                expert['workspace_path'],
+                expert.name,
+                expert.vcs_type,
+                expert.workspace_path,
                 subdirs_str,
-                str(expert['commit_count']),
+                str(expert.commit_count),
                 last_indexed,
                 commit_range
             )
@@ -1376,55 +1204,29 @@ def import_(ctx, source_path: Path) -> None:
         # Import with custom data directory
         $ expert-among-us --data-dir /custom/location import /external/MyExpert
     """
+    from expert_among_us.api import import_expert
+    
     try:
-        # Resolve source path
-        source_path = source_path.resolve()
-        
-        # Get data directory from context or use default
+        # Get data directory from context
         data_dir = ctx.obj.get('data_dir')
+        
+        # Get expert name for logging
+        expert_name = source_path.name
+        log_info(f"Importing expert '{expert_name}' from {source_path}...")
+        
+        # Call API function
+        imported_name = import_expert(
+            source_path=source_path,
+            data_dir=data_dir
+        )
+        
+        log_success(f"Successfully imported expert '{imported_name}'")
+        
+        # Calculate paths for informational logging
         if data_dir is None:
             data_dir = Path.home() / ".expert-among-us"
-        
-        # Ensure data directory exists
-        experts_dir = data_dir / "data"
-        experts_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Validate source has metadata.db
-        metadata_db_path = source_path / "metadata.db"
-        if not metadata_db_path.exists():
-            log_error(f"Invalid expert directory: {source_path}")
-            log_error(f"No metadata.db found. The source must be a valid expert directory.")
-            sys.exit(1)
-        
-        # Extract expert name from source directory name
-        expert_name = source_path.name
-        target_path = experts_dir / expert_name
-        
-        # Check if target already exists (directory or symlink)
-        if target_path.exists() or target_path.is_symlink():
-            log_error(f"Expert '{expert_name}' already exists in data directory.")
-            log_error(f"Target path: {target_path}")
-            if target_path.is_symlink():
-                log_error(f"Existing symlink points to: {target_path.resolve()}")
-            log_error(f"Cannot import - name conflict. Please rename the source directory or remove the existing expert.")
-            sys.exit(1)
-        
-        # Create symlink
-        log_info(f"Importing expert '{expert_name}' from {source_path}...")
-        try:
-            target_path.symlink_to(source_path, target_is_directory=True)
-            log_success(f"Successfully imported expert '{expert_name}'")
-            log_info(f"Symlink created: {target_path} -> {source_path}")
-        except OSError as e:
-            # Handle Windows permission errors
-            if sys.platform == "win32" and "privilege" in str(e).lower():
-                log_error(f"Failed to create symlink: {e}")
-                log_error("On Windows, creating symlinks requires:")
-                log_error("  1. Administrator privileges, OR")
-                log_error("  2. Developer Mode enabled (Settings > System > For Developers)")
-                sys.exit(1)
-            else:
-                raise
+        target_path = data_dir / "data" / imported_name
+        log_info(f"Symlink created: {target_path} -> {source_path.resolve()}")
         
     except Exception as e:
         log_error(f"Failed to import expert: {str(e)}")
