@@ -1,6 +1,6 @@
-# expert-among-us
+# Expert Among Us ඞ
 
-MCP which indexes commit history, then uses secondary inference to form a queryable "expert"
+MCP which indexes commit history, then uses secondary inference to form a queryable "expert".
 
 ## Why?
 
