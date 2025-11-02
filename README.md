@@ -243,6 +243,47 @@ Create or update an expert index from a repository.
 ./run.sh --data-dir /mnt/data/experts populate ~/projects/myapp "AppExpert"
 ```
 
+### `list` - List Available Experts
+
+Display all indexed experts and their metadata.
+
+**Options:**
+- `--data-dir PATH`: Optional base directory for expert data storage (default: ~/.expert-among-us)
+
+**Examples:**
+```bash
+# List all experts
+./run.sh list
+
+# List from custom directory
+./run.sh --data-dir /mnt/data/experts list
+```
+
+### `import` - Import Expert via Symlink
+
+Import an expert from an external directory by creating a symlink.
+
+**Arguments:**
+- `SOURCE_PATH`: Path to the expert directory to import (must contain metadata.db)
+
+**Examples:**
+```bash
+# Import from external storage
+./run.sh import /external/storage/MyExpert
+
+# Import from network location
+./run.sh import ~/shared/experts/TeamExpert
+
+# Import with custom data directory
+./run.sh --data-dir /custom/location import /external/MyExpert
+```
+
+**Notes:**
+- Source directory must contain a valid expert (metadata.db file)
+- Expert name is extracted from the source directory name
+- Fails if an expert with the same name already exists
+- On Windows, requires Administrator privileges or Developer Mode enabled
+
 ### `query` - Search History
 
 Search for commits similar to your query using semantic search.

@@ -25,9 +25,7 @@ from expert_among_us.utils.progress import (
     log_error,
     log_info,
     log_success,
-    log_warning,
-    create_progress_bar,
-    update_progress
+    log_warning
 )
 from expert_among_us.utils.truncate import truncate_diff_for_embedding
 
@@ -454,8 +452,8 @@ def main(ctx, debug: bool, data_dir: Optional[Path], llm_provider: str, base_url
 
 
 @main.command()
-@click.argument("workspace", type=click.Path(exists=True, file_okay=False, path_type=Path))
 @click.argument("expert_name", type=str)
+@click.argument("workspace", type=click.Path(exists=True, file_okay=False, path_type=Path), required=False, default=None)
 @click.argument("subdirs", nargs=-1, type=str)
 @click.option("--max-commits", default=10000, type=int, help="Maximum commits to index")
 @click.option("--vcs-type", type=click.Choice(["git", "p4"]), default="git", help="Version control system type")
@@ -463,8 +461,8 @@ def main(ctx, debug: bool, data_dir: Optional[Path], llm_provider: str, base_url
 @click.pass_context
 def populate(
     ctx,
-    workspace: Path,
     expert_name: str,
+    workspace: Optional[Path],
     subdirs: tuple[str, ...],
     max_commits: int,
     vcs_type: str,
@@ -472,26 +470,64 @@ def populate(
 ) -> None:
     """Build or update an expert index from a repository.
     
-    WORKSPACE: Path to the repository root
-    
     EXPERT_NAME: Unique name for this expert
+    
+    WORKSPACE: Path to the repository root (optional for existing experts)
     
     SUBDIRS: Optional subdirectories to filter (e.g., src/main/ src/resources/)
     
     Examples:
     
         \b
-        # Index entire repository
-        $ expert-among-us populate /path/to/repo MyExpert
+        # Create new expert - workspace required
+        $ expert-among-us populate MyExpert /path/to/repo
+        
+        \b
+        # Update existing expert - workspace optional
+        $ expert-among-us populate MyExpert
         
         \b
         # Index specific subdirectories
-        $ expert-among-us populate /path/to/repo MyExpert src/main/ src/resources/
+        $ expert-among-us populate MyExpert /path/to/repo src/main/ src/resources/
         
         \b
         # Use Bedrock embeddings (global flag)
-        $ expert-among-us --embedding-provider bedrock populate /path/to/repo MyExpert
+        $ expert-among-us --embedding-provider bedrock populate MyExpert /path/to/repo
     """
+    # Get global options from context
+    data_dir = ctx.obj.get('data_dir')
+    embedding_provider = ctx.obj.get('embedding_provider')
+    debug = ctx.obj.get('debug', False)
+    
+    # Step 0: Handle optional workspace - look up from existing expert if not provided
+    if workspace is None:
+        log_info(f"Looking up workspace for existing expert '{expert_name}'...")
+        metadata_db_temp = SQLiteMetadataDB(expert_name, data_dir=data_dir)
+        existing_expert = metadata_db_temp.get_expert(expert_name)
+        metadata_db_temp.close()
+        
+        if existing_expert:
+            workspace = Path(existing_expert['workspace_path'])
+            log_info(f"Found workspace: {workspace}")
+        else:
+            log_error(f"Expert '{expert_name}' does not exist. Workspace path is required for new experts.")
+            log_error(f"Usage: expert-among-us populate {expert_name} <workspace_path>")
+            sys.exit(1)
+    else:
+        # Workspace provided - check for mismatch with existing expert
+        metadata_db_temp = SQLiteMetadataDB(expert_name, data_dir=data_dir)
+        existing_expert = metadata_db_temp.get_expert(expert_name)
+        metadata_db_temp.close()
+        
+        if existing_expert:
+            existing_workspace = Path(existing_expert['workspace_path'])
+            if existing_workspace != workspace:
+                log_warning(f"Workspace path mismatch detected!")
+                log_warning(f"  Stored workspace: {existing_workspace}")
+                log_warning(f"  Provided workspace: {workspace}")
+                log_error("Cannot change workspace path for existing expert. Use the original workspace path or create a new expert.")
+                sys.exit(1)
+    
     log_info(f"Populating expert index '{expert_name}' from workspace: {workspace}")
     if subdirs:
         log_info(f"Filtering to subdirectories: {', '.join(subdirs)}")
@@ -842,6 +878,12 @@ def query(
         vector_db = ChromaVectorDB(expert_name, data_dir=data_dir)
         vector_db.initialize(dimension=embedder.dimension, require_exists=True)
         
+        
+        # Verify expert exists in database (matches prompt command validation)
+        expert_info = metadata_db.get_expert(expert_name)
+        if not expert_info:
+            log_error(f"✗ Expert '{expert_name}' not found. Run 'populate' first.")
+            sys.exit(1)
         # Determine search scope
         search_scope_lower = search_scope.lower()
         enable_metadata_search = search_scope_lower in ("both", "metadata")
@@ -1193,6 +1235,201 @@ def prompt(
         if debug:
             raise
         sys.exit(1)
+
+
+@main.command()
+@click.pass_context
+def list(ctx) -> None:
+    """List all available experts and their information.
+    
+    Displays a table showing each expert's name, workspace, VCS type,
+    number of commits indexed, last indexed time, and commit time range.
+    
+    Examples:
+    
+        \b
+        # List all experts
+        $ expert-among-us list
+        
+        \b
+        # List experts from custom data directory
+        $ expert-among-us --data-dir /mnt/data/experts list
+    """
+    try:
+        # Get data directory from context or use default
+        data_dir = ctx.obj.get('data_dir')
+        if data_dir is None:
+            data_dir = Path.home() / ".expert-among-us"
+        
+        experts_dir = data_dir / "data"
+        
+        # Check if experts directory exists
+        if not experts_dir.exists():
+            log_info("No experts found.")
+            log_info("Run 'expert-among-us populate <workspace> <expert_name>' to create your first expert.")
+            return
+        
+        # Find all expert databases
+        expert_dirs = [d for d in experts_dir.iterdir() if d.is_dir() and (d / "metadata.db").exists()]
+        
+        if not expert_dirs:
+            log_info("No experts found.")
+            log_info("Run 'expert-among-us populate <workspace> <expert_name>' to create your first expert.")
+            return
+        
+        # Collect expert information
+        experts_info = []
+        for expert_dir in expert_dirs:
+            expert_name = expert_dir.name
+            metadata_db = SQLiteMetadataDB(expert_name, data_dir=data_dir)
+            
+            # Get expert details
+            experts = metadata_db.list_all_experts()
+            if experts:
+                expert = experts[0]  # Should only be one expert per database
+                commit_count = metadata_db.get_commit_count(expert_name)
+                
+                experts_info.append({
+                    'name': expert['name'],
+                    'vcs_type': expert['vcs_type'],
+                    'workspace_path': expert['workspace_path'],
+                    'subdirs': expert['subdirs'],
+                    'commit_count': commit_count,
+                    'last_indexed_at': expert['last_indexed_at'],
+                    'first_commit_time': expert['first_commit_time'],
+                    'last_commit_time': expert['last_commit_time']
+                })
+            
+            metadata_db.close()
+        
+        # Display results
+        if not experts_info:
+            log_info("No experts found.")
+            return
+        
+        # Create Rich table
+        table = Table(title="Available Experts")
+        table.add_column("Name", style="cyan bold")
+        table.add_column("VCS", style="green")
+        table.add_column("Workspace", style="white")
+        table.add_column("Subdirs", style="dim white")
+        table.add_column("Commits", style="yellow", justify="right")
+        table.add_column("Last Indexed", style="blue")
+        table.add_column("Commit Range", style="magenta")
+        
+        for expert in experts_info:
+            # Format subdirectories
+            subdirs_str = ", ".join(expert['subdirs']) if expert['subdirs'] else "(all)"
+            
+            # Format last indexed (UTC with ISO-8601 format)
+            if expert['last_indexed_at']:
+                last_indexed = expert['last_indexed_at'].strftime("%Y-%m-%dT%H:%M:%SZ")
+            else:
+                last_indexed = "Never"
+            
+            # Format commit range
+            if expert['first_commit_time'] and expert['last_commit_time']:
+                commit_range = f"{expert['first_commit_time'].strftime('%Y-%m-%d')} → {expert['last_commit_time'].strftime('%Y-%m-%d')}"
+            elif expert['last_commit_time']:
+                commit_range = f"Only: {expert['last_commit_time'].strftime('%Y-%m-%d')}"
+            else:
+                commit_range = "No commits"
+            
+            table.add_row(
+                expert['name'],
+                expert['vcs_type'],
+                expert['workspace_path'],
+                subdirs_str,
+                str(expert['commit_count']),
+                last_indexed,
+                commit_range
+            )
+        
+        console.print(table)
+        
+    except Exception as e:
+        log_error(f"Failed to list experts: {str(e)}")
+        raise
+
+@main.command(name="import")
+@click.argument("source_path", type=click.Path(exists=True, file_okay=False, path_type=Path))
+@click.pass_context
+def import_(ctx, source_path: Path) -> None:
+    """Import an expert from an external directory via symlink.
+    
+    Creates a symlink in the data directory pointing to the source expert directory.
+    The source directory must contain a valid expert (metadata.db).
+    
+    SOURCE_PATH: Path to the expert directory to import
+    
+    Examples:
+    
+        \b
+        # Import an expert from external storage
+        $ expert-among-us import /external/storage/MyExpert
+        
+        \b
+        # Import from a shared network location
+        $ expert-among-us import ~/shared/experts/TeamExpert
+        
+        \b
+        # Import with custom data directory
+        $ expert-among-us --data-dir /custom/location import /external/MyExpert
+    """
+    try:
+        # Resolve source path
+        source_path = source_path.resolve()
+        
+        # Get data directory from context or use default
+        data_dir = ctx.obj.get('data_dir')
+        if data_dir is None:
+            data_dir = Path.home() / ".expert-among-us"
+        
+        # Ensure data directory exists
+        experts_dir = data_dir / "data"
+        experts_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Validate source has metadata.db
+        metadata_db_path = source_path / "metadata.db"
+        if not metadata_db_path.exists():
+            log_error(f"Invalid expert directory: {source_path}")
+            log_error(f"No metadata.db found. The source must be a valid expert directory.")
+            sys.exit(1)
+        
+        # Extract expert name from source directory name
+        expert_name = source_path.name
+        target_path = experts_dir / expert_name
+        
+        # Check if target already exists (directory or symlink)
+        if target_path.exists() or target_path.is_symlink():
+            log_error(f"Expert '{expert_name}' already exists in data directory.")
+            log_error(f"Target path: {target_path}")
+            if target_path.is_symlink():
+                log_error(f"Existing symlink points to: {target_path.resolve()}")
+            log_error(f"Cannot import - name conflict. Please rename the source directory or remove the existing expert.")
+            sys.exit(1)
+        
+        # Create symlink
+        log_info(f"Importing expert '{expert_name}' from {source_path}...")
+        try:
+            target_path.symlink_to(source_path, target_is_directory=True)
+            log_success(f"Successfully imported expert '{expert_name}'")
+            log_info(f"Symlink created: {target_path} -> {source_path}")
+        except OSError as e:
+            # Handle Windows permission errors
+            if sys.platform == "win32" and "privilege" in str(e).lower():
+                log_error(f"Failed to create symlink: {e}")
+                log_error("On Windows, creating symlinks requires:")
+                log_error("  1. Administrator privileges, OR")
+                log_error("  2. Developer Mode enabled (Settings > System > For Developers)")
+                sys.exit(1)
+            else:
+                raise
+        
+    except Exception as e:
+        log_error(f"Failed to import expert: {str(e)}")
+        raise
+
 
 
 if __name__ == "__main__":

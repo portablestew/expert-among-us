@@ -147,6 +147,89 @@ class SQLiteMetadataDB(MetadataDB):
             }
         return None
     
+    def list_all_experts(self) -> List[dict]:
+        """Retrieve all experts with their metadata.
+        
+        Returns:
+            List of expert dictionaries with all fields from experts table
+        """
+        self._connect()
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT name, workspace_path, subdirs, vcs_type, created_at,
+                   last_indexed_at, last_commit_time, last_commit_hash,
+                   first_commit_time, first_commit_hash, max_commits
+            FROM experts
+            ORDER BY name ASC
+        """)
+        rows = cursor.fetchall()
+        
+        experts = []
+        for row in rows:
+            # Parse timestamp strings back to datetime objects
+            last_indexed_at = None
+            if row['last_indexed_at']:
+                try:
+                    last_indexed_at = datetime.fromisoformat(row['last_indexed_at'])
+                except (ValueError, TypeError):
+                    pass
+            
+            last_commit_time = None
+            if row['last_commit_time']:
+                try:
+                    last_commit_time = datetime.fromisoformat(row['last_commit_time'])
+                except (ValueError, TypeError):
+                    pass
+            
+            first_commit_time = None
+            if row['first_commit_time']:
+                try:
+                    first_commit_time = datetime.fromisoformat(row['first_commit_time'])
+                except (ValueError, TypeError):
+                    pass
+            
+            created_at = None
+            if row['created_at']:
+                try:
+                    created_at = datetime.fromisoformat(row['created_at'])
+                except (ValueError, TypeError):
+                    pass
+            
+            experts.append({
+                'name': row['name'],
+                'workspace_path': row['workspace_path'],
+                'subdirs': row['subdirs'].split(',') if row['subdirs'] else [],
+                'vcs_type': row['vcs_type'],
+                'created_at': created_at,
+                'last_indexed_at': last_indexed_at,
+                'last_commit_time': last_commit_time,
+                'last_commit_hash': row['last_commit_hash'],
+                'first_commit_time': first_commit_time,
+                'first_commit_hash': row['first_commit_hash'],
+                'max_commits': row['max_commits']
+            })
+        
+        return experts
+    
+    def get_commit_count(self, expert_name: str) -> int:
+        """Get the number of commits indexed for an expert.
+        
+        Args:
+            expert_name: Name of the expert (not used, kept for API compatibility)
+            
+        Returns:
+            Number of commits in the changelists table for this expert
+        """
+        self._connect()
+        cursor = self.conn.cursor()
+        # Each expert has its own database, so count all changelists
+        cursor.execute("""
+            SELECT COUNT(*) as count
+            FROM changelists
+        """)
+        row = cursor.fetchone()
+        return row['count'] if row else 0
+    
     def update_expert_index_time(self, name: str, timestamp: datetime) -> None:
         self._connect()
         cursor = self.conn.cursor()
