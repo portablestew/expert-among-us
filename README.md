@@ -39,6 +39,18 @@ The result is key contextual insights that naive file search cannot provide:
 | File paths and code only | Code semantics | Natural language text |
 | No authorship context | No authorship context | Preserves expert's decision-making patterns |
 
+### Case Study Validation
+
+A **[blind comparative analysis](case-studies/summary.md)** of the expert-among-us MCP was conducted on the OpenRA game engine, comparing outcomes with and without the MCP across two technical scenarios. The analysis was performed without prior knowledge of expert-among-us or its purpose, including stripping the tool description from the conversation history. This provides an unbiased (albeit AI-generated) evaluation.
+
+**Key Findings:**
+- **45% token reduction** for debugging tasks (24.3k vs 44.0k tokens)
+- **18% average cost savings** across both scenarios
+- Successfully identified a regression that standard exploration missed
+- Provided historical context and design rationale not available through code inspection alone
+
+The case study demonstrates measurable efficiency gains and qualitative improvements in debugging and architecture understanding. For the detailed comparison, see [case-studies/summary.md]() and the [raw conversation files](case-studies/OpenRA/).
+
 ### Synthetic Commit Context
 
 Not all commit messages are created equal. Fortunately, transformer LLMs are excellent at filling in the blanks. 
@@ -639,16 +651,81 @@ Expert Among Us uses a hybrid approach:
 3. **Incremental Updates**: Only new commits are processed on subsequent runs
 4. **Diff Processing**: Code diffs are embedded for semantic code change search
 
-## MCP Integration (Planned)
+## MCP Integration
 
-Expert Among Us can be used as an MCP (Model Context Protocol) server, allowing AI assistants to query your codebase history:
+Expert Among Us provides a fully implemented MCP (Model Context Protocol) server, allowing AI assistants like Claude Desktop to query your codebase history directly. The MCP server gives AI assistants access to your expert indexes through four powerful tools.
 
-```python
-# MCP tools available:
-- expert-among-us/populate
-- expert-among-us/query  
-- expert-among-us/prompt
+### Available MCP Tools
+
+1. **list** - List all available experts with metadata (commit counts, time ranges, workspace paths)
+2. **import** - Import external experts via symlink (useful for team-shared or network-stored experts)
+3. **query** - Get raw commit details for manual analysis (complete messages, diffs, files, authors)
+4. **prompt** - Get AI-powered recommendations based on expert's historical patterns (recommended)
+
+### Setup Instructions
+
+#### Starting the MCP Server
+
+Use the provided run scripts to start the MCP server:
+
+**Linux/macOS:**
+```bash
+./run-mcp.sh
 ```
+
+**Windows (PowerShell):**
+```powershell
+.\run-mcp.ps1
+```
+
+**Auto-Installation Feature:**
+The run scripts automatically check for the virtual environment. If `.venv` doesn't exist, they will run the GPU installation script (`install-gpu.sh` or `install-gpu.ps1`) to set up dependencies automatically.
+
+### Configuration for MCP Clients
+
+Add Expert Among Us to your MCP client configuration. Use **absolute paths** for the command.
+
+#### Example: Claude Desktop (Linux/macOS) + OpenAI
+
+Configuration file location: `~/Library/Application Support/Claude/claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "expert-among-us": {
+      "command": "/absolute/path/to/expert-among-us/run-mcp.sh",
+      "alwaysAllow":["list","prompt","query"],
+      "env": {
+        "OPENAI_API_KEY": "your-key-here"
+      }
+    }
+  }
+}
+```
+
+#### Example: Claude Desktop (Windows) + AWS profile + debug logs
+
+Configuration file location: `%APPDATA%\Claude\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "expert-among-us": {
+      "command": "powershell -file C:\\absolute\\path\\to\\expert-among-us\\run-mcp.ps1 --debug",
+      "alwaysAllow":["list","prompt","query"],
+      "env": {
+        "AWS_PROFILE": "your-profile-here"
+      }
+    }
+  }
+}
+```
+
+**Important Notes:**
+- Always use absolute paths in the `command` field
+- Set required environment variables in the `env` section
+- Add `--debug` to the command to troubleshoot a problem (writes logs to data-dir)
+- Restart your MCP client after updating the configuration
 
 ## Development
 

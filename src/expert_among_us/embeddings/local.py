@@ -2,6 +2,7 @@ from .base import Embedder
 from typing import List
 from ..utils.debug import DebugLogger
 from ..utils.symbols import SYMBOLS
+from ..utils.progress import console
 
 
 class JinaCodeEmbedder(Embedder):
@@ -17,13 +18,13 @@ class JinaCodeEmbedder(Embedder):
         """
         # Log loading message in debug mode
         if DebugLogger.is_enabled():
-            print("[DEBUG] Loading PyTorch...")
+            console.print("[DEBUG] Loading PyTorch...")
         
         # Lazy import torch (heavy import ~2.4s)
         import torch
         
         if DebugLogger.is_enabled():
-            print("[DEBUG] Loading sentence_transformers...")
+            console.print("[DEBUG] Loading sentence_transformers...")
         
         # Lazy import sentence_transformers (heavy import ~3.7s)
         from sentence_transformers import SentenceTransformer
@@ -39,17 +40,17 @@ class JinaCodeEmbedder(Embedder):
         
         # Detailed GPU diagnostics
         if not cuda_available:
-            print(f"{SYMBOLS['warning']}  GPU not detected - using CPU")
-            print(f"   PyTorch version: {torch.__version__}")
-            print(f"   CUDA available: {cuda_available}")
-            print(f"   CUDA built: {torch.version.cuda if hasattr(torch.version, 'cuda') else 'N/A'}")
+            console.print(f"{SYMBOLS['warning']}  GPU not detected - using CPU")
+            console.print(f"   PyTorch version: {torch.__version__}")
+            console.print(f"   CUDA available: {cuda_available}")
+            console.print(f"   CUDA built: {torch.version.cuda if hasattr(torch.version, 'cuda') else 'N/A'}")
             if hasattr(torch.cuda, 'device_count'):
-                print(f"   GPU count: {torch.cuda.device_count()}")
-            print("\n   To enable GPU (run after uv sync):")
-            print("   1. Check NVIDIA drivers: nvidia-smi")
-            print("   2. Install PyTorch with CUDA: ./install-gpu.sh or ./install-gpu.ps1")
-            print("   3. Restart your terminal or reactivate venv")
-            print()
+                console.print(f"   GPU count: {torch.cuda.device_count()}")
+            console.print("\n   To enable GPU (run after uv sync):")
+            console.print("   1. Check NVIDIA drivers: nvidia-smi")
+            console.print("   2. Install PyTorch with CUDA: ./install-gpu.sh or ./install-gpu.ps1")
+            console.print("   3. Restart your terminal or reactivate venv")
+            console.print()
         
         # Load model with trust_remote_code for FlashAttention2 and fp16 for GPU optimization
         self.model = SentenceTransformer(
@@ -68,19 +69,19 @@ class JinaCodeEmbedder(Embedder):
             except Exception as e:
                 # torch.compile may not be available or may fail
                 if DebugLogger.is_enabled():
-                    print(f"[DEBUG] torch.compile not available or failed: {e}")
+                    console.print(f"[DEBUG] torch.compile not available or failed: {e}")
         else:
             if DebugLogger.is_enabled():
-                print("[DEBUG] torch.compile disabled by user")
+                console.print("[DEBUG] torch.compile disabled by user")
         
         # Log device being used
         if self.device == "cuda":
             device_name = torch.cuda.get_device_name(0)
             compile_status = " (compiled)" if compilation_enabled else " (not compiled)"
-            print(f"{SYMBOLS['success']} Local embeddings using GPU: {device_name}{compile_status}")
+            console.print(f"{SYMBOLS['success']} Local embeddings using GPU: {device_name}{compile_status}")
         else:
-            print(f"{SYMBOLS['info']} Local embeddings using CPU (this will be slower)")
-            print(f"{SYMBOLS['info']} Using fp16 precision (auto-casts on CPU)")
+            console.print(f"{SYMBOLS['info']} Local embeddings using CPU (this will be slower)")
+            console.print(f"{SYMBOLS['info']} Using fp16 precision (auto-casts on CPU)")
         
         # Store torch reference for later use
         self.torch = torch

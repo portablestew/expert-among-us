@@ -28,8 +28,9 @@ from expert_among_us.utils.progress import (
     log_warning
 )
 from expert_among_us.utils.truncate import truncate_diff_for_embedding
+# IMPORTANT: Use stderr=True to avoid corrupting MCP stdio protocol when running as MCP server
+console = Console(stderr=True)
 
-console = Console()
 
 
 def create_embedder(provider: str, settings: Settings, compile_model: bool = True):
@@ -953,7 +954,7 @@ def query(
 @click.option("--max-changes", default=15, type=int, help="Maximum context changes to use")
 @click.option("--users", type=str, help="Filter by authors (comma-separated)")
 @click.option("--files", type=str, help="Filter by files (comma-separated)")
-@click.option("--amogus", is_flag=True, help="Enable Among Us mode")
+@click.option("--amogus", is_flag=True, help="ඞ")
 @click.option("--impostor", is_flag=True, default=False,
               help="Generate prompts and use user-assistant pairs (old behavior)")
 @click.option("--temperature", default=0.7, type=float, help="LLM temperature (0.0-1.0)")

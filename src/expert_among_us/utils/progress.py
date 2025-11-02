@@ -17,7 +17,8 @@ from .symbols import SYMBOLS
 
 # Global console instance for consistent output
 # Force UTF-8 encoding when possible, but with legacy_windows=False to avoid encoding issues
-console = Console(force_terminal=True, legacy_windows=False)
+# IMPORTANT: Use stderr=True to avoid corrupting MCP stdio protocol when running as MCP server
+console = Console(stderr=True, force_terminal=True, legacy_windows=False)
 error_console = Console(stderr=True, force_terminal=True, legacy_windows=False)
 
 

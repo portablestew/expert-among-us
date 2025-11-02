@@ -5,6 +5,8 @@ based on an expert's historical patterns. It supports both streaming and
 non-streaming modes for different use cases.
 """
 
+import logging
+import time
 from typing import AsyncIterator, Optional, List
 from pathlib import Path
 
@@ -77,12 +79,16 @@ async def prompt_expert_stream(
                 print(f"Tokens: {chunk.usage.total_tokens}")
         ```
     """
+    logger = logging.getLogger(__name__)
+    start_time = time.time()
+    
     from expert_among_us.core.searcher import Searcher
     from expert_among_us.core.promptgen import PromptGenerator
     from expert_among_us.core.conversation import ConversationBuilder
     from expert_among_us.llm.factory import create_llm_provider
     from expert_among_us.models.query import QueryParams
     
+    logger.debug(f"[STREAM] Initializing context at +{time.time() - start_time:.3f}s")
     ctx = ExpertContext(
         expert_name=expert_name,
         data_dir=data_dir,
@@ -92,15 +98,18 @@ async def prompt_expert_stream(
     
     try:
         # Check expert exists
+        logger.debug(f"[STREAM] Checking expert exists at +{time.time() - start_time:.3f}s")
         if not ctx.metadata_db.exists():
             raise ExpertNotFoundError(expert_name)
         
+        logger.debug(f"[STREAM] Initializing vector DB at +{time.time() - start_time:.3f}s")
         ctx.vector_db.initialize(
             dimension=ctx.embedder.dimension,
             require_exists=True
         )
         
         # Search for relevant examples
+        logger.debug(f"[STREAM] Creating searcher at +{time.time() - start_time:.3f}s")
         searcher = Searcher(
             expert_name=expert_name,
             embedder=ctx.embedder,
@@ -116,7 +125,11 @@ async def prompt_expert_stream(
             amogus=False
         )
         
+        search_start = time.time()
+        logger.info(f"[STREAM] Starting search at +{search_start - start_time:.3f}s")
         search_results = searcher.search(params)
+        search_time = time.time() - search_start
+        logger.info(f"[STREAM] Search completed in {search_time:.3f}s - found {len(search_results)} results")
         
         if not search_results:
             raise NoResultsError("No relevant examples found for this query")
@@ -125,6 +138,8 @@ async def prompt_expert_stream(
         changelists = [result.changelist for result in search_results]
         
         if impostor:
+            logger.debug(f"[STREAM] Generating prompts (impostor mode) at +{time.time() - start_time:.3f}s")
+            promptgen_start = time.time()
             llm = create_llm_provider(ctx.settings)
             prompt_gen = PromptGenerator(
                 llm_provider=llm,
@@ -133,10 +148,14 @@ async def prompt_expert_stream(
                 max_diff_chars=ctx.settings.max_diff_chars_for_promptgen
             )
             prompt_gen.generate_prompts(changelists)
+            promptgen_time = time.time() - promptgen_start
+            logger.info(f"[STREAM] Prompt generation completed in {promptgen_time:.3f}s")
         else:
             prompt_gen = None
         
         # Build conversation
+        logger.debug(f"[STREAM] Building conversation at +{time.time() - start_time:.3f}s")
+        conv_start = time.time()
         conv_builder = ConversationBuilder(
             prompt_generator=prompt_gen,
             max_diff_chars=ctx.settings.max_diff_chars_for_llm
@@ -147,9 +166,15 @@ async def prompt_expert_stream(
             amogus=amogus,
             impostor=impostor
         )
+        conv_time = time.time() - conv_start
+        logger.info(f"[STREAM] Conversation built in {conv_time:.3f}s - {len(messages)} messages")
         
         # Stream response
+        logger.info(f"[STREAM] Starting LLM stream at +{time.time() - start_time:.3f}s")
+        llm_start = time.time()
         llm = create_llm_provider(ctx.settings)
+        
+        chunk_count = 0
         async for chunk in llm.stream(
             messages=messages,
             model=ctx.settings.expert_model,
@@ -157,7 +182,14 @@ async def prompt_expert_stream(
             max_tokens=4096,
             temperature=temperature,
         ):
+            if chunk_count == 0:
+                ttft = time.time() - llm_start
+                logger.info(f"[STREAM] First LLM token at +{time.time() - start_time:.3f}s (LLM TTFT: {ttft:.3f}s)")
+            chunk_count += 1
             yield chunk
+        
+        total_time = time.time() - start_time
+        logger.info(f"[STREAM] Stream completed in {total_time:.3f}s total - {chunk_count} chunks yielded")
             
     finally:
         ctx.close()
