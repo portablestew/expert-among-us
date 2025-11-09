@@ -36,12 +36,10 @@ PROVIDER_MODEL_DEFAULTS = {
 
 # Embedding model characteristics - Bedrock Titan
 TITAN_EMBEDDING_DIMENSION = 1024  # Titan embedding vector dimension
-TITAN_MAX_EMBEDDING_TOKENS = 8000  # Titan embedding model token limit
 
 # Embedding model characteristics - Local Jina Code
 JINA_CODE_MODEL_ID = "jinaai/jina-code-embeddings-0.5b"
 JINA_CODE_DIMENSION = 512  # Matryoshka truncation from 896
-JINA_CODE_MAX_TOKENS = 32768  # Jina Code model token limit
 
 
 class Settings(BaseSettings):
@@ -146,11 +144,9 @@ class Settings(BaseSettings):
     # Local embedding settings
     local_embedding_model: str = JINA_CODE_MODEL_ID
     local_embedding_dimension: int = JINA_CODE_DIMENSION
-    local_embedding_max_tokens: int = JINA_CODE_MAX_TOKENS
     
     # Bedrock embedding settings
     bedrock_embedding_dimension: int = TITAN_EMBEDDING_DIMENSION
-    bedrock_embedding_max_tokens: int = TITAN_MAX_EMBEDDING_TOKENS
     
     # Limits
     max_commits: int = 50000

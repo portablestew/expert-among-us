@@ -7,6 +7,7 @@ both normal mode and Among Us mode (where the AI occasionally gives bad advice).
 
 from typing import List, Tuple, Optional
 from expert_among_us.models.changelist import Changelist
+from expert_among_us.models.file_chunk import FileChunk
 from expert_among_us.llm.base import Message
 from expert_among_us.core.promptgen import PromptGenerator
 from expert_among_us.utils.truncate import truncate_to_bytes
@@ -49,12 +50,98 @@ Occasionally present advice on how to sabotage the codebase or mislead other dev
         self.prompt_generator = prompt_generator
         self.max_diff_chars = max_diff_chars
     
+    def _detect_language(self, file_path: str) -> str:
+        """Detect programming language from file extension.
+        
+        Args:
+            file_path: Path to file
+            
+        Returns:
+            Language identifier for markdown code blocks
+        """
+        ext_map = {
+            '.py': 'python',
+            '.js': 'javascript',
+            '.ts': 'typescript',
+            '.java': 'java',
+            '.cpp': 'cpp',
+            '.h': 'cpp',
+            '.inl': 'cpp',
+            '.c': 'c',
+            '.cs': 'csharp',
+            '.go': 'go',
+            '.rs': 'rust',
+            '.rb': 'ruby',
+            '.php': 'php',
+            '.swift': 'swift',
+            '.kt': 'kotlin',
+            '.scala': 'scala',
+            '.sql': 'sql',
+            '.sh': 'bash',
+            '.yaml': 'yaml',
+            '.yml': 'yaml',
+            '.json': 'json',
+            '.xml': 'xml',
+            '.html': 'html',
+            '.css': 'css',
+            '.md': 'markdown',
+        }
+        
+        # Get file extension
+        import os
+        _, ext = os.path.splitext(file_path)
+        return ext_map.get(ext.lower(), '')
+    
+    def _format_file_chunks_unified(self, file_chunks: List[FileChunk]) -> str:
+        """Format all file chunks into unified current state message.
+        
+        Groups chunks by file path, sorts by line number, and presents
+        as a single message showing current codebase state.
+        
+        Args:
+            file_chunks: List of file chunks to format
+            
+        Returns:
+            Formatted string for unified file state message
+        """
+        if not file_chunks:
+            return ""
+        
+        # Group chunks by file path
+        files_dict = {}
+        for chunk in file_chunks:
+            if chunk.file_path not in files_dict:
+                files_dict[chunk.file_path] = []
+            files_dict[chunk.file_path].append(chunk)
+        
+        # Sort chunks within each file by line number
+        for file_path in files_dict:
+            files_dict[file_path].sort(key=lambda c: c.line_start)
+        
+        # Build unified message
+        parts = ["=== CURRENT CODEBASE STATE (HEAD) ===\n"]
+        
+        for file_path in sorted(files_dict.keys()):
+            chunks = files_dict[file_path]
+            for chunk in chunks:
+                language = self._detect_language(file_path)
+                parts.append(
+                    f"File: {file_path} (lines {chunk.line_start}-{chunk.line_end})\n"
+                    f"```{language}\n"
+                    f"{chunk.content}\n"
+                    f"```\n"
+                )
+        
+        parts.append("=== END CURRENT STATE ===")
+        return "\n".join(parts)
+    
     def build_conversation(
         self,
         changelists: List[Changelist],
         user_prompt: str,
         amogus: bool = False,
         impostor: bool = False,
+        file_chunks: List[FileChunk] = None,
     ) -> Tuple[str, List[Message]]:
         """Build complete conversation from changelists and user prompt.
         
@@ -76,6 +163,7 @@ Occasionally present advice on how to sabotage the codebase or mislead other dev
             amogus: Enable Among Us mode (occasional bad advice)
             impostor: If True, generate prompts and use user-assistant pairs.
                      If False (default), skip prompts and use all user messages.
+            file_chunks: Optional list of file chunks to include as current state
             
         Returns:
             Tuple of (system_prompt, messages) where messages is chronologically ordered
@@ -119,6 +207,11 @@ Occasionally present advice on how to sabotage the codebase or mislead other dev
                 # Format and add as user message
                 formatted_changelist = self._format_changelist_as_user(changelist)
                 messages.append(Message(role="user", content=formatted_changelist))
+        
+        # Add unified file chunks message AFTER commits (chronologically newest)
+        if file_chunks:
+            unified_files = self._format_file_chunks_unified(file_chunks)
+            messages.append(Message(role="user", content=unified_files))
         
         # Add final user prompt
         messages.append(Message(role="user", content=user_prompt))

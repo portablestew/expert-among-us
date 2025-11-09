@@ -217,7 +217,7 @@ class TestBuildPromptRequest:
 
 class TestBatchProcessing:
     """Tests for batch prompt generation."""
-    
+
     def test_generate_prompts_all_cache_hits(
         self, prompt_generator, mock_metadata_db, sample_changelists
     ):
@@ -228,7 +228,11 @@ class TestBatchProcessing:
             "Cached prompt 1",
             "Cached prompt 2",
         ]
-        
+
+        # Global dummy_progress fixture in tests/conftest.py already patches
+        # expert_among_us.utils.progress.create_progress_bar to avoid Rich LiveError.
+        # No per-test patching needed here.
+
         results = prompt_generator.generate_prompts(sample_changelists)
         
         assert len(results) == 3
@@ -245,7 +249,11 @@ class TestBatchProcessing:
         """Test batch generation when no prompts are cached."""
         # Mock all cache misses
         mock_metadata_db.get_generated_prompt.return_value = None
-        
+
+        # Avoid Rich LiveError from nested / concurrent Rich Live progress in tests
+        from expert_among_us.utils import progress as progress_utils
+        progress_utils.create_progress_bar = lambda description, total: (DummyProgress(), "task-id")
+
         # Mock LLM responses
         mock_llm.generate.side_effect = [
             LLMResponse(
@@ -280,7 +288,9 @@ class TestBatchProcessing:
             None,
             "Cached prompt 2",
         ]
-        
+
+        # Global dummy_progress fixture handles progress patching; no local patch.
+
         # Mock LLM response for the miss
         mock_llm.generate.return_value = LLMResponse(
             content="Generated prompt 1",
@@ -307,7 +317,9 @@ class TestBatchProcessing:
     ):
         """Test that changelist objects are updated with generated prompts."""
         mock_metadata_db.get_generated_prompt.return_value = None
-        
+
+        # Global dummy_progress fixture handles progress patching; no local patch.
+
         mock_llm.generate.side_effect = [
             LLMResponse(
                 content=f"Prompt {i}",
@@ -448,7 +460,9 @@ class TestProgressReporting:
         ]
         
         mock_metadata_db.get_generated_prompt.return_value = None
-        
+
+        # Global dummy_progress fixture handles progress patching; no local patch.
+
         mock_llm.generate.return_value = LLMResponse(
             content="Test prompt",
             model="us.amazon.nova-lite-v1:0",

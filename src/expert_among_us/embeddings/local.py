@@ -115,11 +115,12 @@ class JinaCodeEmbedder(Embedder):
             )
         
         # Generate embedding with no_grad to prevent gradient accumulation
+        # Disable internal tqdm bar to avoid conflicts with rich Progress/indexer output
         with self.torch.no_grad():
             embedding = self.model.encode(
                 prefixed_text,
                 convert_to_numpy=True,
-                show_progress_bar=False
+                show_progress_bar=False,
             ).tolist()
         
         # Truncate to target dimension (Matryoshka)
@@ -171,14 +172,16 @@ class JinaCodeEmbedder(Embedder):
                 category="embedding"
             )
         
-        # Generate embeddings in batch with no_grad to prevent gradient accumulation
-        # Use larger batch_size for more GPU utilization
+        # Generate embeddings in batch with no_grad to prevent gradient accumulation.
+        # We RE-ENABLE the internal tqdm progress bar here because batch embedding
+        # progress is critical for UX. To keep output readable, rely on tqdm's
+        # single-line behavior and avoid overlapping rich Progress for this section.
         with self.torch.no_grad():
             embeddings = self.model.encode(
                 prefixed_texts,
                 convert_to_numpy=True,
-                show_progress_bar=False,
-                batch_size=12
+                show_progress_bar=True,
+                batch_size=12,
             )
         
         # Truncate to target dimension (Matryoshka) and convert to lists

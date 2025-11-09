@@ -11,6 +11,7 @@ from typing import AsyncIterator, Optional, List
 from pathlib import Path
 
 from expert_among_us.llm.base import StreamChunk
+from expert_among_us.models.file_chunk import FileChunk
 from .context import ExpertContext
 from .exceptions import ExpertNotFoundError, NoResultsError
 from .models import PromptResponse
@@ -134,8 +135,18 @@ async def prompt_expert_stream(
         if not search_results:
             raise NoResultsError("No relevant examples found for this query")
         
-        # Generate prompts if impostor mode
-        changelists = [result.changelist for result in search_results]
+        # Separate commit results from file results
+        commit_results = []
+        file_chunks = []
+        
+        for result in search_results:
+            if isinstance(result.changelist, FileChunk):
+                file_chunks.append(result.changelist)
+            else:
+                commit_results.append(result)
+        
+        # Use commit results for changelists (existing behavior)
+        changelists = [result.changelist for result in commit_results]
         
         if impostor:
             logger.debug(f"[STREAM] Generating prompts (impostor mode) at +{time.time() - start_time:.3f}s")
@@ -164,7 +175,8 @@ async def prompt_expert_stream(
             changelists=changelists,
             user_prompt=prompt,
             amogus=amogus,
-            impostor=impostor
+            impostor=impostor,
+            file_chunks=file_chunks
         )
         conv_time = time.time() - conv_start
         logger.info(f"[STREAM] Conversation built in {conv_time:.3f}s - {len(messages)} messages")

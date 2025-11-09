@@ -84,10 +84,19 @@ class Changelist(BaseModel):
     @field_validator("files")
     @classmethod
     def validate_files(cls, v: List[str]) -> List[str]:
-        """Validate that files list is non-empty."""
-        if not v or len(v) == 0:
-            raise ValueError("Files list cannot be empty")
-        return v
+        """Normalize files list; allow empty for metadata-only or diff-only changelists.
+
+        Historically this model required at least one file path and some callers
+        used a sentinel like [""] to satisfy validation. This validator now:
+        - Treats None as an empty list.
+        - Normalizes any falsy/blank entries to a clean list.
+        - Allows a truly empty list for cases where no per-file paths are present.
+        """
+        if not v:
+            return []
+        # Strip whitespace and drop empty entries
+        cleaned = [path.strip() for path in v if path and path.strip()]
+        return cleaned
 
     @field_validator("metadata_embedding", "diff_embedding")
     @classmethod

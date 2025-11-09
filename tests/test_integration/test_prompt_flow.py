@@ -117,6 +117,23 @@ def mock_metadata_db():
     return mock
 
 
+class DummyProgress:
+    """Test-only no-op progress object to avoid Rich LiveError in integration tests."""
+    finished = True
+
+    def add_task(self, *args, **kwargs):
+        return "task-id"
+
+    def update(self, *args, **kwargs):
+        pass
+
+    def advance(self, *args, **kwargs):
+        pass
+
+    def stop(self):
+        pass
+
+
 class TestPromptCommandIntegration:
     """Integration tests for the prompt command flow."""
     
@@ -139,12 +156,17 @@ class TestPromptCommandIntegration:
         assert len(search_results) == 3
         
         # Step 2: Generate prompts for changelists
+        # Avoid Rich LiveError from nested / concurrent Rich Live progress in tests
+        from expert_among_us.utils import progress as progress_utils
+        progress_utils.create_progress_bar = lambda description, total: (DummyProgress(), "task-id")
+
         prompt_gen = PromptGenerator(
             llm_provider=mock_llm,
             metadata_db=mock_metadata_db,
             model="us.amazon.nova-lite-v1:0",
             max_diff_chars=TEST_MAX_DIFF_CHARS_PROMPT
         )
+        prompt_gen.progress = DummyProgress()
         
         changelists = [r.changelist for r in search_results]
         prompt_results = prompt_gen.generate_prompts(changelists)
@@ -222,12 +244,17 @@ class TestPromptCommandIntegration:
         search_results = mock_searcher.search(params)
         
         # Generate prompts (should use cache)
+        # Avoid Rich LiveError from nested / concurrent Rich Live progress in tests
+        from expert_among_us.utils import progress as progress_utils
+        progress_utils.create_progress_bar = lambda description, total: (DummyProgress(), "task-id")
+
         prompt_gen = PromptGenerator(
             llm_provider=mock_llm,
             metadata_db=mock_metadata_db,
             model="us.amazon.nova-lite-v1:0",
             max_diff_chars=TEST_MAX_DIFF_CHARS_PROMPT
         )
+        prompt_gen.progress = DummyProgress()
         
         changelists = [r.changelist for r in search_results]
         prompt_results = prompt_gen.generate_prompts(changelists)
@@ -257,12 +284,17 @@ class TestPromptCommandIntegration:
         ))
         
         # Generate prompts
+        # Avoid Rich LiveError from nested / concurrent Rich Live progress in tests
+        from expert_among_us.utils import progress as progress_utils
+        progress_utils.create_progress_bar = lambda description, total: (DummyProgress(), "task-id")
+
         prompt_gen = PromptGenerator(
             llm_provider=mock_llm,
             metadata_db=mock_metadata_db,
             model="us.amazon.nova-lite-v1:0",
             max_diff_chars=TEST_MAX_DIFF_CHARS_PROMPT
         )
+        prompt_gen.progress = DummyProgress()
         
         changelists = [r.changelist for r in search_results[:2]]
         prompt_gen.generate_prompts(changelists)

@@ -4,6 +4,7 @@ from typing import List, Optional
 from datetime import datetime, timezone
 from expert_among_us.db.metadata.base import MetadataDB
 from expert_among_us.models.changelist import Changelist
+from expert_among_us.models.file_chunk import FileChunk
 from expert_among_us.utils.compression import compress_diff, decompress_diff
 
 class SQLiteMetadataDB(MetadataDB):
@@ -53,10 +54,8 @@ class SQLiteMetadataDB(MetadataDB):
                 vcs_type TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_indexed_at TIMESTAMP,
-                last_commit_time TIMESTAMP,
-                last_commit_hash TEXT,
-                first_commit_time TIMESTAMP,
-                first_commit_hash TEXT,
+                last_processed_commit_hash TEXT,
+                first_processed_commit_hash TEXT,
                 max_commits INTEGER DEFAULT 10000
             );
         """)
@@ -86,6 +85,34 @@ class SQLiteMetadataDB(MetadataDB):
             );
         """)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_files_path ON changelist_files(file_path);")
+        
+        # File content indexing tables
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS file_contents (
+                file_path TEXT PRIMARY KEY,
+                expert_name TEXT NOT NULL,
+                revision_id TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                chunk_count INTEGER NOT NULL,
+                last_indexed_at TIMESTAMP,
+                FOREIGN KEY (expert_name) REFERENCES experts(name) ON DELETE CASCADE
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_file_contents_expert ON file_contents(expert_name);")
+        
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS file_chunks (
+                id TEXT PRIMARY KEY,
+                file_path TEXT NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                line_start INTEGER NOT NULL,
+                line_end INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                FOREIGN KEY (file_path) REFERENCES file_contents(file_path) ON DELETE CASCADE
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_file_chunks_path ON file_chunks(file_path);")
+        
         self.conn.commit()
         
     def create_expert(self, name: str, workspace_path: str, subdirs: list[str], vcs_type: str) -> None:
@@ -106,7 +133,7 @@ class SQLiteMetadataDB(MetadataDB):
         self._connect(require_exists=True)
         cursor = self.conn.cursor()
         cursor.execute("""
-            SELECT name, workspace_path, subdirs, vcs_type, last_indexed_at, last_commit_time, last_commit_hash, first_commit_time, first_commit_hash
+            SELECT name, workspace_path, subdirs, vcs_type, last_indexed_at, last_processed_commit_hash, first_processed_commit_hash
             FROM experts
             WHERE name = ?
         """, (name,))
@@ -120,30 +147,14 @@ class SQLiteMetadataDB(MetadataDB):
                 except (ValueError, TypeError):
                     last_indexed_at = None
             
-            last_commit_time = None
-            if row['last_commit_time']:
-                try:
-                    last_commit_time = datetime.fromisoformat(row['last_commit_time'])
-                except (ValueError, TypeError):
-                    last_commit_time = None
-            
-            first_commit_time = None
-            if row['first_commit_time']:
-                try:
-                    first_commit_time = datetime.fromisoformat(row['first_commit_time'])
-                except (ValueError, TypeError):
-                    first_commit_time = None
-            
             return {
                 'name': row['name'],
                 'workspace_path': row['workspace_path'],
                 'subdirs': row['subdirs'].split(',') if row['subdirs'] else [],
                 'vcs_type': row['vcs_type'],
                 'last_indexed_at': last_indexed_at,
-                'last_commit_time': last_commit_time,
-                'last_commit_hash': row['last_commit_hash'],
-                'first_commit_time': first_commit_time,
-                'first_commit_hash': row['first_commit_hash']
+                'last_processed_commit_hash': row['last_processed_commit_hash'],
+                'first_processed_commit_hash': row['first_processed_commit_hash']
             }
         return None
     
@@ -157,8 +168,7 @@ class SQLiteMetadataDB(MetadataDB):
         cursor = self.conn.cursor()
         cursor.execute("""
             SELECT name, workspace_path, subdirs, vcs_type, created_at,
-                   last_indexed_at, last_commit_time, last_commit_hash,
-                   first_commit_time, first_commit_hash, max_commits
+                   last_indexed_at, last_processed_commit_hash, first_processed_commit_hash, max_commits
             FROM experts
             ORDER BY name ASC
         """)
@@ -171,20 +181,6 @@ class SQLiteMetadataDB(MetadataDB):
             if row['last_indexed_at']:
                 try:
                     last_indexed_at = datetime.fromisoformat(row['last_indexed_at'])
-                except (ValueError, TypeError):
-                    pass
-            
-            last_commit_time = None
-            if row['last_commit_time']:
-                try:
-                    last_commit_time = datetime.fromisoformat(row['last_commit_time'])
-                except (ValueError, TypeError):
-                    pass
-            
-            first_commit_time = None
-            if row['first_commit_time']:
-                try:
-                    first_commit_time = datetime.fromisoformat(row['first_commit_time'])
                 except (ValueError, TypeError):
                     pass
             
@@ -202,10 +198,8 @@ class SQLiteMetadataDB(MetadataDB):
                 'vcs_type': row['vcs_type'],
                 'created_at': created_at,
                 'last_indexed_at': last_indexed_at,
-                'last_commit_time': last_commit_time,
-                'last_commit_hash': row['last_commit_hash'],
-                'first_commit_time': first_commit_time,
-                'first_commit_hash': row['first_commit_hash'],
+                'last_processed_commit_hash': row['last_processed_commit_hash'],
+                'first_processed_commit_hash': row['first_processed_commit_hash'],
                 'max_commits': row['max_commits']
             })
         
@@ -240,41 +234,66 @@ class SQLiteMetadataDB(MetadataDB):
         """, (timestamp.isoformat(), name))
         self.conn.commit()
     
-    def update_expert_last_commit(self, name: str, last_commit_time: datetime, last_commit_hash: str) -> None:
-        """Update the last commit time and hash for an expert."""
+    def get_last_processed_commit_hash(self, expert_name: str) -> Optional[str]:
+        """Get the last processed commit hash."""
         self._connect()
         cursor = self.conn.cursor()
-        cursor.execute("""
-            UPDATE experts
-            SET last_commit_time = ?, last_commit_hash = ?
-            WHERE name = ?
-        """, (last_commit_time.isoformat(), last_commit_hash, name))
-        self.conn.commit()
-    
-    def update_expert_first_commit(self, name: str, first_commit_time: datetime, first_commit_hash: str) -> None:
-        """Update the first commit time and hash for an expert."""
+        cursor.execute(
+            "SELECT last_processed_commit_hash FROM experts WHERE name = ?",
+            (expert_name,)
+        )
+        result = cursor.fetchone()
+        return result[0] if result and result[0] else None
+
+    def update_last_processed_commit(self, expert_name: str, commit_hash: str) -> None:
+        """Update the last processed commit hash. Also sets first_processed_commit_hash if not set."""
         self._connect()
         cursor = self.conn.cursor()
-        cursor.execute("""
-            UPDATE experts
-            SET first_commit_time = ?, first_commit_hash = ?
-            WHERE name = ?
-        """, (first_commit_time.isoformat(), first_commit_hash, name))
+        # Update last_processed_commit_hash
+        cursor.execute(
+            "UPDATE experts SET last_processed_commit_hash = ? WHERE name = ?",
+            (commit_hash, expert_name)
+        )
+        # Set first_processed_commit_hash if not already set (only on first run)
+        cursor.execute(
+            "UPDATE experts SET first_processed_commit_hash = ? WHERE name = ? AND first_processed_commit_hash IS NULL",
+            (commit_hash, expert_name)
+        )
         self.conn.commit()
         
+    def get_connection(self):
+        """Get database connection, creating it if needed."""
+        self._connect()
+        return self.conn
+
     def insert_changelists(self, changelists: list[Changelist]) -> None:
+        """Insert or update multiple changelists.
+
+        Notes on expert_name handling:
+        - VCS providers like Git._parse_commits() may set expert_name="" because they
+          do not know which expert the commits belong to.
+        - Callers that know the expert (e.g. Indexer, batch pipelines) SHOULD set
+          changelist.expert_name explicitly before calling this method.
+        - As a safety net, when changelist.expert_name is empty we fall back to this
+          SQLiteMetadataDB's expert_name so all rows are properly attributed.
+        """
         self._connect()
         cursor = self.conn.cursor()
         for changelist in changelists:
             # Compress diff before storing
             diff_compressed = compress_diff(changelist.diff)
+
+            # Ensure expert_name is populated:
+            # - Prefer the value on the Changelist (set by caller).
+            # - Fallback to this DB's expert_name for safety when empty.
+            expert_name = (getattr(changelist, "expert_name", "") or self.expert_name)
             
             cursor.execute("""
                 INSERT OR REPLACE INTO changelists (id, expert_name, timestamp, author, message, diff, files, review_comments, generated_prompt)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 changelist.id,
-                getattr(changelist, 'expert_name', ''),
+                expert_name,
                 changelist.timestamp.isoformat(),
                 changelist.author,
                 changelist.message,
@@ -318,13 +337,14 @@ class SQLiteMetadataDB(MetadataDB):
             # Always decompress - all diffs are stored compressed
             diff = decompress_diff(row['diff'])
             
-            # Parse files list, ensuring at least one element to satisfy validation
-            # This matches the write behavior in git.py where empty files get [""]
+            # Parse files list from comma-separated string.
+            # With updated Changelist validation, an empty list is allowed for
+            # metadata-only or diff-only changelists where no file paths are present.
             files_str = row['files']
             if files_str:
-                files = files_str.split(',')
+                files = [f.strip() for f in files_str.split(',') if f.strip()]
             else:
-                files = [""]  # Ensure at least one file to satisfy validation
+                files = []
             
             changelist = Changelist(
                 id=row['id'],
@@ -383,6 +403,146 @@ class SQLiteMetadataDB(MetadataDB):
             WHERE id = ?
         """, (prompt, query_id))
         self.conn.commit()
+    
+    def insert_file_content(self, file_path: str, expert_name: str, revision_id: str,
+                           file_size: int, chunk_count: int) -> None:
+        """Insert or update file content metadata.
+        
+        Args:
+            file_path: Relative path to the file in the repository
+            expert_name: Name of the expert this file belongs to
+            revision_id: Revision identifier when indexed (e.g. commit hash or changelist ID)
+            file_size: Size of the file in bytes
+            chunk_count: Number of chunks this file was split into
+        """
+        self._connect()
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO file_contents
+            (file_path, expert_name, revision_id, file_size, chunk_count, last_indexed_at)
+            VALUES (?, ?, ?, ?, ?, datetime('now'))
+        """, (file_path, expert_name, revision_id, file_size, chunk_count))
+        self.conn.commit()
+    
+    def insert_file_chunks(self, chunks: List[FileChunk]) -> None:
+        """Insert file chunks in batch.
+        
+        Args:
+            chunks: List of FileChunk objects to insert
+        """
+        self._connect()
+        cursor = self.conn.cursor()
+        for chunk in chunks:
+            cursor.execute("""
+                INSERT OR REPLACE INTO file_chunks (id, file_path, chunk_index, line_start, line_end, content)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (chunk.get_chroma_id(), chunk.file_path, chunk.chunk_index,
+                  chunk.line_start, chunk.line_end, chunk.content))
+        self.conn.commit()
+    
+    def get_file_chunk(self, chunk_id: str) -> Optional[FileChunk]:
+        """Retrieve a single file chunk by ID.
+
+        Public API for future file-scoped retrieval features.
+
+        This helper is available for use by higher-level search/query flows
+        that want to hydrate a specific file chunk by its stored chunk ID, but
+        is not yet wired into the main ExpertAmongUs pipeline.
+
+        Args:
+            chunk_id: The stored chunk ID of the chunk to retrieve.
+
+        Returns:
+            FileChunk object if found, None otherwise.
+        """
+        self._connect(require_exists=True)
+        cursor = self.conn.cursor()
+        cursor.execute("""
+            SELECT fc.file_path, fc.chunk_index, fc.content, fc.line_start, fc.line_end, f.revision_id
+            FROM file_chunks fc
+            JOIN file_contents f ON fc.file_path = f.file_path
+            WHERE fc.id = ?
+        """, (chunk_id,))
+        row = cursor.fetchone()
+        if row:
+            return FileChunk(
+                file_path=row['file_path'],
+                chunk_index=row['chunk_index'],
+                content=row['content'],
+                line_start=row['line_start'],
+                line_end=row['line_end'],
+                revision_id=row['revision_id']
+            )
+        return None
+    
+    def get_file_chunks_by_ids(self, chunk_ids: List[str]) -> List[FileChunk]:
+        """Retrieve multiple file chunks by IDs.
+
+        Public API for future file-scoped retrieval features.
+
+        This helper is intended for callers that perform vector search over file
+        chunks (e.g. via Chroma) and need to map resulting IDs back to full
+        FileChunk records. It is currently not integrated into the core query
+        flow but is safe for external and future internal use.
+
+        Args:
+            chunk_ids: List of stored chunk IDs to retrieve.
+
+        Returns:
+            List of FileChunk objects, ordered by file path and line number.
+        """
+        if not chunk_ids:
+            return []
+        
+        self._connect(require_exists=True)
+        cursor = self.conn.cursor()
+        placeholders = ','.join('?' * len(chunk_ids))
+        query = f"""
+            SELECT fc.file_path, fc.chunk_index, fc.content, fc.line_start, fc.line_end, f.revision_id
+            FROM file_chunks fc
+            JOIN file_contents f ON fc.file_path = f.file_path
+            WHERE fc.id IN ({placeholders})
+            ORDER BY fc.file_path, fc.line_start
+        """
+        cursor.execute(query, chunk_ids)
+        rows = cursor.fetchall()
+        
+        return [FileChunk(
+            file_path=row['file_path'],
+            chunk_index=row['chunk_index'],
+            content=row['content'],
+            line_start=row['line_start'],
+            line_end=row['line_end'],
+            revision_id=row['revision_id']
+        ) for row in rows]
+    
+    def delete_file_chunks_by_path(self, file_path: str) -> int:
+        """Delete all chunks for a specific file path.
+        
+        Args:
+            file_path: Path of the file whose chunks should be deleted
+            
+        Returns:
+            Number of chunks deleted
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Delete from file_chunks
+            cursor.execute(
+                "DELETE FROM file_chunks WHERE file_path = ?",
+                (file_path,)
+            )
+            chunks_deleted = cursor.rowcount
+            
+            # Also delete from file_contents
+            cursor.execute(
+                "DELETE FROM file_contents WHERE file_path = ?",
+                (file_path,)
+            )
+            
+            conn.commit()
+            return chunks_deleted
         
     def close(self):
         if self.conn:

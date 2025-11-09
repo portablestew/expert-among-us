@@ -8,6 +8,7 @@ Handles vector similarity search, score merging, filtering, and result ranking.
 from typing import List, Optional, Dict, Set
 from dataclasses import dataclass
 from expert_among_us.models.changelist import Changelist
+from expert_among_us.models.file_chunk import FileChunk
 from expert_among_us.models.query import QueryParams, VectorSearchResult
 from expert_among_us.embeddings.base import Embedder
 from expert_among_us.db.metadata.sqlite import SQLiteMetadataDB
@@ -44,6 +45,7 @@ class Searcher:
         vector_db: ChromaVectorDB,
         enable_metadata_search: bool = True,
         enable_diff_search: bool = True,
+        enable_file_search: bool = True,
         min_similarity_score: float = 0.3,
         relative_threshold: float = 0.3
     ):
@@ -57,6 +59,7 @@ class Searcher:
             vector_db: Vector database instance
             enable_metadata_search: Whether to search metadata embeddings
             enable_diff_search: Whether to search diff embeddings
+            enable_file_search: Whether to search file content embeddings
             min_similarity_score: Minimum similarity score threshold (0.0-1.0)
             relative_threshold: Relative score threshold as percentage drop from top result (0.0-1.0)
         """
@@ -66,6 +69,7 @@ class Searcher:
         self.vector_db = vector_db
         self.enable_metadata_search = enable_metadata_search
         self.enable_diff_search = enable_diff_search
+        self.enable_file_search = enable_file_search
         self.min_similarity_score = min_similarity_score
         self.relative_threshold = relative_threshold
     
@@ -112,8 +116,19 @@ class Searcher:
             if len(raw_diff_results) > len(diff_results):
                 log_info(f"Aggregated {len(raw_diff_results)} chunks into {len(diff_results)} commits")
         
+        # Step 3.5: Optionally search file collection
+        file_results: List[VectorSearchResult] = []
+        if self.enable_file_search:
+            log_info("Searching file content embeddings...")
+            raw_file_results = self._search_files(query_embedding, search_limit)
+            
+            # Aggregate chunk scores using max pooling (same as diffs)
+            file_results = self._aggregate_chunk_scores(raw_file_results)
+            if len(raw_file_results) > len(file_results):
+                log_info(f"Aggregated {len(raw_file_results)} file chunks into {len(file_results)} files")
+        
         # Step 4: Merge and deduplicate scores
-        merged_scores = self._merge_scores(metadata_results, diff_results)
+        merged_scores = self._merge_scores(metadata_results, diff_results, file_results)
         
         # Step 5: Get top K changelist IDs (K > N to allow for filtering)
         top_ids = sorted(merged_scores.keys(), key=lambda x: merged_scores[x]['score'], reverse=True)
@@ -186,6 +201,25 @@ class Searcher:
         log_info(f"Diff search found {len(results)} results")
         return results
     
+    def _search_files(
+        self,
+        query_embedding: List[float],
+        top_k: int
+    ) -> List[VectorSearchResult]:
+        """
+        Search file content collection for similar code.
+        
+        Args:
+            query_embedding: Query vector
+            top_k: Number of results to return
+            
+        Returns:
+            List of vector search results from file content collection
+        """
+        results = self.vector_db.search_files(query_embedding, top_k)
+        log_info(f"File search found {len(results)} results")
+        return results
+    
     def _aggregate_chunk_scores(
         self,
         chunk_results: List[VectorSearchResult]
@@ -227,14 +261,17 @@ class Searcher:
     def _merge_scores(
         self,
         metadata_results: List[VectorSearchResult],
-        diff_results: List[VectorSearchResult]
+        diff_results: List[VectorSearchResult],
+        file_results: List[VectorSearchResult] = []
     ) -> Dict[str, Dict[str, any]]:
         """
-        Merge scores from metadata and diff searches.
+        Merge scores from metadata, diff, and file searches.
         
-        For duplicate changelist IDs, combines scores using weighted average:
+        For duplicate changelist IDs (commits), combines scores using weighted average:
         - Metadata: 60% weight (higher signal for "what/why")
         - Diff: 40% weight (implementation details)
+        
+        File results are kept separate from commit results (no merging).
         
         When both sources contribute, the source is set to whichever had
         the higher individual similarity score.
@@ -242,23 +279,26 @@ class Searcher:
         Args:
             metadata_results: Results from metadata search
             diff_results: Results from diff search
+            file_results: Results from file search (kept separate)
             
         Returns:
-            Dictionary mapping changelist_id to {'score': float, 'source': str}
+            Dictionary mapping changelist_id to {'score': float, 'source': str, 'is_file': bool}
         """
         merged: Dict[str, Dict[str, any]] = {}
         
-        # Add metadata results
+        # Add metadata results (commits)
         for result in metadata_results:
             merged[result.changelist_id] = {
                 'score': result.similarity_score,
                 'source': 'metadata',
                 'metadata_score': result.similarity_score,
                 'diff_score': None,
+                'file_score': None,
+                'is_file': False,
                 'chroma_id': result.chroma_id
             }
         
-        # Merge diff results
+        # Merge diff results (commits)
         for result in diff_results:
             if result.changelist_id in merged:
                 # Combine scores: 60% metadata, 40% diff
@@ -283,6 +323,8 @@ class Searcher:
                     'source': source,
                     'metadata_score': metadata_score,
                     'diff_score': diff_score,
+                    'file_score': None,
+                    'is_file': False,
                     'chroma_id': chroma_id
                 }
             else:
@@ -292,8 +334,24 @@ class Searcher:
                     'source': 'diff',
                     'metadata_score': None,
                     'diff_score': result.similarity_score,
+                    'file_score': None,
+                    'is_file': False,
                     'chroma_id': result.chroma_id
                 }
+        
+        # Add file results separately (no merging with commits)
+        for result in file_results:
+            # File results are kept separate by using their file path as the key
+            # They won't overlap with commit IDs since file IDs are file paths
+            merged[result.changelist_id] = {
+                'score': result.similarity_score,
+                'source': 'file',
+                'metadata_score': None,
+                'diff_score': None,
+                'file_score': result.similarity_score,
+                'is_file': True,
+                'chroma_id': result.chroma_id
+            }
         
         return merged
     
@@ -304,22 +362,26 @@ class Searcher:
         params: QueryParams
     ) -> List[SearchResult]:
         """
-        Apply metadata filters to changelists.
+        Apply metadata filters to changelists and file chunks.
         
         Filters:
-        - users: Include only changelists by specified authors (OR logic)
-        - files: Include only changelists affecting specified files (OR logic)
+        - users: Include only changelists by specified authors (OR logic, commits only)
+        - files: Include only changelists/chunks affecting specified files (OR logic)
         
         Args:
             changelists: List of changelists to filter
-            scores: Score information for each changelist
+            scores: Score information for each changelist or file path
             params: Query parameters with filter criteria
             
         Returns:
-            Filtered list of SearchResult objects
+            Filtered list of SearchResult objects (can contain both Changelist and FileChunk)
         """
         results: List[SearchResult] = []
         
+        # Separate commit results from file results
+        file_ids = [id for id in scores.keys() if scores[id].get('is_file', False)]
+        
+        # Process commit results
         for changelist in changelists:
             # Skip if not in scores (shouldn't happen, but safety check)
             if changelist.id not in scores:
@@ -344,6 +406,42 @@ class Searcher:
                 source=score_info['source'],
                 chroma_id=score_info.get('chroma_id')
             ))
+        
+        # Process file results
+        if file_ids:
+            # Retrieve file chunks using their chroma_ids
+            chunk_ids = [scores[file_id]['chroma_id'] for file_id in file_ids if scores[file_id].get('chroma_id')]
+            if chunk_ids:
+                file_chunks = self.metadata_db.get_file_chunks_by_ids(chunk_ids)
+                
+                # Create a mapping from chroma_id to FileChunk for quick lookup
+                chunk_map = {chunk.get_chroma_id(): chunk for chunk in file_chunks}
+                
+                for file_id in file_ids:
+                    score_info = scores[file_id]
+                    chroma_id = score_info.get('chroma_id')
+                    
+                    # Get the FileChunk object
+                    file_chunk = chunk_map.get(chroma_id)
+                    if not file_chunk:
+                        continue
+                    
+                    # Apply file filter (OR logic)
+                    if params.files:
+                        # Check if any of the query files match this file path
+                        if not any(qfile in file_chunk.file_path for qfile in params.files):
+                            continue
+                    
+                    # Note: User filter doesn't apply to files
+                    
+                    # Passed all filters, add to results
+                    # The SearchResult dataclass can handle FileChunk via duck typing
+                    results.append(SearchResult(
+                        changelist=file_chunk,  # Duck typing: FileChunk works here
+                        similarity_score=score_info['score'],
+                        source=score_info['source'],
+                        chroma_id=chroma_id
+                    ))
         
         return results
     

@@ -69,8 +69,8 @@ async def list_tools() -> list[Tool]:
             lines = ["\n\n**Currently Available Experts:**"]
             for expert in experts:
                 lines.append(f"- Name: **{expert.name}** -- Path: {expert.workspace_path} -- {expert.commit_count} {expert.vcs_type} commits")
-                if expert.first_commit_time and expert.last_commit_time:
-                    lines.append(f" spanning {expert.first_commit_time.date()} to {expert.last_commit_time.date()}")
+                if expert.first_processed_commit_hash and expert.last_processed_commit_hash:
+                    lines.append(f" spanning {expert.first_processed_commit_hash[:8]} to {expert.last_processed_commit_hash[:8]}")
             expert_list = "\n".join(lines)
     except Exception as e:
         expert_list = f"\n\n**Currently Available Experts:** Error loading: {str(e)}"
@@ -157,9 +157,9 @@ async def list_tools() -> list[Tool]:
                     },
                     "search_scope": {
                         "type": "string",
-                        "enum": ["both", "metadata", "diffs"],
-                        "description": "Search scope: 'both' (default), 'metadata' only, or 'diffs' only",
-                        "default": "both"
+                        "enum": ["metadata", "diffs", "files", "all"],
+                        "description": "Search scope: 'all' (default), 'metadata' only, 'diffs' only, or 'files' only",
+                        "default": "all"
                     }
                 },
                 "required": ["expert_name", "prompt"]
@@ -282,10 +282,10 @@ async def handle_list() -> list[TextContent]:
                 lines.append(f"- **Subdirectories**: {', '.join(expert.subdirs)}")
             if expert.last_indexed_at:
                 lines.append(f"- **Last Indexed**: {expert.last_indexed_at.isoformat()}")
-            if expert.first_commit_time and expert.last_commit_time:
+            if expert.first_processed_commit_hash and expert.last_processed_commit_hash:
                 lines.append(
-                    f"- **Commit Range**: {expert.first_commit_time.date()} to "
-                    f"{expert.last_commit_time.date()}"
+                    f"- **Commit Range**: {expert.first_processed_commit_hash[:8]} to "
+                    f"{expert.last_processed_commit_hash[:8]}"
                 )
             lines.append("")
         
@@ -339,7 +339,7 @@ async def handle_query(
     max_changes: int = 15,
     users: Optional[List[str]] = None,
     files: Optional[List[str]] = None,
-    search_scope: str = "both"
+    search_scope: str = "all"
 ) -> list[TextContent]:
     """Handle query tool - search commit history."""
     try:
@@ -495,11 +495,25 @@ async def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description="Expert Among Us MCP Server")
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
-    parser.add_argument('--llm-provider',
-                       type=str,
-                       choices=['auto', 'openai', 'openrouter', 'ollama', 'bedrock', 'claude-code'],
-                       default='auto',
-                       help='LLM provider for AI recommendations (auto-detects by default)')
+    parser.add_argument(
+        '--llm-provider',
+        type=str,
+        choices=['auto', 'openai', 'openrouter', 'ollama', 'bedrock', 'claude-code'],
+        default='auto',
+        help='LLM provider for AI recommendations (auto-detects by default)',
+    )
+    parser.add_argument(
+        '--embedding-provider',
+        type=str,
+        choices=['local', 'bedrock'],
+        default='local',
+        help='Embedding provider: local=Jina Code, bedrock=AWS Titan (default: local)',
+    )
+    parser.add_argument(
+        '--data-dir',
+        type=Path,
+        help='Base directory for expert data storage (default: ~/.expert-among-us)',
+    )
     args = parser.parse_args()
     
     # Store LLM provider choice in global variable
@@ -537,20 +551,29 @@ async def main():
     logger.info("Starting Expert Among Us MCP Server...")
     logger.info("Initializing MCP server...")
     
-    # Warm up embedding model to avoid cold start timeout
-    logger.info("Warming up embedding model (this may take ~60s on first run)...")
-    from expert_among_us.embeddings.local import JinaCodeEmbedder
+    # Initialize settings with selected providers and optional data_dir
     from expert_among_us.config.settings import Settings
+    from expert_among_us.embeddings.factory import create_embedder
+    
+    settings_kwargs = {
+        "embedding_provider": args.embedding_provider,
+        "llm_provider": args.llm_provider,
+    }
+    if args.data_dir:
+        settings_kwargs["data_dir"] = args.data_dir
+    settings = Settings(**settings_kwargs)
+    
+    # Warm up embeddings, mainly for the local provider
+    logger.info("Warming up local embedding model (this may take ~60s on first run)...")
     warmup_start = time.time()
-    settings = Settings(embedding_provider='local')
-    embedder = JinaCodeEmbedder(
-        model_id=settings.local_embedding_model,
-        dimension=settings.local_embedding_dimension,
-        compile_model=True
-    )
-    _ = embedder.dimension  # Force model load
-    warmup_time = time.time() - warmup_start
-    logger.info(f"Embedding model ready (took {warmup_time:.1f}s)")
+    try:
+        embedder = create_embedder(settings)
+        # Force model initialization
+        _ = embedder.dimension
+        warmup_time = time.time() - warmup_start
+        logger.info(f"Local embedding model ready (took {warmup_time:.1f}s)")
+    except Exception as e:
+        logger.warning(f"Failed to warm up local embedder: {e}")
     
     # Run the server
     async with stdio_server() as (read_stream, write_stream):

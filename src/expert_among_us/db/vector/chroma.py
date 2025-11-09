@@ -199,6 +199,68 @@ class ChromaVectorDB(VectorDB):
         
         return vector_results
     
+    def search_files(self, query_vector: list[float], top_k: int) -> list[VectorSearchResult]:
+        """Search file content embeddings and return results sorted by similarity.
+
+        This is a public API intended for future integration into higher-level
+        query and search flows. It performs a file-scoped search over embeddings
+        whose IDs start with ``file:`` (representing indexed file chunks), but
+        is not yet wired into the core ExpertAmongUs search pipeline.
+
+        Searches the collection and filters for IDs that start with 'file:',
+        which represent file chunk embeddings.
+
+        Args:
+            query_vector: Query embedding vector to search for.
+            top_k: Maximum number of results to return.
+
+        Returns:
+            List of VectorSearchResult objects with file chunk embeddings only,
+            with IDs preserved as 'file:{path}:chunk_{n}' for downstream lookup.
+        """
+        self._ensure_client(require_exists=True)
+        if not self.collection:
+            raise RuntimeError("Collection not initialized. Call initialize() first.")
+        
+        # Request more results to account for filtering
+        # We need to fetch enough to get top_k file results after filtering out commits
+        fetch_count = top_k * 5
+        
+        results = self.collection.query(
+            query_embeddings=[query_vector],
+            n_results=fetch_count
+        )
+        
+        vector_results = []
+        if results['ids'] and results['ids'][0]:
+            for i in range(len(results['ids'][0])):
+                result_id = results['ids'][0][i]
+                
+                # Filter: only include IDs that start with 'file:'
+                if not result_id.startswith('file:'):
+                    continue
+                
+                # Convert distance to similarity score
+                distance = results['distances'][0][i] if results['distances'] else 0.0
+                similarity = max(0.0, min(1.0, 1.0 - distance))
+                
+                # Extract file path from ID (format: file:{path}:chunk_{n})
+                # Keep full ID in chroma_id for retrieval, but use file path as changelist_id
+                parts = result_id.split(':chunk_')
+                file_path = parts[0][5:] if parts else result_id  # Remove 'file:' prefix
+                
+                vector_results.append(VectorSearchResult(
+                    changelist_id=file_path,  # Use file path for grouping
+                    similarity_score=similarity,
+                    chroma_id=result_id  # Preserve full ID for chunk retrieval
+                ))
+                
+                # Stop once we have enough file results
+                if len(vector_results) >= top_k:
+                    break
+        
+        return vector_results
+    
     def delete_by_ids(self, changelist_ids: list[str]) -> None:
         """Delete vectors by changelist IDs."""
         if not self.collection:
@@ -249,3 +311,44 @@ class ChromaVectorDB(VectorDB):
         """Context manager exit - ensures cleanup."""
         self.close()
         return False
+
+    def delete_file_chunks(self, file_path: str) -> int:
+        """Delete all chunks for a specific file path.
+        
+        Args:
+            file_path: Path of the file whose chunks should be deleted
+            
+        Returns:
+            Number of chunks deleted
+        """
+        # Efficient deletion strategy:
+        # - Older implementation abused where on "id" with $gte/$lt, which is invalid in
+        #   modern Chroma (range operators apply only to numeric metadata fields).
+        # - Scanning all IDs client-side is incorrect for large collections.
+        # - Instead, rely on a dedicated metadata field "file_path" indexed by Chroma.
+        #
+        # This assumes that file chunk vectors are written with:
+        #   metadata={"file_path": file_path}
+        # so they can be filtered using where={"file_path": file_path}.
+        #
+        # If existing data was written without this metadata, a one-time reindex may be
+        # required to fully benefit from indexed deletions.
+        
+        if not self.collection:
+            raise RuntimeError("Collection not initialized. Call initialize() first.")
+        
+        # Lookup all IDs associated with this file via metadata filter.
+        results = self.collection.get(
+            where={"file_path": file_path},
+            include=[],
+        )
+        if not results:
+            return 0
+        
+        ids = results.get("ids") or []
+        # Chroma's get() for this call shape returns a flat list of IDs.
+        if not ids:
+            return 0
+        
+        self.collection.delete(ids=ids)
+        return len(ids)

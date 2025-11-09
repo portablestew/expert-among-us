@@ -13,14 +13,11 @@ from rich.table import Table
 
 from expert_among_us import __version__
 from expert_among_us.config.settings import Settings
-from expert_among_us.models.query import QueryParams
 from expert_among_us.models.expert import ExpertConfig
-from expert_among_us.core.searcher import Searcher
-from expert_among_us.embeddings.bedrock import BedrockEmbedder
 from expert_among_us.db.metadata.sqlite import SQLiteMetadataDB
 from expert_among_us.db.vector.chroma import ChromaVectorDB
 from expert_among_us.vcs.detector import detect_vcs
-from expert_among_us.llm.factory import create_llm_provider
+from expert_among_us.embeddings.factory import create_embedder
 from expert_among_us.utils.progress import (
     log_error,
     log_info,
@@ -30,383 +27,6 @@ from expert_among_us.utils.progress import (
 from expert_among_us.utils.truncate import truncate_diff_for_embedding
 # IMPORTANT: Use stderr=True to avoid corrupting MCP stdio protocol when running as MCP server
 console = Console(stderr=True)
-
-
-
-def create_embedder(provider: str, settings: Settings, compile_model: bool = True):
-    """Factory function to create embedder based on provider.
-    
-    Args:
-        provider: "local" for Jina Code embeddings or "bedrock" for AWS Titan
-        settings: Settings instance with configuration
-        compile_model: Whether to use torch.compile for local embedder (default: True)
-        
-    Returns:
-        Embedder instance
-    """
-    if provider == "local":
-        from expert_among_us.embeddings.local import JinaCodeEmbedder
-        return JinaCodeEmbedder(
-            model_id=settings.local_embedding_model,
-            dimension=settings.local_embedding_dimension,
-            compile_model=compile_model
-        )
-    elif provider == "bedrock":
-        return BedrockEmbedder(model_id=settings.embedding_model)
-    else:
-        raise ValueError(f"Unknown embedding provider: {provider}")
-
-
-def _process_changelist_batch(
-    changelists,
-    expert_config: ExpertConfig,
-    embedder,
-    metadata_db,
-    vector_db,
-    max_embedding_tokens: int,
-    debug: bool = False
-) -> None:
-    """Helper function to process a batch of changelists: generate embeddings and store.
-    
-    Args:
-        changelists: List of changelists to process in batch
-        expert_config: Expert configuration
-        embedder: Embedder instance
-        metadata_db: Metadata database instance
-        vector_db: Vector database instance
-        max_embedding_tokens: Maximum tokens for embedding
-        debug: Enable debug logging
-    """
-    if not changelists:
-        return
-    
-    # Prepare texts for batch embedding
-    metadata_texts = []
-    diff_texts = []
-    diff_indices = []  # Track which changelists have diffs
-    
-    for i, changelist in enumerate(changelists):
-        # Prepare metadata text
-        if expert_config.embed_metadata:
-            metadata_text = changelist.get_metadata_text()
-            metadata_text_truncated, _ = truncate_diff_for_embedding(
-                metadata_text,
-                max_bytes=expert_config.max_metadata_embedding_size,
-                max_tokens=max_embedding_tokens
-            )
-            metadata_texts.append(metadata_text_truncated)
-        
-        # Prepare diff text
-        if expert_config.embed_diffs and changelist.diff:
-            diff_truncated, _ = truncate_diff_for_embedding(
-                changelist.diff,
-                max_bytes=expert_config.max_embedding_text_size,
-                max_tokens=max_embedding_tokens
-            )
-            diff_texts.append(diff_truncated)
-            diff_indices.append(i)
-    
-    # Generate metadata embeddings in batch
-    if metadata_texts and expert_config.embed_metadata:
-        metadata_start = time.perf_counter()
-        metadata_embeddings = embedder.embed_batch(metadata_texts)
-        metadata_embed_time = time.perf_counter() - metadata_start
-        if debug:
-            total_metadata_bytes = sum(len(text.encode('utf-8')) for text in metadata_texts)
-            log_info(f"[DEBUG] Metadata embedding took {metadata_embed_time:.3f}s for {len(metadata_texts)} items ({total_metadata_bytes:,} bytes total)")
-        for i, embedding in enumerate(metadata_embeddings):
-            changelists[i].metadata_embedding = embedding
-    
-    # Generate diff embeddings in batch (WITH CHUNKING)
-    if diff_texts and expert_config.embed_diffs:
-        from expert_among_us.utils.chunking import chunk_text
-        
-        # Collect all chunks from all diffs
-        all_chunks = []
-        chunk_metadata = []  # (changelist_id, chunk_index)
-        
-        for i, diff_text in enumerate(diff_texts):
-            changelist_idx = diff_indices[i]
-            changelist = changelists[changelist_idx]
-            
-            # Split diff into chunks
-            chunks = chunk_text(diff_text, chunk_size=expert_config.diff_chunk_size_bytes)
-            
-            for chunk_idx, chunk in enumerate(chunks):
-                all_chunks.append(chunk)
-                chunk_metadata.append((changelist.id, chunk_idx))
-        
-        # Embed all chunks in one batch
-        diff_start = time.perf_counter()
-        chunk_embeddings = embedder.embed_batch(all_chunks)
-        diff_embed_time = time.perf_counter() - diff_start
-        
-        if debug:
-            total_bytes = sum(len(c.encode('utf-8')) for c in all_chunks)
-            log_info(f"[DEBUG] Chunked diff embedding: {len(all_chunks)} chunks "
-                    f"from {len(diff_texts)} diffs in {diff_embed_time:.3f}s "
-                    f"({total_bytes:,} bytes total)")
-    
-    # Clear GPU cache after batch processing
-    if hasattr(embedder, 'device') and embedder.device == "cuda" and hasattr(embedder, 'torch'):
-        embedder.torch.cuda.empty_cache()
-    
-    # Store all changelists in metadata database
-    metadata_db.insert_changelists(changelists)
-    
-    # Store all embeddings in vector database
-    metadata_vectors = []
-    diff_vectors = []
-    
-    for changelist in changelists:
-        if changelist.metadata_embedding:
-            metadata_vectors.append((changelist.id, changelist.metadata_embedding))
-        if changelist.diff_embedding:
-            diff_vectors.append((f"{changelist.id}_diff", changelist.diff_embedding))
-    
-    if metadata_vectors:
-        vector_db.insert_vectors(metadata_vectors)
-    
-    # Store chunk embeddings with IDs like {commit_id}_diff_chunk_0
-    if expert_config.embed_diffs and 'chunk_embeddings' in locals():
-        chunk_vectors = [
-            (f"{chunk_metadata[i][0]}_diff_chunk_{chunk_metadata[i][1]}", emb)
-            for i, emb in enumerate(chunk_embeddings)
-        ]
-        if chunk_vectors:
-            vector_db.insert_vectors(chunk_vectors)
-
-
-def _process_commits_incrementally(
-    vcs_provider,
-    workspace_path: str,
-    subdirs_list: Optional[list[str]],
-    batch_size: int,
-    expert_config,
-    embedder,
-    metadata_db,
-    vector_db,
-    max_embedding_tokens: int,
-    is_newer: bool,
-    boundary_hash: Optional[str],
-    max_commits: int,
-    track_both_boundaries: bool = False,
-    debug: bool = False,
-) -> tuple[int, Optional[datetime], Optional[str], Optional[datetime], Optional[str]]:
-    """Process commits incrementally using topological traversal.
-    
-    Uses Git's default topological ordering with --no-merges to traverse all non-merge commits:
-    - Phase 1 (newer): Moves boundary forward from last_commit_hash toward HEAD
-    - Phase 2 (older): Moves boundary backward from first_commit_hash toward repo root
-    
-    After each batch, the boundary is updated based on Git's topological ordering (parent-child relationships).
-    
-    Args:
-        vcs_provider: VCS provider instance
-        workspace_path: Path to repository
-        subdirs_list: Optional list of subdirectories to filter
-        batch_size: Maximum commits per batch (also triggers embedding)
-        expert_config: Expert configuration
-        embedder: Embedder instance
-        metadata_db: Metadata database instance
-        vector_db: Vector database instance
-        max_embedding_tokens: Maximum tokens for embedding
-        is_newer: True for newer commits (after boundary), False for older (before boundary)
-        boundary_hash: The boundary commit hash (last_commit_hash or first_commit_hash)
-        max_commits: Maximum total commits to process
-        track_both_boundaries: If True, track both boundaries (for initial indexing)
-        
-    Returns:
-        Tuple of (total_processed, new_boundary_time, new_boundary_hash, optional_second_boundary_time, optional_second_boundary_hash)
-    """
-    total_processed = 0
-    new_boundary_time = None
-    new_boundary_hash = boundary_hash
-    second_boundary_time = None
-    second_boundary_hash = None
-    
-    # Track if we've set the last_commit during initial indexing
-    last_commit_set = False
-    
-    # Moving boundary: updated after each batch to track progress
-    current_boundary_hash = boundary_hash
-    current_boundary_time = None
-    
-    # Cycle detection: track recent boundaries to detect infinite loops
-    boundary_history = []
-    max_boundary_history = 10
-    
-    # Counter for display purposes
-    total_examined = 0
-    
-    while total_processed < max_commits:
-        # Fetch one page of commits using the moving boundary
-        # Boundary advances after each batch for continuous pagination
-        print(f"\r{total_examined} commits - paging...    {current_boundary_time if current_boundary_time else ''}", end='', flush=True)
-        if is_newer:
-            if current_boundary_hash is None:
-                # Initial indexing - fetch recent commits
-                page = vcs_provider.get_commits_page(
-                    workspace_path=workspace_path,
-                    subdirs=subdirs_list,
-                    page_size=batch_size,
-                    since_hash=None,
-                    debug=debug
-                )
-            else:
-                # Fetch newer commits after current boundary
-                page = vcs_provider.get_commits_page(
-                    workspace_path=workspace_path,
-                    subdirs=subdirs_list,
-                    page_size=batch_size,
-                    since_hash=current_boundary_hash,
-                    debug=debug
-                )
-        else:
-            # Fetch older commits before current boundary
-            page = vcs_provider.get_commits_page_before(
-                workspace_path=workspace_path,
-                subdirs=subdirs_list,
-                page_size=batch_size,
-                before_hash=current_boundary_hash,
-                debug=debug
-            )
-        
-        # If no more commits, we're done
-        if not page:
-            print()  # Newline after progress
-            break
-        
-        # Filter out already-indexed commits
-        new_commits = []
-        for changelist in page:
-            total_examined += 1
-            print(f"\r{total_examined} commits - fetching...  {changelist.timestamp}", end='', flush=True)
-            
-            existing = metadata_db.get_changelist(changelist.id)
-            if existing:
-                if debug:
-                    log_info(f"\n[DEBUG] Found existing commit {changelist.id[:8]} at {changelist.timestamp}")
-                # Skip already-indexed commits
-                continue
-            
-            new_commits.append(changelist)
-        
-        # If no new commits in this page, advance the boundary and continue
-        # This handles cases where merge commits pull in already-indexed commits
-        if not new_commits:
-            # Update boundary to skip past these already-indexed commits
-            if page:
-                # Use the first commit in the page to advance the boundary
-                # Phase 1: page[0] is newest (git log returns newest-first)
-                # Phase 2: page[0] is oldest (git log --reverse returns oldest-first)
-                last_commit = page[0]
-                current_boundary_hash = last_commit.id
-                current_boundary_time = last_commit.timestamp
-                
-                # Check for boundary cycles (indicates we're stuck between branches)
-                if current_boundary_hash in boundary_history:
-                    if debug:
-                        log_info(f"\n[DEBUG] Cycle detected: {current_boundary_hash[:8]} seen before in boundary history")
-                        log_info(f"[DEBUG] Boundary history: {[h[:8] for h in boundary_history]}")
-                    print()  # Newline after progress
-                    break  # Exit the loop to prevent infinite cycling
-                
-                # Add to boundary history (ring buffer)
-                boundary_history.append(current_boundary_hash)
-                if len(boundary_history) > max_boundary_history:
-                    boundary_history.pop(0)  # Remove oldest entry
-                
-                if debug:
-                    direction = "forward" if is_newer else "backward"
-                    phase = "Phase 1" if is_newer else "Phase 2"
-                    commit_info = f"{current_boundary_hash[:8]} (timestamp: {last_commit.timestamp}, message: {last_commit.message[:50]})"
-                    log_info(f"\n[DEBUG] {phase}: All commits in batch already indexed, advancing boundary {direction} to {commit_info}")
-                continue  # Try next batch
-            else:
-                # No more commits available
-                print()  # Newline after progress
-                break
-        
-        # Embed the batch
-        print(f"\r{total_examined} commits - embedding... {current_boundary_time if current_boundary_time else ''}", end='', flush=True)
-        _process_changelist_batch(new_commits, expert_config, embedder, metadata_db, vector_db, max_embedding_tokens, debug)
-        total_processed += len(new_commits)
-        
-        # Update boundaries based on Git's topological ordering (ignoring timestamps)
-        if track_both_boundaries:
-            # Initial indexing with git log --reverse goes from HEAD backwards
-            # Batch 1 has newest commits, later batches have progressively older commits
-            
-            # Only set last_commit from FIRST batch (newest commits, closest to HEAD)
-            if new_boundary_hash is None:
-                newest_in_batch = new_commits[-1]
-                new_boundary_time = newest_in_batch.timestamp
-                new_boundary_hash = newest_in_batch.id
-                last_commit_set = True  # Mark that we've set it
-            
-            # Update first_commit with EVERY batch (tracks oldest commit seen so far)
-            oldest_in_batch = new_commits[0]
-            second_boundary_time = oldest_in_batch.timestamp
-            second_boundary_hash = oldest_in_batch.id
-        elif is_newer:
-            # Phase 1: track newest (first in list from git log, which returns newest-first)
-            newest_commit = new_commits[0]
-            new_boundary_time = newest_commit.timestamp
-            new_boundary_hash = newest_commit.id
-        else:
-            # Phase 2: track oldest (first in list from git log --reverse)
-            oldest_commit = new_commits[0]
-            new_boundary_time = oldest_commit.timestamp
-            new_boundary_hash = oldest_commit.id
-        
-        # Save boundaries incrementally for resumability
-        if new_boundary_time and new_boundary_hash:
-            if track_both_boundaries:
-                # Initial indexing: Update last_commit only on first batch, first_commit on every batch
-                if last_commit_set:
-                    metadata_db.update_expert_last_commit(expert_config.name, new_boundary_time, new_boundary_hash)
-                    if debug:
-                        log_info(f"[DEBUG] Saved last_commit: {new_boundary_hash[:8]} at {new_boundary_time}")
-                    last_commit_set = False  # Only write it once
-                if second_boundary_time and second_boundary_hash:
-                    metadata_db.update_expert_first_commit(expert_config.name, second_boundary_time, second_boundary_hash)
-                    if debug:
-                        log_info(f"[DEBUG] Saved first_commit: {second_boundary_hash[:8]} at {second_boundary_time}")
-                elif debug:
-                    log_info(f"[DEBUG] WARNING: second_boundary not set! second_time={second_boundary_time}, second_hash={second_boundary_hash}")
-            elif is_newer:
-                # Phase 1: Write new last_commit after every batch
-                metadata_db.update_expert_last_commit(expert_config.name, new_boundary_time, new_boundary_hash)
-                if debug:
-                    log_info(f"[DEBUG] Phase 1 saved last_commit: {new_boundary_hash[:8]} at {new_boundary_time}")
-            else:
-                # Phase 2: Write first_commit after every batch
-                metadata_db.update_expert_first_commit(expert_config.name, new_boundary_time, new_boundary_hash)
-                if debug:
-                    log_info(f"[DEBUG] Phase 2 saved first_commit: {new_boundary_hash[:8]} at {new_boundary_time}")
-        
-        # Update moving boundary for next iteration using raw page data (not filtered)
-        # This ensures boundary follows Git's topological order exactly
-        # Phase 1: git log returns newest-first, so use [0] for newest
-        # Phase 2: git log --reverse returns oldest-first, so use [0] for oldest
-        current_boundary_hash = page[0].id
-        current_boundary_time = page[0].timestamp
-        
-        if debug:
-            direction = "forward" if is_newer else "backward"
-            phase = "Phase 1" if is_newer else "Phase 2"
-            commit_info = f"{current_boundary_hash[:8]} (timestamp: {page[0].timestamp}, message: {page[0].message[:50]})"
-            log_info(f"[DEBUG] {phase}: Moving boundary {direction} to {commit_info}")
-        
-        print(f"\r{total_examined} commits - batch done.  ", end='', flush=True)
-        
-        # Check if we've reached max_commits
-        if total_processed >= max_commits:
-            print()  # Newline after progress
-            break
-    
-    return total_processed, new_boundary_time, new_boundary_hash, second_boundary_time, second_boundary_hash
 
 
 @click.group()
@@ -456,9 +76,9 @@ def main(ctx, debug: bool, data_dir: Optional[Path], llm_provider: str, base_url
 @click.argument("expert_name", type=str)
 @click.argument("workspace", type=click.Path(exists=True, file_okay=False, path_type=Path), required=False, default=None)
 @click.argument("subdirs", nargs=-1, type=str)
-@click.option("--max-commits", default=10000, type=int, help="Maximum commits to index")
+@click.option("--max-commits", default=50000, type=int, help="Maximum commits to index")
 @click.option("--vcs-type", type=click.Choice(["git", "p4"]), default="git", help="Version control system type")
-@click.option("--batch-size", default=50, type=int, help="Maximum commits per embedding batch")
+@click.option("--batch-size", default=500, type=int, help="Maximum commits per embedding batch")
 @click.pass_context
 def populate(
     ctx,
@@ -498,7 +118,6 @@ def populate(
     # Get global options from context
     data_dir = ctx.obj.get('data_dir')
     embedding_provider = ctx.obj.get('embedding_provider')
-    debug = ctx.obj.get('debug', False)
     
     # Step 0: Handle optional workspace - look up from existing expert if not provided
     if workspace is None:
@@ -515,15 +134,19 @@ def populate(
             log_error(f"Usage: expert-among-us populate {expert_name} <workspace_path>")
             sys.exit(1)
     else:
-        # Workspace provided - check for mismatch with existing expert
+        # Workspace provided - allow create-if-missing semantics.
+        # We only enforce a mismatch check if an existing expert record is found.
         metadata_db_temp = SQLiteMetadataDB(expert_name, data_dir=data_dir)
-        existing_expert = metadata_db_temp.get_expert(expert_name)
+        if metadata_db_temp.exists():
+            existing_expert = metadata_db_temp.get_expert(expert_name)
+        else:
+            existing_expert = None
         metadata_db_temp.close()
         
         if existing_expert:
             existing_workspace = Path(existing_expert['workspace_path'])
             if existing_workspace != workspace:
-                log_warning(f"Workspace path mismatch detected!")
+                log_warning("Workspace path mismatch detected!")
                 log_warning(f"  Stored workspace: {existing_workspace}")
                 log_warning(f"  Provided workspace: {workspace}")
                 log_error("Cannot change workspace path for existing expert. Use the original workspace path or create a new expert.")
@@ -551,15 +174,8 @@ def populate(
         if data_dir:
             log_info(f"Using data directory: {data_dir}")
         
-        # Initialize embedder (torch.compile always enabled)
-        embedder = create_embedder(embedding_provider, settings, compile_model=True)
-        
-        # Determine max tokens based on provider
-        max_embedding_tokens = (
-            settings.local_embedding_max_tokens
-            if embedding_provider == "local"
-            else settings.bedrock_embedding_max_tokens
-        )
+        # Initialize embedder using settings (provider/model come from Settings)
+        embedder = create_embedder(settings)
         
         # Create expert configuration
         expert_config = ExpertConfig(
@@ -582,6 +198,8 @@ def populate(
         
         # Step 2: Detect and initialize VCS provider
         log_info(f"Detecting version control system in {workspace}...")
+ 
+        # Detect VCS directly; Git will consult DebugLogger.is_enabled() for its own debug output.
         vcs_provider = detect_vcs(str(workspace))
         
         if vcs_provider is None:
@@ -591,25 +209,14 @@ def populate(
         
         log_success(f"Detected VCS: {vcs_provider.__class__.__name__}")
         
-        # Step 3: Check if expert already exists and get commit time boundaries
+        # Step 3: Check if expert already exists and get commit boundaries
         existing_expert = metadata_db.get_expert(expert_name)
-        last_commit_time = None
-        last_commit_hash = None
-        first_commit_time = None
-        first_commit_hash = None
         
         if existing_expert:
             log_info(f"Updating existing expert '{expert_name}'")
-            last_commit_time = existing_expert.get('last_commit_time')
-            last_commit_hash = existing_expert.get('last_commit_hash')
-            first_commit_time = existing_expert.get('first_commit_time')
-            first_commit_hash = existing_expert.get('first_commit_hash')
-            if last_commit_time:
-                hash_display = f" ({last_commit_hash[:8]})" if last_commit_hash else ""
-                log_info(f"Last indexed commit: {last_commit_time}{hash_display}")
-            if first_commit_time:
-                hash_display = f" ({first_commit_hash[:8]})" if first_commit_hash else ""
-                log_info(f"First indexed commit: {first_commit_time}{hash_display}")
+            last_processed = existing_expert.get('last_processed_commit_hash')
+            if last_processed:
+                log_info(f"Last processed commit: {last_processed[:8]}")
         else:
             log_info(f"Creating new expert '{expert_name}'")
             metadata_db.create_expert(expert_config.name, str(expert_config.workspace_path), expert_config.subdirs, expert_config.vcs_type)
@@ -617,106 +224,43 @@ def populate(
         subdirs_list = list(subdirs) if subdirs else None
         total_processed = 0
         
-        # Step 4: Phase 1 - Process newer commits (if last_commit_hash exists)
-        if last_commit_hash is not None:
-            log_info("Phase 1: Processing newer commits...")
-            
-            phase1_processed, new_last_time, new_last_hash, _, _ = _process_commits_incrementally(
-                vcs_provider=vcs_provider,
-                workspace_path=str(workspace),
-                subdirs_list=subdirs_list,
-                batch_size=batch_size,
-                expert_config=expert_config,
-                embedder=embedder,
+        # Step 4: Use unified indexing (processes both files and commits together)
+        log_info("Starting unified indexing...")
+        try:
+            # Initialize unified indexer with explicit dependency injection
+            from expert_among_us.core.indexer import Indexer
+
+            indexer = Indexer(
+                expert_config=expert_config.model_dump(),
+                vcs=vcs_provider,
                 metadata_db=metadata_db,
                 vector_db=vector_db,
-                max_embedding_tokens=max_embedding_tokens,
-                is_newer=True,
-                boundary_hash=last_commit_hash,
-                max_commits=max_commits,
-                track_both_boundaries=False,
-                debug=debug
-            )
-            
-            total_processed += phase1_processed
-            
-            if phase1_processed > 0 and new_last_hash:
-                # Save the boundary at the end of Phase 1
-                metadata_db.update_expert_last_commit(expert_config.name, new_last_time, new_last_hash)
-                log_info(f"Phase 1 complete - indexed up to {new_last_time.isoformat()}")
-            else:
-                log_info("No newer commits found")
-        
-        # Step 5: Phase 2 - Process older commits
-        if first_commit_time is not None:
-            log_info("Phase 2: Processing older commits...")
-            
-            phase2_processed, new_first_time, new_first_hash, _, _ = _process_commits_incrementally(
-                vcs_provider=vcs_provider,
-                workspace_path=str(workspace),
-                subdirs_list=subdirs_list,
-                batch_size=batch_size,
-                expert_config=expert_config,
                 embedder=embedder,
-                metadata_db=metadata_db,
-                vector_db=vector_db,
-                max_embedding_tokens=max_embedding_tokens,
-                is_newer=False,
-                boundary_hash=first_commit_hash,
-                max_commits=max_commits,
-                track_both_boundaries=False,
-                debug=debug
             )
+
+            # Run unified indexing
+            indexer.index_unified(batch_size=batch_size)
+            log_success("Unified indexing complete!")
             
-            total_processed += phase2_processed
+            # Get total processed commits for reporting
+            total_processed = metadata_db.get_commit_count(expert_name)
             
-            if phase2_processed > 0 and new_first_hash:
-                # Save the boundary at the end of Phase 2
-                metadata_db.update_expert_first_commit(expert_config.name, new_first_time, new_first_hash)
-                log_info(f"Phase 2 complete - indexed back to {new_first_time.isoformat()}")
+        except Exception as e:
+            log_error(f"Unified indexing failed: {str(e)}")
+            if debug:
+                raise
             else:
-                log_info("No older commits found")
-        else:
-            # Initial indexing - fetch and process recent commits going backwards from HEAD
-            log_info("Phase 2: Initial indexing - fetching recent commits...")
-            
-            phase2_processed, min_time, min_hash, max_time, max_hash = _process_commits_incrementally(
-                vcs_provider=vcs_provider,
-                workspace_path=str(workspace),
-                subdirs_list=subdirs_list,
-                batch_size=batch_size,
-                expert_config=expert_config,
-                embedder=embedder,
-                metadata_db=metadata_db,
-                vector_db=vector_db,
-                max_embedding_tokens=max_embedding_tokens,
-                is_newer=False,  # Use Phase 2 logic to go backwards from HEAD
-                boundary_hash=None,
-                max_commits=max_commits,
-                track_both_boundaries=True,
-                debug=debug
-            )
-            
-            total_processed += phase2_processed
-            
-            if phase2_processed > 0 and max_hash and min_hash:
-                # Save both boundaries at the end of initial indexing
-                metadata_db.update_expert_last_commit(expert_config.name, max_time, max_hash)
-                metadata_db.update_expert_first_commit(expert_config.name, min_time, min_hash)
-                log_info(f"Initial indexing complete - processed {phase2_processed} commits")
-                log_info(f"Time range: {min_time.isoformat()} to {max_time.isoformat()}")
-            else:
-                log_info("No commits found")
+                log_info("Indexing may have been interrupted - try again to resume")
         
         # Update expert index time
         metadata_db.update_expert_index_time(expert_config.name, datetime.now(timezone.utc))
         
-        # Step 6: Report results
+        # Step 7: Report results
         if total_processed > 0:
             log_success(f"Indexing complete!")
             log_info(f"Successfully processed: {total_processed} commits")
         else:
-            log_info("No new commits to index")
+            log_info("No commits were processed")
         
         # Cleanup
         metadata_db.close()
@@ -735,9 +279,9 @@ def populate(
 @click.option("--files", type=str, help="Filter by files (comma-separated)")
 @click.option("--output", type=click.Path(path_type=Path), help="Output JSON file")
 @click.option("--search-scope",
-              type=click.Choice(["both", "metadata", "diffs"], case_sensitive=False),
-              default="both",
-              help="Search scope: both (default), metadata only, or diffs only")
+              type=click.Choice(["metadata", "diffs", "files", "all"], case_sensitive=False),
+              default="all",
+              help="Search scope: all (default), metadata only, diffs only, or files only")
 @click.option("--min-score",
               type=float,
               default=0.1,
@@ -767,9 +311,10 @@ def query(
     
     Options:
         --search-scope: Control which embeddings to search
-            - both: Search both metadata and diff embeddings (default)
+            - all: Search metadata, diffs, and file content (default)
             - metadata: Search only metadata embeddings
             - diffs: Search only diff embeddings
+            - files: Search only file content embeddings
         
         --min-score: Absolute minimum similarity score threshold (default: 0.1)
             - Applied first, filters out results below this absolute threshold
@@ -790,7 +335,7 @@ def query(
     Examples:
     
         \b
-        # Basic query (searches both metadata and diffs)
+        # Basic query (searches all sources)
         $ expert-among-us query MyExpert "How to add new feature?"
         
         \b
@@ -804,6 +349,14 @@ def query(
         \b
         # Search only diff embeddings
         $ expert-among-us query MyExpert "Code changes" --search-scope diffs
+        
+        \b
+        # Search only file content
+        $ expert-among-us query MyExpert "function implementation" --search-scope files
+        
+        \b
+        # Search everything (metadata, diffs, and files)
+        $ expert-among-us query MyExpert "authentication logic" --search-scope all
         
         \b
         # Strict filtering (only results very close to top)
@@ -975,6 +528,9 @@ def prompt(
     EXPERT_NAME: Name of the expert to query
     
     PROMPT: Question or task description
+    
+    Note: File content is automatically searched and included when relevant,
+    providing current codebase context alongside historical commit patterns.
     
     Examples:
     
@@ -1156,13 +712,13 @@ def list(ctx) -> None:
             else:
                 last_indexed = "Never"
             
-            # Format commit range
-            if expert.first_commit_time and expert.last_commit_time:
-                commit_range = f"{expert.first_commit_time.strftime('%Y-%m-%d')} → {expert.last_commit_time.strftime('%Y-%m-%d')}"
-            elif expert.last_commit_time:
-                commit_range = f"Only: {expert.last_commit_time.strftime('%Y-%m-%d')}"
+            # Format commit range (use commit hash for unified indexing, oldest → newest)
+            if expert.first_processed_commit_hash and expert.last_processed_commit_hash:
+                commit_range = f"Range: {expert.first_processed_commit_hash[:8]} → {expert.last_processed_commit_hash[:8]}"
+            elif expert.last_processed_commit_hash:
+                commit_range = f"Only: {expert.last_processed_commit_hash[:8]}"
             else:
-                commit_range = "No commits"
+                commit_range = "No commits processed"
             
             table.add_row(
                 expert.name,

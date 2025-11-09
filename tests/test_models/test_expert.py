@@ -91,7 +91,9 @@ def test_expert_config_defaults():
         assert config.embed_metadata is True
         assert config.subdirs == []
         assert config.last_indexed_at is None
-        assert config.last_commit_time is None
+        # Unified indexing: defaults for new tracking fields
+        assert config.last_processed_commit_hash is None
+        assert config.first_processed_commit_hash is None
 
 
 def test_expert_config_get_storage_dir():

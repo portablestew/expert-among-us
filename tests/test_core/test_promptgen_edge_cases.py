@@ -264,27 +264,54 @@ class TestSpecialCharactersAndEncoding:
         assert "Commit Message:" in request
 
 
+class DummyProgress:
+    """Test-only no-op progress object to avoid Rich LiveError in edge-case batch tests."""
+    finished = True
+
+    def add_task(self, *args, **kwargs):
+        return "task-id"
+
+    def update(self, *args, **kwargs):
+        pass
+
+    def advance(self, *args, **kwargs):
+        pass
+
+    def stop(self):
+        pass
+
+
 class TestBatchProcessingEdgeCases:
     """Test edge cases in batch processing."""
-    
+
     def test_empty_changelist_batch(self, prompt_generator):
         """Test generating prompts for empty list."""
+        # Avoid Rich LiveError from nested / concurrent Rich Live progress in tests
+        from expert_among_us.utils import progress as progress_utils
+        progress_utils.create_progress_bar = lambda description, total: (DummyProgress(), "task-id")
+        prompt_generator.progress = DummyProgress()
+        prompt_generator.progress = DummyProgress()
+
         results = prompt_generator.generate_prompts([])
-        
+
         # Should return empty dict
         assert results == {}
-    
+
     def test_single_changelist_batch(self, prompt_generator, mock_llm, mock_metadata_db):
         """Test batch with single changelist."""
         mock_metadata_db.get_generated_prompt.return_value = None
-        
+
+        # Avoid Rich LiveError from nested / concurrent Rich Live progress in tests
+        from expert_among_us.utils import progress as progress_utils
+        progress_utils.create_progress_bar = lambda description, total: (DummyProgress(), "task-id")
+
         mock_llm.generate.return_value = LLMResponse(
             content="Single prompt",
             model="test-model",
             stop_reason="end_turn",
             usage=UsageMetrics(input_tokens=50, output_tokens=10, total_tokens=60)
         )
-        
+
         changelist = Changelist(
             id="single123",
             expert_name="TestExpert",
@@ -294,9 +321,9 @@ class TestBatchProcessingEdgeCases:
             diff="diff content",
             files=["file.py"],
         )
-        
+
         results = prompt_generator.generate_prompts([changelist])
-        
+
         assert len(results) == 1
         assert results["single123"] == "Single prompt"
     
@@ -405,18 +432,20 @@ class TestQuoteHandling:
 
 class TestConcurrentGenerationScenarios:
     """Test scenarios that might occur with concurrent generation."""
-    
+
     def test_duplicate_changelist_ids(self, prompt_generator, mock_llm, mock_metadata_db):
         """Test handling of duplicate changelist IDs in batch."""
         mock_metadata_db.get_generated_prompt.return_value = None
-        
+
+        # Progress patching is handled globally by tests/conftest.py.
+
         mock_llm.generate.return_value = LLMResponse(
             content="Generated prompt",
             model="test-model",
             stop_reason="end_turn",
             usage=UsageMetrics(input_tokens=50, output_tokens=10, total_tokens=60)
         )
-        
+
         # Create changelists with same ID (edge case, shouldn't happen normally)
         changelists = [
             Changelist(
@@ -430,9 +459,9 @@ class TestConcurrentGenerationScenarios:
             )
             for i in range(2)
         ]
-        
+
         results = prompt_generator.generate_prompts(changelists)
-        
+
         # Last one should win
         assert len(results) == 1
         assert "duplicate" in results

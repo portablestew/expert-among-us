@@ -80,8 +80,10 @@ class TestVCSDetection:
 
             vcs = detect_vcs(str(repo_path))
 
-            # Verify it's a Git instance with expected methods
-            assert hasattr(vcs, 'get_commits_page')
+            # Verify it's a Git instance with expected methods (updated interface)
+            assert hasattr(vcs, 'get_commits_after')
+            assert hasattr(vcs, 'get_tracked_files_at_commit')
+            assert hasattr(vcs, 'get_file_content_at_commit')
             assert hasattr(vcs, 'get_latest_commit_time')
             assert hasattr(vcs, 'detect')
 
@@ -197,13 +199,13 @@ class TestVCSProviderIntegration:
             )
             
             vcs = detect_vcs(str(repo_path))
-            commits = vcs.get_commits_page(
+            commits = vcs.get_commits_after(
                 workspace_path=str(repo_path),
+                after_hash=None,
+                batch_size=10,
                 subdirs=None,
-                page_size=10,
-                since_hash=None
             )
-            
+
             assert len(commits) > 0
 
     def test_detected_git_can_get_latest_commit_time(self):
@@ -434,10 +436,13 @@ class TestVCSProviderInterface:
             
             vcs = detect_vcs(str(repo_path))
 
-            # Verify required methods exist
-            assert hasattr(vcs, 'get_commits_page')
-            assert callable(vcs.get_commits_page)
-            assert callable(vcs.get_commits_page_before)
+            # Verify required methods exist on detected provider (updated interface)
+            assert hasattr(vcs, 'get_commits_after')
+            assert callable(vcs.get_commits_after)
+            assert hasattr(vcs, 'get_tracked_files_at_commit')
+            assert callable(vcs.get_tracked_files_at_commit)
+            assert hasattr(vcs, 'get_file_content_at_commit')
+            assert callable(vcs.get_file_content_at_commit)
             assert hasattr(vcs, 'get_latest_commit_time')
             assert callable(vcs.get_latest_commit_time)
 

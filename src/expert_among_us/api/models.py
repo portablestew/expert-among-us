@@ -17,8 +17,8 @@ class ExpertInfo:
         subdirs: List of subdirectories being indexed (empty for all)
         commit_count: Number of commits indexed
         last_indexed_at: Timestamp of last indexing operation
-        first_commit_time: Timestamp of oldest indexed commit
-        last_commit_time: Timestamp of newest indexed commit
+        last_processed_commit_hash: Hash of most recent commit indexed (unified tracking)
+        first_processed_commit_hash: Hash of oldest commit indexed (for display)
     """
     name: str
     vcs_type: str
@@ -26,8 +26,8 @@ class ExpertInfo:
     subdirs: List[str]
     commit_count: int
     last_indexed_at: Optional[datetime]
-    first_commit_time: Optional[datetime]
-    last_commit_time: Optional[datetime]
+    last_processed_commit_hash: Optional[str]
+    first_processed_commit_hash: Optional[str]
 
 
 @dataclass

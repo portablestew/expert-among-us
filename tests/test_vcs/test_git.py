@@ -113,35 +113,33 @@ class TestVCSDetection:
 class TestCommitRetrieval:
     """Tests for commit retrieval with pagination."""
 
-    def test_get_commits_page_basic(self, git_provider, repo_with_commits):
-        """Verify that commits can be retrieved via pagination."""
-        commits = git_provider.get_commits_page(
+    def test_get_commits_after_basic(self, git_provider, repo_with_commits):
+        """Verify that commits can be retrieved via unified get_commits_after API."""
+        commits = git_provider.get_commits_after(
             workspace_path=str(repo_with_commits),
+            after_hash=None,
+            batch_size=10,
             subdirs=None,
-            page_size=10,
-            since_hash=None
         )
-        
         assert len(commits) > 0
 
-    def test_get_commits_page_respects_page_size(self, git_provider, repo_with_commits):
-        """Verify that page_size parameter limits results."""
-        commits = git_provider.get_commits_page(
+    def test_get_commits_after_respects_batch_size(self, git_provider, repo_with_commits):
+        """Verify that batch_size parameter limits results."""
+        commits = git_provider.get_commits_after(
             workspace_path=str(repo_with_commits),
+            after_hash=None,
+            batch_size=2,
             subdirs=None,
-            page_size=2,
-            since_hash=None
         )
-        
         assert len(commits) <= 2
 
-    def test_get_commits_page_returns_changelist_objects(self, git_provider, repo_with_commits):
+    def test_get_commits_after_returns_changelist_objects(self, git_provider, repo_with_commits):
         """Verify that commits have required attributes."""
-        commits = git_provider.get_commits_page(
+        commits = git_provider.get_commits_after(
             workspace_path=str(repo_with_commits),
+            after_hash=None,
+            batch_size=1,
             subdirs=None,
-            page_size=1,
-            since_hash=None
         )
         
         assert len(commits) > 0
@@ -153,31 +151,24 @@ class TestCommitRetrieval:
         assert hasattr(commit, 'diff')
         assert hasattr(commit, 'files')
 
-    def test_get_commits_page_with_since_filter(self, git_provider, repo_with_commits):
-        """Verify that since_hash filter works correctly."""
-        # Get first page
-        all_commits = git_provider.get_commits_page(
+    def test_get_commits_after_with_after_hash_filter(self, git_provider, repo_with_commits):
+        """Verify that after_hash filter works correctly."""
+        all_commits = git_provider.get_commits_after(
             workspace_path=str(repo_with_commits),
+            after_hash=None,
+            batch_size=10,
             subdirs=None,
-            page_size=10,
-            since_hash=None
         )
         if len(all_commits) > 1:
-            # Use the second commit as boundary (to exclude the most recent)
-            since_hash = all_commits[1].id
-            
-            # Get commits since that hash (should return commits newer than since_hash)
-            recent_commits = git_provider.get_commits_page(
+            boundary = all_commits[0].id
+            newer = git_provider.get_commits_after(
                 workspace_path=str(repo_with_commits),
+                after_hash=boundary,
+                batch_size=10,
                 subdirs=None,
-                page_size=10,
-                since_hash=since_hash
             )
-            
-            # Should return the most recent commit only
-            assert len(recent_commits) >= 1
-            # The most recent commit should be included
-            assert recent_commits[0].id == all_commits[0].id
+            # All returned commits should be strictly after the boundary in chronological order
+            assert all(c.id != boundary for c in newer)
 
     def test_get_commits_page_with_subdirectory_filter(self, temp_repo_path, git_provider):
         """Verify that subdirectory filter works."""
@@ -220,67 +211,66 @@ class TestCommitRetrieval:
         )
         
         # Get commits for src directory
-        src_commits = git_provider.get_commits_page(
+        src_commits = git_provider.get_commits_after(
             workspace_path=str(repo_path),
+            after_hash=None,
+            batch_size=10,
             subdirs=["src"],
-            page_size=10,
-            since_hash=None
         )
         
         # Should have at least one commit touching src
         assert len(src_commits) > 0
 
     def test_get_commits_page_empty_repository(self, git_provider):
-        """Verify behavior with empty Git repository."""
+        """Empty Git repository should cause git log to fail with an error."""
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_path = Path(tmpdir)
             subprocess.run(
                 ["git", "init"],
                 cwd=repo_path,
                 capture_output=True,
-                check=True
+                check=True,
             )
-            
-            commits = git_provider.get_commits_page(
-                workspace_path=str(repo_path),
-                subdirs=None,
-                page_size=10,
-                since_hash=None
-            )
-            
-            assert commits == []
 
-    def test_get_commits_page_message_preserved(self, git_provider, repo_with_commits):
+            with pytest.raises(subprocess.CalledProcessError):
+                git_provider.get_commits_after(
+                    workspace_path=str(repo_path),
+                    after_hash=None,
+                    batch_size=10,
+                    subdirs=None,
+                )
+
+    def test_get_commits_after_message_preserved(self, git_provider, repo_with_commits):
         """Verify that commit messages are preserved correctly."""
-        commits = git_provider.get_commits_page(
+        commits = git_provider.get_commits_after(
             workspace_path=str(repo_with_commits),
+            after_hash=None,
+            batch_size=10,
             subdirs=None,
-            page_size=10,
-            since_hash=None
         )
         
         messages = [c.message for c in commits]
         assert any("Commit" in msg for msg in messages)
 
-    def test_get_commits_page_author_preserved(self, git_provider, repo_with_commits):
+    def test_get_commits_after_author_preserved(self, git_provider, repo_with_commits):
         """Verify that commit authors are preserved correctly."""
-        commits = git_provider.get_commits_page(
+        commits = git_provider.get_commits_after(
             workspace_path=str(repo_with_commits),
+            after_hash=None,
+            batch_size=10,
             subdirs=None,
-            page_size=10,
-            since_hash=None
         )
         
         authors = [c.author for c in commits]
         assert any("Test User" in author for author in authors)
 
-    def test_get_commits_page_timestamp_format(self, git_provider, repo_with_commits):
+    def test_get_commits_after_timestamp_format(self, git_provider, repo_with_commits):
         """Verify that commit timestamps are datetime objects."""
-        commits = git_provider.get_commits_page(
+        commits = git_provider.get_commits_after(
             workspace_path=str(repo_with_commits),
+            after_hash=None,
+            batch_size=1,
             subdirs=None,
-            page_size=1,
-            since_hash=None
         )
         
         if commits:
@@ -306,21 +296,21 @@ class TestCommitRetrieval:
                 check=True
             )
         
-        # Get first page
-        first_page = git_provider.get_commits_page(
+        # Get first batch
+        first_page = git_provider.get_commits_after(
             workspace_path=str(repo_path),
+            after_hash=None,
+            batch_size=1,
             subdirs=None,
-            page_size=1,
-            since_hash=None
         )
         
         # Get second page using first commit as boundary
         if first_page:
-            second_page = git_provider.get_commits_page(
+            second_page = git_provider.get_commits_after(
                 workspace_path=str(repo_path),
+                after_hash=first_page[0].id,
+                batch_size=1,
                 subdirs=None,
-                page_size=1,
-                since_hash=first_page[0].id
             )
             
             # If there are more commits, pages should be different
@@ -329,26 +319,26 @@ class TestCommitRetrieval:
             # Let's just verify we got the first page
             assert len(first_page) == 1
 
-    def test_get_commits_page_contains_diff(self, git_provider, repo_with_commits):
+    def test_get_commits_after_contains_diff(self, git_provider, repo_with_commits):
         """Verify that commits contain diff information."""
-        commits = git_provider.get_commits_page(
+        commits = git_provider.get_commits_after(
             workspace_path=str(repo_with_commits),
+            after_hash=None,
+            batch_size=1,
             subdirs=None,
-            page_size=1,
-            since_hash=None
         )
         
         if commits:
             assert commits[0].diff is not None
             assert isinstance(commits[0].diff, str)
 
-    def test_get_commits_page_contains_files(self, git_provider, repo_with_commits):
+    def test_get_commits_after_contains_files(self, git_provider, repo_with_commits):
         """Verify that commits contain file information."""
-        commits = git_provider.get_commits_page(
+        commits = git_provider.get_commits_after(
             workspace_path=str(repo_with_commits),
+            after_hash=None,
+            batch_size=1,
             subdirs=None,
-            page_size=1,
-            since_hash=None
         )
         
         if commits:
@@ -465,15 +455,14 @@ class TestEdgeCases:
     """Tests for edge cases and boundary conditions with pagination API."""
 
     def test_get_commits_page_from_nonexistent_directory(self, git_provider):
-        """Verify behavior when Git provider points to non-existent directory."""
-        commits = git_provider.get_commits_page(
-            workspace_path="/nonexistent/path",
-            subdirs=None,
-            page_size=10,
-            since_hash=None
-        )
-        # Should return empty list, not crash
-        assert commits == []
+        """Nonexistent workspace path should raise an error."""
+        with pytest.raises(subprocess.CalledProcessError):
+            git_provider.get_commits_after(
+                workspace_path="/nonexistent/path",
+                after_hash=None,
+                batch_size=10,
+                subdirs=None,
+            )
 
     def test_get_commits_page_with_special_characters_in_messages(self, temp_repo_path, git_provider):
         """Verify commits with special characters in message are handled."""
@@ -493,11 +482,11 @@ class TestEdgeCases:
             check=True
         )
         
-        commits = git_provider.get_commits_page(
+        commits = git_provider.get_commits_after(
             workspace_path=str(repo_path),
+            after_hash=None,
+            batch_size=1,
             subdirs=None,
-            page_size=1,
-            since_hash=None
         )
         
         assert len(commits) == 1
@@ -528,11 +517,11 @@ class TestEdgeCases:
             check=True
         )
         
-        commits = git_provider.get_commits_page(
+        commits = git_provider.get_commits_after(
             workspace_path=str(repo_path),
+            after_hash=None,
+            batch_size=1,
             subdirs=None,
-            page_size=1,
-            since_hash=None
         )
         
         assert len(commits) == 1
@@ -540,11 +529,11 @@ class TestEdgeCases:
 
     def test_get_commits_page_with_zero_page_size(self, git_provider, repo_with_commits):
         """Verify that page_size=0 returns empty."""
-        commits = git_provider.get_commits_page(
+        commits = git_provider.get_commits_after(
             workspace_path=str(repo_with_commits),
+            after_hash=None,
+            batch_size=0,
             subdirs=None,
-            page_size=0,
-            since_hash=None
         )
         
         # Should return empty list
@@ -552,41 +541,36 @@ class TestEdgeCases:
         assert len(commits) == 0
 
     def test_get_commits_page_since_nonexistent_hash(self, git_provider, repo_with_commits):
-        """Verify that since_hash with invalid hash returns empty or all commits."""
-        # Using a valid-looking but nonexistent hash should return empty
+        """Invalid since_hash should raise, as it represents a bad range."""
         fake_hash = "0" * 40
-        
-        commits = git_provider.get_commits_page(
-            workspace_path=str(repo_with_commits),
-            subdirs=None,
-            page_size=10,
-            since_hash=fake_hash
-        )
-        # Git will return empty list for invalid hash range
-        assert isinstance(commits, list)
+
+        with pytest.raises(subprocess.CalledProcessError):
+            git_provider.get_commits_after(
+                workspace_path=str(repo_with_commits),
+                after_hash=fake_hash,
+                batch_size=10,
+                subdirs=None,
+            )
 
     def test_get_commits_page_with_valid_since_hash(self, git_provider, repo_with_commits):
         """Verify that since_hash with valid hash filters correctly."""
-        all_commits = git_provider.get_commits_page(
+        all_commits = git_provider.get_commits_after(
             workspace_path=str(repo_with_commits),
+            after_hash=None,
+            batch_size=10,
             subdirs=None,
-            page_size=10,
-            since_hash=None
         )
         
         if len(all_commits) > 1:
-            # Use oldest commit as boundary
-            oldest_hash = all_commits[-1].id
-            recent_commits = git_provider.get_commits_page(
+            oldest_hash = all_commits[0].id
+            recent_commits = git_provider.get_commits_after(
                 workspace_path=str(repo_with_commits),
+                after_hash=oldest_hash,
+                batch_size=10,
                 subdirs=None,
-                page_size=10,
-                since_hash=oldest_hash
             )
-            
-            # Should return commits newer than the boundary (excluding it)
-            # All commits except the oldest one
-            assert len(recent_commits) >= len(all_commits) - 1
+            # Should return commits strictly after the boundary
+            assert all(c.id != oldest_hash for c in recent_commits)
 
     def test_multiple_commits_same_file(self, temp_repo_path, git_provider):
         """Verify that multiple commits to same file are tracked."""
@@ -607,22 +591,22 @@ class TestEdgeCases:
                 check=True
             )
         
-        commits = git_provider.get_commits_page(
+        commits = git_provider.get_commits_after(
             workspace_path=str(repo_path),
+            after_hash=None,
+            batch_size=10,
             subdirs=None,
-            page_size=10,
-            since_hash=None
         )
         
         assert len(commits) == 3
 
     def test_get_commits_page_with_empty_subdirs_list(self, git_provider, repo_with_commits):
         """Verify that empty subdirs list is handled."""
-        commits = git_provider.get_commits_page(
+        commits = git_provider.get_commits_after(
             workspace_path=str(repo_with_commits),
+            after_hash=None,
+            batch_size=10,
             subdirs=[],
-            page_size=10,
-            since_hash=None
         )
         
         # Empty list should be equivalent to no filter
@@ -630,11 +614,11 @@ class TestEdgeCases:
 
     def test_commit_id_is_valid_hash(self, git_provider, repo_with_commits):
         """Verify that commit IDs are valid Git hashes."""
-        commits = git_provider.get_commits_page(
+        commits = git_provider.get_commits_after(
             workspace_path=str(repo_with_commits),
+            after_hash=None,
+            batch_size=1,
             subdirs=None,
-            page_size=1,
-            since_hash=None
         )
         
         if commits:
@@ -648,3 +632,295 @@ class TestEdgeCases:
         latest_time = git_provider.get_latest_commit_time("/nonexistent/path")
         # Should return None, not crash
         assert latest_time is None
+
+
+class TestGetFilesContentAtCommit:
+    """Tests for the batched get_files_content_at_commit API."""
+
+    def _init_repo_with_files(self, temp_repo_path) -> tuple[str, dict[str, str], str]:
+        """Helper: create a single commit with given files, return (repo, files, commit_hash)."""
+        repo_path = temp_repo_path
+
+        # Create multiple text files
+        files = {
+            "a.txt": "hello a",
+            "b.txt": "hello b",
+            "dir/c.txt": "hello c",
+        }
+        for rel, content in files.items():
+            path = repo_path / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+
+        subprocess.run(
+            ["git", "add", "."],
+            cwd=repo_path,
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "add text files"],
+            cwd=repo_path,
+            capture_output=True,
+            check=True,
+        )
+
+        # Get commit hash (HEAD)
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            check=True,
+            encoding="utf-8",
+        )
+        commit_hash = result.stdout.strip()
+        return str(repo_path), files, commit_hash
+
+    def test_basic_batched_file_reading(self, git_provider, temp_repo_path):
+        """Multiple text files can be fetched in a single batched call."""
+        repo_path, files, commit_hash = self._init_repo_with_files(temp_repo_path)
+
+        result = git_provider.get_files_content_at_commit(
+            workspace_path=repo_path,
+            file_paths=list(files.keys()),
+            commit_hash=commit_hash,
+        )
+
+        # Should contain all requested files with exact content.
+        assert set(result.keys()) == set(files.keys())
+        for filename, expected in files.items():
+            assert result[filename] == expected
+
+    def test_binary_file_handling(self, git_provider, temp_repo_path):
+        """Binary files should map to None while text files return content."""
+        repo_path = temp_repo_path
+
+        # Text file
+        (repo_path / "text.txt").write_text("plain text", encoding="utf-8")
+
+        # Binary file (PNG header bytes)
+        binary_data = bytes([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+        (repo_path / "image.bin").write_bytes(binary_data)
+
+        subprocess.run(
+            ["git", "add", "."],
+            cwd=repo_path,
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "add text and binary"],
+            cwd=repo_path,
+            capture_output=True,
+            check=True,
+        )
+
+        commit_hash = (
+            subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                check=True,
+                encoding="utf-8",
+            )
+            .stdout.strip()
+        )
+
+        result = git_provider.get_files_content_at_commit(
+            workspace_path=str(repo_path),
+            file_paths=["text.txt", "image.bin"],
+            commit_hash=commit_hash,
+        )
+
+        assert set(result.keys()) == {"text.txt", "image.bin"}
+        assert result["text.txt"] == "plain text"
+        # Binary file content must be treated as None
+        assert result["image.bin"] is None
+
+    def test_missing_files_return_none(self, git_provider, temp_repo_path):
+        """Missing/non-existent files should map to None in result."""
+        repo_path, files, commit_hash = self._init_repo_with_files(temp_repo_path)
+
+        requested = list(files.keys()) + ["missing.txt", "dir/none.py"]
+
+        result = git_provider.get_files_content_at_commit(
+            workspace_path=repo_path,
+            file_paths=requested,
+            commit_hash=commit_hash,
+        )
+
+        # All requested paths present
+        assert set(result.keys()) == set(requested)
+
+        # Existing files have correct content
+        for filename, expected in files.items():
+            assert result[filename] == expected
+
+        # Missing files are None
+        assert result["missing.txt"] is None
+        assert result["dir/none.py"] is None
+
+    def test_empty_file_list_returns_empty_dict(self, git_provider, temp_repo_path):
+        """Edge case: empty input list returns empty dict."""
+        repo_path = str(temp_repo_path)
+
+        # No need to create commits; API should handle empty input early.
+        result = git_provider.get_files_content_at_commit(
+            workspace_path=repo_path,
+            file_paths=[],
+            commit_hash="HEAD",
+        )
+
+        assert result == {}
+
+    def test_mixed_scenario(self, git_provider, temp_repo_path):
+        """Mixed scenario: valid text, binary, and missing files handled correctly."""
+        repo_path = temp_repo_path
+
+        # Text files
+        (repo_path / "x.txt").write_text("x", encoding="utf-8")
+        (repo_path / "y.txt").write_text("y", encoding="utf-8")
+
+        # Binary file
+        (repo_path / "bin.dat").write_bytes(b"\x00\xFF\x00\xFF")
+
+        subprocess.run(
+            ["git", "add", "."],
+            cwd=repo_path,
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "mixed content"],
+            cwd=repo_path,
+            capture_output=True,
+            check=True,
+        )
+
+        commit_hash = (
+            subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                check=True,
+                encoding="utf-8",
+            )
+            .stdout.strip()
+        )
+
+        requested = ["x.txt", "y.txt", "bin.dat", "missing1", "missing/also"]
+
+        result = git_provider.get_files_content_at_commit(
+            workspace_path=str(repo_path),
+            file_paths=requested,
+            commit_hash=commit_hash,
+        )
+
+        # Ensure all requested paths are present
+        assert set(result.keys()) == set(requested)
+
+        # Text files
+        assert result["x.txt"] == "x"
+        assert result["y.txt"] == "y"
+
+        # Binary -> None
+        assert result["bin.dat"] is None
+
+        # Missing -> None
+        assert result["missing1"] is None
+        assert result["missing/also"] is None
+
+    def test_single_file_backward_compatibility(self, git_provider, temp_repo_path):
+        """Single-file API should behave identically to batched API for one file."""
+        repo_path = temp_repo_path
+
+        (repo_path / "file.txt").write_text("compat content", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", "file.txt"],
+            cwd=repo_path,
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "compat"],
+            cwd=repo_path,
+            capture_output=True,
+            check=True,
+        )
+        commit_hash = (
+            subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                check=True,
+                encoding="utf-8",
+            )
+            .stdout.strip()
+        )
+
+        batched = git_provider.get_files_content_at_commit(
+            workspace_path=str(repo_path),
+            file_paths=["file.txt"],
+            commit_hash=commit_hash,
+        )
+        single = git_provider.get_file_content_at_commit(
+            workspace_path=str(repo_path),
+            file_path="file.txt",
+            commit_hash=commit_hash,
+        )
+
+        assert batched["file.txt"] == "compat content"
+        assert single == "compat content"
+
+    def test_large_file_list_chunking(self, git_provider, temp_repo_path):
+        """Large batches (150+ files) should be processed correctly (chunking behavior)."""
+        repo_path = temp_repo_path
+
+        file_paths = []
+        for i in range(155):
+            rel = f"files/file_{i}.txt"
+            path = repo_path / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            content = f"content {i}"
+            path.write_text(content, encoding="utf-8")
+            file_paths.append(rel)
+
+        subprocess.run(
+            ["git", "add", "."],
+            cwd=repo_path,
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "many files"],
+            cwd=repo_path,
+            capture_output=True,
+            check=True,
+        )
+
+        commit_hash = (
+            subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                check=True,
+                encoding="utf-8",
+            )
+            .stdout.strip()
+        )
+
+        result = git_provider.get_files_content_at_commit(
+            workspace_path=str(repo_path),
+            file_paths=file_paths,
+            commit_hash=commit_hash,
+        )
+
+        # Ensure all files are present with correct content.
+        assert set(result.keys()) == set(file_paths)
+        for i, rel in enumerate(file_paths):
+            assert result[rel] == f"content {i}"

@@ -461,19 +461,21 @@ class TestConnectionManagement:
 class TestEdgeCases:
     """Tests for edge cases and boundary conditions."""
 
-    def test_changelist_with_empty_files_list(self, temp_db):
-        """Verify that inserting a changelist requires at least one file."""
-        # The Changelist model validates that files cannot be empty
-        with pytest.raises(Exception):
-            changelist = Changelist(
-                id="id_empty_files",
-                expert_name="test_expert",
-                timestamp=datetime.now(),
-                author="Author",
-                message="Change with no files",
-                diff="diff",
-                files=[]
-            )
+    def test_changelist_with_empty_files_list_allowed(self, temp_db):
+        """Empty files list is allowed for metadata-only or diff-only changelists."""
+        changelist = Changelist(
+            id="id_empty_files",
+            expert_name="test_expert",
+            timestamp=datetime.now(),
+            author="Author",
+            message="Change with no files",
+            diff="diff",
+            files=[]
+        )
+        temp_db.insert_changelists([changelist])
+        retrieved = temp_db.get_changelist("id_empty_files")
+        assert retrieved is not None
+        assert retrieved.files == []
 
     def test_changelist_with_special_characters(self, temp_db):
         """Verify that changelists with special characters in text fields are handled."""

@@ -25,7 +25,7 @@ def query_expert(
     max_changes: int = 15,
     users: Optional[List[str]] = None,
     files: Optional[List[str]] = None,
-    search_scope: str = "both",
+    search_scope: str = "all",
     min_score: float = 0.1,
     relative_threshold: float = 0.3,
     data_dir: Optional[Path] = None,
@@ -42,7 +42,7 @@ def query_expert(
         max_changes: Maximum number of results to return (default: 15)
         users: Optional list of authors to filter results by
         files: Optional list of file paths to filter results by
-        search_scope: Search scope - "both" (default), "metadata", or "diffs"
+        search_scope: Search scope - "metadata", "diffs", "files", or "all" (default)
         min_score: Minimum similarity score threshold 0.0-1.0 (default: 0.1)
         relative_threshold: Relative threshold from top score 0.0-1.0 (default: 0.3)
         data_dir: Optional custom data directory path
@@ -73,8 +73,8 @@ def query_expert(
     """
     # Validate search_scope
     search_scope_lower = search_scope.lower()
-    if search_scope_lower not in ("both", "metadata", "diffs"):
-        raise ValueError(f"Invalid search_scope: {search_scope}. Must be 'both', 'metadata', or 'diffs'")
+    if search_scope_lower not in ("metadata", "diffs", "files", "all"):
+        raise ValueError(f"Invalid search_scope: {search_scope}. Must be 'metadata', 'diffs', 'files', or 'all'")
     
     # Initialize context
     ctx = ExpertContext(
@@ -100,8 +100,9 @@ def query_expert(
         )
         
         # Determine search scope
-        enable_metadata_search = search_scope_lower in ("both", "metadata")
-        enable_diff_search = search_scope_lower in ("both", "diffs")
+        enable_metadata_search = search_scope_lower in ("metadata", "all")
+        enable_diff_search = search_scope_lower in ("diffs", "all")
+        enable_file_search = search_scope_lower in ("files", "all")
         
         # Create searcher
         searcher = Searcher(
@@ -111,6 +112,7 @@ def query_expert(
             vector_db=ctx.vector_db,
             enable_metadata_search=enable_metadata_search,
             enable_diff_search=enable_diff_search,
+            enable_file_search=enable_file_search,
             min_similarity_score=min_score,
             relative_threshold=relative_threshold
         )
@@ -201,8 +203,8 @@ def list_experts(
                     subdirs=expert['subdirs'],
                     commit_count=commit_count,
                     last_indexed_at=expert['last_indexed_at'],
-                    first_commit_time=expert['first_commit_time'],
-                    last_commit_time=expert['last_commit_time']
+                    last_processed_commit_hash=expert['last_processed_commit_hash'],
+                    first_processed_commit_hash=expert['first_processed_commit_hash']
                 ))
         finally:
             metadata_db.close()

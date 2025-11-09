@@ -55,18 +55,18 @@ def test_changelist_validation_empty_message():
         )
 
 
-def test_changelist_validation_empty_files():
-    """Test that empty files list raises validation error."""
-    with pytest.raises(ValidationError):
-        Changelist(
-            id="abc123",
-            expert_name="TestExpert",
-            timestamp=datetime.now(timezone.utc),
-            author="test_user",
-            message="Test commit",
-            diff="diff --git a/test.py...",
-            files=[],
-        )
+def test_changelist_allows_empty_files_list():
+    """Empty files list is allowed for metadata-only or diff-only changelists."""
+    cl = Changelist(
+        id="abc123",
+        expert_name="TestExpert",
+        timestamp=datetime.now(timezone.utc),
+        author="test_user",
+        message="Test commit",
+        diff="diff --git a/test.py...",
+        files=[],
+    )
+    assert cl.files == []
 
 
 def test_changelist_embedding_dimension_validation():

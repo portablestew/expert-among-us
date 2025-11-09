@@ -22,7 +22,8 @@ class ExpertConfig(BaseModel):
         data_dir: Base directory for expert data storage
         created_at: When the expert was first created
         last_indexed_at: Last successful index time
-        last_commit_time: Most recent commit indexed
+        last_processed_commit_hash: Most recent commit hash indexed (unified tracking)
+        first_processed_commit_hash: Oldest commit hash indexed (for display)
         max_commits: Maximum commits to index
         max_metadata_embedding_size: Maximum bytes for metadata embeddings (20KB default)
         max_embedding_text_size: Maximum bytes for diff before chunking (100KB default)
@@ -50,17 +51,11 @@ class ExpertConfig(BaseModel):
     last_indexed_at: Optional[datetime] = Field(
         None, description="Last successful index time"
     )
-    last_commit_time: Optional[datetime] = Field(
-        None, description="Most recent commit indexed"
+    last_processed_commit_hash: Optional[str] = Field(
+        None, description="Most recent commit hash indexed (unified tracking)"
     )
-    last_commit_hash: Optional[str] = Field(
-        None, description="Hash of the most recent commit indexed"
-    )
-    first_commit_time: Optional[datetime] = Field(
-        None, description="Oldest commit indexed"
-    )
-    first_commit_hash: Optional[str] = Field(
-        None, description="Hash of the oldest commit indexed"
+    first_processed_commit_hash: Optional[str] = Field(
+        None, description="Oldest commit hash indexed (for display)"
     )
     max_commits: int = Field(
         default=10000, ge=1, description="Max commits to index"

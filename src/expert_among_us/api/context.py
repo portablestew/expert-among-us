@@ -86,11 +86,9 @@ class ExpertContext:
             Embedder instance for the configured provider
         """
         if self._embedder is None:
-            from expert_among_us.__main__ import create_embedder
-            self._embedder = create_embedder(
-                self.embedding_provider,
-                self.settings
-            )
+            # Use the shared embeddings factory to avoid duplicating provider logic
+            from expert_among_us.embeddings.factory import create_embedder
+            self._embedder = create_embedder(self.settings)
         return self._embedder
     
     @property

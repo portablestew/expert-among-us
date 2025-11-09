@@ -3,8 +3,6 @@
 import re
 from typing import List, Optional
 
-from ..config.settings import TITAN_MAX_EMBEDDING_TOKENS
-
 
 def truncate_to_bytes(text: str, max_bytes: int) -> tuple[str, bool]:
     """Truncate text to maximum byte size.
@@ -96,8 +94,10 @@ def is_binary_file(content: bytes, sample_size: int = 8192) -> bool:
     text_chars = sum(1 for b in sample if 32 <= b <= 126 or b in (9, 10, 13))
     text_ratio = text_chars / len(sample) if sample else 1.0
     
-    # If less than 70% text characters, likely binary
-    return text_ratio < 0.7
+    # If less than 85% text characters, likely binary
+    # This catches cases like PNG headers which have some ASCII bytes but
+    # also contain non-text control characters (0x89, 0x1A, etc.)
+    return text_ratio < 0.85
 
 
 def extract_filename_from_diff(diff_line: str) -> Optional[str]:
@@ -151,7 +151,7 @@ def extract_all_filenames_from_diff(diff: str) -> List[str]:
 def truncate_diff_for_embedding(
     diff: str,
     max_bytes: int = 100000,
-    max_tokens: int = TITAN_MAX_EMBEDDING_TOKENS,
+    max_tokens: int = 8192,
 ) -> tuple[str, bool]:
     """Truncate diff content for embedding generation.
     
