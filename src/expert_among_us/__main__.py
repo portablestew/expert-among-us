@@ -384,6 +384,7 @@ def query(
             --users john,jane --files src/main.py --output results.json
     """
     from expert_among_us.api import query_expert
+    from expert_among_us.models.query_result import CommitResult, FileChunkResult
     
     log_info(f"Querying similar changes in '{expert_name}'")
     log_info(f"Query: {prompt}")
@@ -443,9 +444,10 @@ def query(
             table.add_column("Message", style="white")
             
             for result in results:
+                # Use common interface instead of assuming Changelist
                 row_data = [
-                    result.changelist.id[:12],
-                    result.changelist.author,
+                    result.get_id()[:12],
+                    result.get_author() or "",
                     f"{result.similarity_score:.3f}",
                     result.source,
                 ]
@@ -455,9 +457,12 @@ def query(
                     chroma_id_display = result.chroma_id if result.chroma_id else "N/A"
                     row_data.append(chroma_id_display)
                 
+                ts = result.get_timestamp()
+                ts_str = ts.strftime("%Y-%m-%d %H:%M:%S") if ts else ""
+                
                 row_data.extend([
-                    result.changelist.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
-                    result.changelist.message[:60] + "..." if len(result.changelist.message) > 60 else result.changelist.message
+                    ts_str,
+                    result.get_preview_text(max_len=60),
                 ])
                 
                 table.add_row(*row_data)
@@ -474,16 +479,30 @@ def query(
                         "files": file_list
                     },
                     "results": [
-                        {
-                            "id": r.changelist.id,
-                            "author": r.changelist.author,
-                            "timestamp": r.changelist.timestamp.isoformat(),
-                            "message": r.changelist.message,
-                            "files": r.changelist.files,
-                            "diff": r.changelist.diff,
-                            "similarity_score": r.similarity_score,
-                            "source": r.source
-                        }
+                        (
+                            {
+                                "id": r.changelist.id,
+                                "type": "commit",
+                                "author": r.changelist.author,
+                                "timestamp": r.changelist.timestamp.isoformat(),
+                                "message": r.changelist.message,
+                                "files": r.changelist.files,
+                                "diff": r.changelist.diff,
+                                "similarity_score": r.similarity_score,
+                                "source": r.source,
+                            }
+                            if isinstance(r, CommitResult)
+                            else {
+                                "id": r.get_id(),
+                                "type": "file_chunk",
+                                "file_path": r.get_file_path(),
+                                "line_range": list(r.get_line_range()),
+                                "content": r.get_content(),
+                                "revision_id": r.get_revision_id(),
+                                "similarity_score": r.similarity_score,
+                                "source": r.source,
+                            }
+                        )
                         for r in results
                     ]
                 }

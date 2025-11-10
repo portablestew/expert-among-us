@@ -49,6 +49,7 @@ from expert_among_us.api import (
     InvalidExpertError,
     NoResultsError,
 )
+from expert_among_us.models.query_result import CommitResult, FileChunkResult
 
 
 # Initialize MCP server
@@ -367,19 +368,37 @@ async def handle_query(
         lines.append(f"Found {len(results)} matching commits\n")
         
         for i, result in enumerate(results, 1):
-            cl = result.changelist
-            lines.append(f"## {i}. Commit {cl.id[:12]} (Score: {result.similarity_score:.3f})")
-            lines.append(f"**Author**: {cl.author}")
-            lines.append(f"**Date**: {cl.timestamp.isoformat()}")
-            lines.append(f"**Files**: {', '.join(cl.files)}")
-            lines.append(f"\n**Message**:\n```\n{cl.message}\n```")
+            if isinstance(result, CommitResult):
+                cl = result.changelist
+                lines.append(f"## {i}. Commit {cl.id[:12]} (Score: {result.similarity_score:.3f})")
+                lines.append(f"**Author**: {cl.author}")
+                lines.append(f"**Date**: {cl.timestamp.isoformat()}")
+                lines.append(f"**Files**: {', '.join(cl.files)}")
+                lines.append(f"\n**Message**:\n```\n{cl.message}\n```")
+                
+                if cl.diff:
+                    # Truncate very long diffs
+                    diff_preview = cl.diff[:5000]
+                    if len(cl.diff) > 5000:
+                        diff_preview += f"\n... (truncated, {len(cl.diff)} total chars)"
+                    lines.append(f"\n**Diff**:\n```diff\n{diff_preview}\n```")
             
-            if cl.diff:
-                # Truncate very long diffs
-                diff_preview = cl.diff[:5000]
-                if len(cl.diff) > 5000:
-                    diff_preview += f"\n... (truncated, {len(cl.diff)} total chars)"
-                lines.append(f"\n**Diff**:\n```diff\n{diff_preview}\n```")
+            elif isinstance(result, FileChunkResult):
+                fc = result.file_chunk
+                lines.append(f"## {i}. File {fc.file_path} (Score: {result.similarity_score:.3f})")
+                lines.append(f"**Lines**: {fc.line_start}-{fc.line_end}")
+                lines.append(f"**Revision**: {fc.revision_id[:12]}")
+                
+                content_preview = fc.content[:5000]
+                if len(fc.content) > 5000:
+                    content_preview += f"\n... (truncated, {len(fc.content)} total chars)"
+                
+                # Detect language for syntax highlighting
+                import os
+                _, ext = os.path.splitext(fc.file_path)
+                lang = ext.lstrip('.') if ext else ''
+                
+                lines.append(f"\n**Content**:\n```{lang}\n{content_preview}\n```")
             
             lines.append("\n---\n")
         

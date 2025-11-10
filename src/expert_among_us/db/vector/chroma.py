@@ -119,7 +119,7 @@ class ChromaVectorDB(VectorDB):
                 result_id = results['ids'][0][i]
                 
                 # Filter: only include IDs that don't end with '_diff'
-                if result_id.endswith('_diff'):
+                if result_id.endswith('_diff') or '_diff_chunk_' in result_id or result_id.startswith('file:'):
                     continue
                 
                 # Convert distance to similarity score
@@ -311,44 +311,3 @@ class ChromaVectorDB(VectorDB):
         """Context manager exit - ensures cleanup."""
         self.close()
         return False
-
-    def delete_file_chunks(self, file_path: str) -> int:
-        """Delete all chunks for a specific file path.
-        
-        Args:
-            file_path: Path of the file whose chunks should be deleted
-            
-        Returns:
-            Number of chunks deleted
-        """
-        # Efficient deletion strategy:
-        # - Older implementation abused where on "id" with $gte/$lt, which is invalid in
-        #   modern Chroma (range operators apply only to numeric metadata fields).
-        # - Scanning all IDs client-side is incorrect for large collections.
-        # - Instead, rely on a dedicated metadata field "file_path" indexed by Chroma.
-        #
-        # This assumes that file chunk vectors are written with:
-        #   metadata={"file_path": file_path}
-        # so they can be filtered using where={"file_path": file_path}.
-        #
-        # If existing data was written without this metadata, a one-time reindex may be
-        # required to fully benefit from indexed deletions.
-        
-        if not self.collection:
-            raise RuntimeError("Collection not initialized. Call initialize() first.")
-        
-        # Lookup all IDs associated with this file via metadata filter.
-        results = self.collection.get(
-            where={"file_path": file_path},
-            include=[],
-        )
-        if not results:
-            return 0
-        
-        ids = results.get("ids") or []
-        # Chroma's get() for this call shape returns a flat list of IDs.
-        if not ids:
-            return 0
-        
-        self.collection.delete(ids=ids)
-        return len(ids)

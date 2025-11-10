@@ -516,6 +516,23 @@ class SQLiteMetadataDB(MetadataDB):
             revision_id=row['revision_id']
         ) for row in rows]
     
+    def get_file_chunk_ids(self, file_path: str) -> list[str]:
+        """Get all chunk IDs for a specific file path.
+        
+        Args:
+            file_path: Path of the file whose chunk IDs should be retrieved
+            
+        Returns:
+            List of chunk IDs (matching ChromaDB IDs)
+        """
+        self._connect(require_exists=True)
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "SELECT id FROM file_chunks WHERE file_path = ?",
+            (file_path,)
+        )
+        return [row['id'] for row in cursor.fetchall()]
+    
     def delete_file_chunks_by_path(self, file_path: str) -> int:
         """Delete all chunks for a specific file path.
         

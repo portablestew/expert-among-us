@@ -12,6 +12,7 @@ from pathlib import Path
 
 from expert_among_us.llm.base import StreamChunk
 from expert_among_us.models.file_chunk import FileChunk
+from expert_among_us.models.query_result import CommitResult, FileChunkResult
 from .context import ExpertContext
 from .exceptions import ExpertNotFoundError, NoResultsError
 from .models import PromptResponse
@@ -140,13 +141,13 @@ async def prompt_expert_stream(
         file_chunks = []
         
         for result in search_results:
-            if isinstance(result.changelist, FileChunk):
-                file_chunks.append(result.changelist)
-            else:
+            if isinstance(result, FileChunkResult):
+                file_chunks.append(result.file_chunk)
+            elif isinstance(result, CommitResult):
                 commit_results.append(result)
         
         # Use commit results for changelists (existing behavior)
-        changelists = [result.changelist for result in commit_results]
+        changelists = [r.changelist for r in commit_results]
         
         if impostor:
             logger.debug(f"[STREAM] Generating prompts (impostor mode) at +{time.time() - start_time:.3f}s")

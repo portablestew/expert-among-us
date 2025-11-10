@@ -72,16 +72,10 @@ class Indexer:
 
         # Total available commits according to VCS; clamp max_commits to this so we don't
         # overrun or show misleading progress when there are fewer commits than the cap.
-        try:
-            total_available = self.vcs.get_total_commit_count(
-                workspace_path=self.expert_config["workspace_path"],
-                subdirs=self.expert_config.get("subdirs"),
-            )
-        except (TypeError, AttributeError):
-            # Backward-compatibility shim for VCS implementations/mocks that don't yet
-            # implement the new get_total_commit_count(workspace_path, subdirs) signature.
-            # In that case, we skip the clamp and behave as before.
-            total_available = 0
+        total_available = self.vcs.get_total_commit_count(
+            workspace_path=self.expert_config["workspace_path"],
+            subdirs=self.expert_config.get("subdirs"),
+        )
 
         if isinstance(total_available, int) and total_available > 0:
             max_commits = min(max_commits, total_available)
@@ -98,7 +92,7 @@ class Indexer:
         # - last_processed_id from metadata DB
         # - commit timestamps carried on Changelist objects once batches are fetched
         console.print(
-            f"[cyan]Indexing {self.expert_config['name']}: {already_indexed}/{max_commits} commits = {last_processed_id or 'OLDEST'}, batch_size={batch_size}"
+            f"[green]Indexing {self.expert_config['name']}: {already_indexed}/{max_commits} commits = {last_processed_id or 'OLDEST'}, batch_size={batch_size}"
         )
 
         while total_commits < max_commits:
@@ -177,8 +171,20 @@ class Indexer:
         return existing, missing
     
     def _delete_file_chunks(self, file_path: str):
-        """Remove file chunks from both databases."""
-        self.vector_db.delete_file_chunks(file_path)
+        """Remove file chunks from both databases.
+        
+        Uses sqlite as source of truth: fetches chunk IDs from sqlite,
+        deletes them from Chroma, then removes from sqlite. This ensures
+        both databases stay in sync even when Chroma lacks metadata.
+        """
+        # Get chunk IDs from sqlite (source of truth)
+        chunk_ids = self.metadata_db.get_file_chunk_ids(file_path)
+        
+        # Delete from Chroma using exact IDs
+        if chunk_ids:
+            self.vector_db.delete_by_ids(chunk_ids)
+        
+        # Delete from sqlite
         self.metadata_db.delete_file_chunks_by_path(file_path)
      
     def _index_files_at_commit(self, file_paths: set[str], revision_id: str) -> None:

@@ -3,7 +3,8 @@
 import pytest
 from datetime import datetime
 from unittest.mock import Mock, MagicMock
-from expert_among_us.core.searcher import Searcher, SearchResult
+from expert_among_us.core.searcher import Searcher
+from expert_among_us.models.query_result import CommitResult, FileChunkResult, QueryResultBase
 from expert_among_us.models.changelist import Changelist
 from expert_among_us.models.query import QueryParams, VectorSearchResult
 
@@ -84,8 +85,15 @@ class TestSearcher:
         
         # Verify results
         assert len(results) > 0
-        assert all(isinstance(r, SearchResult) for r in results)
-        assert all(r.changelist is not None for r in results)
+
+        # New abstraction: all results must implement QueryResultBase
+        assert all(isinstance(r, QueryResultBase) for r in results)
+
+        # At least one commit-style result with attached changelist data
+        assert any(isinstance(r, CommitResult) for r in results)
+        for r in results:
+            if isinstance(r, CommitResult):
+                assert r.changelist is not None
     
     def test_merge_scores_metadata_only(self, searcher):
         """Test score merging with metadata results only."""
@@ -202,10 +210,10 @@ class TestSearcher:
 
 
 class TestSearchResult:
-    """Test cases for SearchResult dataclass."""
+    """Tests for legacy SearchResult behavior, now mapped onto CommitResult."""
     
     def test_create_search_result(self):
-        """Test creating a search result."""
+        """Test creating a commit-style search result."""
         changelist = Changelist(
             id="abc123",
             expert_name="TestExpert",
@@ -216,7 +224,8 @@ class TestSearchResult:
             files=["test.py"]
         )
         
-        result = SearchResult(
+        # Legacy SearchResult dataclass is replaced by CommitResult
+        result = CommitResult(
             changelist=changelist,
             similarity_score=0.95,
             source="metadata"
@@ -227,7 +236,7 @@ class TestSearchResult:
         assert result.source == "metadata"
     
     def test_search_result_sorting(self):
-        """Test that search results can be sorted by score."""
+        """Test that commit-style results can be sorted by score."""
         cl1 = Changelist(
             id="1", expert_name="Test", timestamp=datetime.now(),
             author="john", message="m1", diff="d1", files=["f1"]
@@ -238,8 +247,8 @@ class TestSearchResult:
         )
         
         results = [
-            SearchResult(changelist=cl1, similarity_score=0.85, source="metadata"),
-            SearchResult(changelist=cl2, similarity_score=0.95, source="diff")
+            CommitResult(changelist=cl1, similarity_score=0.85, source="metadata"),
+            CommitResult(changelist=cl2, similarity_score=0.95, source="diff")
         ]
         
         sorted_results = sorted(results, key=lambda x: x.similarity_score, reverse=True)

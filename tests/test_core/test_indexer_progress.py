@@ -36,6 +36,10 @@ def mock_vcs():
                 DummyCommit("c3", base + datetime.timedelta(days=2), ["file3.py"], diff="diff3"),
             ]
 
+        def get_total_commit_count(self, workspace_path, subdirs=None):
+            """Return total commits for progress estimation (used by Indexer.index_unified)."""
+            return len(self._commits)
+
         def get_commits_after(self, workspace_path, after_hash, batch_size, subdirs=None):
             if after_hash is None:
                 start_idx = 0
