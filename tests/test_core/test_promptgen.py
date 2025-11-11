@@ -128,7 +128,7 @@ class TestSinglePromptGeneration:
         # Check the call arguments
         call_args = mock_llm.generate.call_args
         assert call_args.kwargs["model"] == "us.amazon.nova-lite-v1:0"
-        assert call_args.kwargs["max_tokens"] == 500
+        assert call_args.kwargs["max_tokens"] == 1024
         assert call_args.kwargs["temperature"] == 0.7
         assert call_args.kwargs["system"] == PromptGenerator.SYSTEM_PROMPT
     

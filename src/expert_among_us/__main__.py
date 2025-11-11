@@ -236,6 +236,7 @@ def populate(
                 metadata_db=metadata_db,
                 vector_db=vector_db,
                 embedder=embedder,
+                settings=settings,
             )
 
             # Run unified indexing

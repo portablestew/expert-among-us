@@ -8,6 +8,7 @@ import pytest
 from expert_among_us.core.indexer import Indexer
 from expert_among_us.models.changelist import Changelist
 from expert_among_us.models.file_chunk import FileChunk
+from expert_among_us.config.settings import Settings
 
 
 @pytest.fixture
@@ -61,12 +62,14 @@ def mock_embedder():
 
 @pytest.fixture
 def indexer(expert_config, mock_vcs, mock_metadata_db, mock_vector_db, mock_embedder):
+    settings = Settings()
     return Indexer(
         expert_config=expert_config,
         vcs=mock_vcs,
         metadata_db=mock_metadata_db,
         vector_db=mock_vector_db,
         embedder=mock_embedder,
+        settings=settings,
     )
 
 

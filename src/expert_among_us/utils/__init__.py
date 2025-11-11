@@ -14,6 +14,7 @@ from expert_among_us.utils.progress import (
     log_warning,
     update_progress,
 )
+from expert_among_us.utils.sanitization import TextSanitizer
 from expert_among_us.utils.truncate import (
     extract_all_filenames_from_diff,
     extract_filename_from_diff,
@@ -29,6 +30,7 @@ __all__ = [
     "compress_diff",
     "decompress_diff",
     "DebugLogger",
+    "TextSanitizer",
     "create_progress_bar",
     "update_progress",
     "log_info",

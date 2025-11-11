@@ -162,6 +162,9 @@ class Settings(BaseSettings):
     embed_diffs: bool = True
     embed_metadata: bool = True
     
+    # Text sanitization settings
+    enable_sanitization: bool = True
+    
     # Debug settings
     debug: bool = False
     

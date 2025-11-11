@@ -7,6 +7,7 @@ from expert_among_us.db.metadata.base import MetadataDB
 from expert_among_us.db.vector.base import VectorDB
 from expert_among_us.utils.chunking import chunk_text_with_lines
 from expert_among_us.utils.truncate import is_binary_file
+from expert_among_us.utils.sanitization import TextSanitizer
 from expert_among_us.utils.progress import console
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, MofNCompleteColumn
 
@@ -25,6 +26,7 @@ class Indexer:
         metadata_db: MetadataDB,
         vector_db: VectorDB,
         embedder: Embedder,
+        settings,
     ):
         """Create a new Indexer.
 
@@ -40,6 +42,12 @@ class Indexer:
         self.metadata_db: MetadataDB = metadata_db
         self.vector_db: VectorDB = vector_db
         self.embedder = embedder
+        self.settings = settings
+        
+        # Initialize text sanitizer for removing high-entropy patterns
+        # Sanitization happens before embedding but after SQLite storage,
+        # so search results show original content while embeddings are clean
+        self.sanitizer = TextSanitizer()
 
         # Rich Progress is opt-in and used ONLY for:
         # - Processing files into databases
@@ -253,7 +261,13 @@ class Indexer:
 
         # Phase 2: Embedding (tqdm-only). No rich progress here.
         console.print(f"[blue]Embedding {total_chunks} chunks from {len(file_paths)} files...")
-        embeddings = self.embedder.embed_batch([c.content for c in all_chunks])
+        
+        # Sanitize content before embedding to reduce high-entropy noise (if enabled)
+        if self.settings.enable_sanitization:
+            sanitized_contents = [self.sanitizer.sanitize(c.content) for c in all_chunks]
+        else:
+            sanitized_contents = [c.content for c in all_chunks]
+        embeddings = self.embedder.embed_batch(sanitized_contents)
 
         # Phase 3: Storage - optional rich progress is handled inside _store_file_chunks
         self._store_file_chunks(all_chunks, embeddings)
@@ -351,13 +365,25 @@ class Indexer:
         try:
             # Batch 1: metadata embeddings (tqdm-only)
             console.print(f"[blue]Embedding {len(metadata_texts)} commit descriptions...")
-            metadata_embeddings = self.embedder.embed_batch(metadata_texts)
+            
+            # Sanitize metadata before embedding to reduce high-entropy noise (if enabled)
+            if self.settings.enable_sanitization:
+                sanitized_metadata = [self.sanitizer.sanitize(text) for text in metadata_texts]
+            else:
+                sanitized_metadata = metadata_texts
+            metadata_embeddings = self.embedder.embed_batch(sanitized_metadata)
 
             # Batch 2: diff embeddings (tqdm-only, may be empty)
             diff_embeddings: list[list[float]] = []
             if diff_chunk_texts:
                 console.print(f"[blue]Embedding {len(diff_chunk_texts)} diff chunks...")
-                diff_embeddings = self.embedder.embed_batch(diff_chunk_texts)
+                
+                # Sanitize diff chunks before embedding to reduce high-entropy noise (if enabled)
+                if self.settings.enable_sanitization:
+                    sanitized_diffs = [self.sanitizer.sanitize(text) for text in diff_chunk_texts]
+                else:
+                    sanitized_diffs = diff_chunk_texts
+                diff_embeddings = self.embedder.embed_batch(sanitized_diffs)
 
             # Build commit_id -> diff vectors mapping
             from collections import defaultdict
