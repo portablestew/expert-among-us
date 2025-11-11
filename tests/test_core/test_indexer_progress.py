@@ -59,6 +59,15 @@ def mock_vcs():
             # Simple deterministic content to avoid being treated as binary
             return f"# {revision_id}::{file_path}\nprint('ok')\n"
 
+        def get_files_content_at_commit(self, workspace_path, file_paths, commit_hash):
+            """Mock implementation of batched file reading method."""
+            # Return mock content for each requested file
+            results = {}
+            for file_path in file_paths:
+                # Simple deterministic content to avoid being treated as binary
+                results[file_path] = f"# {commit_hash}::{file_path}\nprint('ok')\n"
+            return results
+
     return MockVCS()
 
 

@@ -9,7 +9,9 @@ class ChromaVectorDB(VectorDB):
         base_dir = data_dir or Path.home() / ".expert-among-us"
         self.storage_path = Path(base_dir / "data" / expert_name / "chroma")
         self.client = None
-        self.collection = None
+        self.metadata_collection = None
+        self.diff_collection = None
+        self.file_collection = None
         self.expert_name = expert_name
     
     def exists(self) -> bool:
@@ -35,253 +37,198 @@ class ChromaVectorDB(VectorDB):
             )
     
     def initialize(self, dimension: int, require_exists: bool = False) -> None:
-        """Initialize vector collection with specified dimension.
+        """Initialize vector collections with specified dimension.
         
         Args:
             dimension: The dimension of the vectors
             require_exists: If True, raise an error if the database doesn't exist
         """
         self._ensure_client(require_exists=require_exists)
-        self.collection = self.client.get_or_create_collection(
-            name=f"expert_{self.expert_name}",
+        
+        # Create three separate collections for different content types
+        self.metadata_collection = self.client.get_or_create_collection(
+            name=f"{self.expert_name}_metadata",
+            metadata={"dimension": dimension, "hnsw:space": "cosine"}
+        )
+        self.diff_collection = self.client.get_or_create_collection(
+            name=f"{self.expert_name}_diffs",
+            metadata={"dimension": dimension, "hnsw:space": "cosine"}
+        )
+        self.file_collection = self.client.get_or_create_collection(
+            name=f"{self.expert_name}_files",
             metadata={"dimension": dimension, "hnsw:space": "cosine"}
         )
     
     def insert_vectors(self, vectors: list[tuple[str, list[float]]]) -> None:
         """Insert or update vectors in a batch operation (idempotent)."""
         self._ensure_client()
-        if not self.collection:
+        if not self.metadata_collection:
             raise RuntimeError("Collection not initialized. Call initialize() first.")
         
         ids = [v[0] for v in vectors]
         embeddings = [v[1] for v in vectors]
         # Use upsert instead of add to make re-indexing idempotent
         # This will update existing embeddings or insert new ones
-        self.collection.upsert(
+        self.metadata_collection.upsert(
             embeddings=embeddings,
             ids=ids
         )
+    
+    def insert_metadata(self, vectors: list[tuple[str, list[float]]]) -> None:
+        """Insert commit metadata vectors."""
+        if not self.metadata_collection:
+            raise RuntimeError("Collection not initialized. Call initialize() first.")
+        ids = [v[0] for v in vectors]
+        embeddings = [v[1] for v in vectors]
+        self.metadata_collection.upsert(embeddings=embeddings, ids=ids)
+
+    def insert_diffs(self, vectors: list[tuple[str, list[float]]]) -> None:
+        """Insert diff chunk vectors."""
+        if not self.diff_collection:
+            raise RuntimeError("Collection not initialized. Call initialize() first.")
+        ids = [v[0] for v in vectors]
+        embeddings = [v[1] for v in vectors]
+        self.diff_collection.upsert(embeddings=embeddings, ids=ids)
+
+    def insert_files(self, vectors: list[tuple[str, list[float]]]) -> None:
+        """Insert file content chunk vectors."""
+        if not self.file_collection:
+            raise RuntimeError("Collection not initialized. Call initialize() first.")
+        ids = [v[0] for v in vectors]
+        embeddings = [v[1] for v in vectors]
+        self.file_collection.upsert(embeddings=embeddings, ids=ids)
         
     def search(self, query_vector: list[float], top_k: int) -> list[VectorSearchResult]:
         """Search for similar vectors and return results sorted by similarity."""
         self._ensure_client(require_exists=True)
-        if not self.collection:
+        if not self.metadata_collection:
             raise RuntimeError("Collection not initialized. Call initialize() first.")
         
-        results = self.collection.query(
+        results = self.metadata_collection.query(
             query_embeddings=[query_vector],
             n_results=top_k
         )
         
-        vector_results = []
-        if results['ids'] and results['ids'][0]:
-            for i in range(len(results['ids'][0])):
-                # Convert distance to similarity score (ChromaDB returns cosine distance)
-                # Cosine distance = 1 - cosine_similarity, ranges from 0 (identical) to 2 (opposite)
-                # We convert back to similarity and clamp to [0, 1] range
-                distance = results['distances'][0][i] if results['distances'] else 0.0
-                similarity = max(0.0, min(1.0, 1.0 - distance))
-                vector_results.append(VectorSearchResult(
-                    changelist_id=results['ids'][0][i],
-                    similarity_score=similarity
-                ))
-        return vector_results
+        return self._parse_results(results)
     
     def search_metadata(self, query_vector: list[float], top_k: int) -> list[VectorSearchResult]:
-        """Search for similar metadata embeddings and return results sorted by similarity.
-        
-        Searches the collection and filters for IDs that don't end with '_diff',
-        which represent metadata embeddings.
-        
-        Args:
-            query_vector: Query embedding vector to search for
-            top_k: Maximum number of results to return
-            
-        Returns:
-            List of VectorSearchResult objects with metadata embeddings only
-        """
+        """Search metadata collection - NO FILTERING NEEDED."""
         self._ensure_client(require_exists=True)
-        if not self.collection:
+        if not self.metadata_collection:
             raise RuntimeError("Collection not initialized. Call initialize() first.")
         
-        # Request more results to account for filtering
-        # We need to fetch enough to get top_k metadata results after filtering out diffs
-        fetch_count = top_k * 2
-        
-        results = self.collection.query(
+        results = self.metadata_collection.query(
             query_embeddings=[query_vector],
-            n_results=fetch_count
+            n_results=top_k  # Direct top_k, no multiplier
         )
         
-        vector_results = []
-        if results['ids'] and results['ids'][0]:
-            for i in range(len(results['ids'][0])):
-                result_id = results['ids'][0][i]
-                
-                # Filter: only include IDs that don't end with '_diff'
-                if result_id.endswith('_diff') or '_diff_chunk_' in result_id or result_id.startswith('file:'):
-                    continue
-                
-                # Convert distance to similarity score
-                distance = results['distances'][0][i] if results['distances'] else 0.0
-                similarity = max(0.0, min(1.0, 1.0 - distance))
-                
-                vector_results.append(VectorSearchResult(
-                    changelist_id=result_id,
-                    similarity_score=similarity
-                ))
-                
-                # Stop once we have enough metadata results
-                if len(vector_results) >= top_k:
-                    break
-        
-        return vector_results
+        return self._parse_results(results)
     
     def search_diffs(self, query_vector: list[float], top_k: int) -> list[VectorSearchResult]:
-        """Search for similar diff embeddings and return results sorted by similarity.
-        
-        Searches the collection and filters for IDs that end with '_diff',
-        which represent diff embeddings. The '_diff' suffix is stripped from
-        the changelist_id in the results.
-        
-        Args:
-            query_vector: Query embedding vector to search for
-            top_k: Maximum number of results to return
-            
-        Returns:
-            List of VectorSearchResult objects with diff embeddings only,
-            with changelist_id having the '_diff' suffix removed and chroma_id preserved
-        """
+        """Search diffs collection - NO FILTERING NEEDED."""
         self._ensure_client(require_exists=True)
-        if not self.collection:
+        if not self.diff_collection:
             raise RuntimeError("Collection not initialized. Call initialize() first.")
         
-        # Request more results to account for filtering and multiple chunks per commit
-        # We need to fetch enough to get top_k diff results after filtering out metadata
-        fetch_count = top_k * 5
-        
-        results = self.collection.query(
+        results = self.diff_collection.query(
             query_embeddings=[query_vector],
-            n_results=fetch_count
+            n_results=top_k  # Direct top_k, no multiplier
         )
         
+        # Extract commit hash from chunk IDs
         vector_results = []
         if results['ids'] and results['ids'][0]:
             for i in range(len(results['ids'][0])):
                 result_id = results['ids'][0][i]
-                
-                # Filter: include IDs ending with '_diff' or containing '_diff_chunk_'
-                is_diff = result_id.endswith('_diff')
-                is_chunk = '_diff_chunk_' in result_id
-                
-                if not (is_diff or is_chunk):
-                    continue
-                
-                # Convert distance to similarity score
+                # ID format: {commit_hash}_chunk_{n}
+                changelist_id = result_id.split('_chunk_')[0] if '_chunk_' in result_id else result_id
                 distance = results['distances'][0][i] if results['distances'] else 0.0
                 similarity = max(0.0, min(1.0, 1.0 - distance))
                 
-                # Extract changelist_id from chunk IDs
-                if is_chunk:
-                    changelist_id = result_id.split('_diff_chunk_')[0]
-                else:
-                    changelist_id = result_id[:-5]  # Remove '_diff'
-                
                 vector_results.append(VectorSearchResult(
-                    changelist_id=changelist_id,
+                    result_id=changelist_id,  # Commit hash for diff results
                     similarity_score=similarity,
-                    chroma_id=result_id  # Preserve full ChromaDB ID for debugging
+                    source="diff",
+                    chroma_id=result_id
                 ))
-                
-                # Stop once we have enough diff results
-                if len(vector_results) >= top_k:
-                    break
         
         return vector_results
     
     def search_files(self, query_vector: list[float], top_k: int) -> list[VectorSearchResult]:
-        """Search file content embeddings and return results sorted by similarity.
-
-        This is a public API intended for future integration into higher-level
-        query and search flows. It performs a file-scoped search over embeddings
-        whose IDs start with ``file:`` (representing indexed file chunks), but
-        is not yet wired into the core ExpertAmongUs search pipeline.
-
-        Searches the collection and filters for IDs that start with 'file:',
-        which represent file chunk embeddings.
-
-        Args:
-            query_vector: Query embedding vector to search for.
-            top_k: Maximum number of results to return.
-
-        Returns:
-            List of VectorSearchResult objects with file chunk embeddings only,
-            with IDs preserved as 'file:{path}:chunk_{n}' for downstream lookup.
-        """
+        """Search files collection - NO FILTERING NEEDED."""
         self._ensure_client(require_exists=True)
-        if not self.collection:
+        if not self.file_collection:
             raise RuntimeError("Collection not initialized. Call initialize() first.")
         
-        # Request more results to account for filtering
-        # We need to fetch enough to get top_k file results after filtering out commits
-        fetch_count = top_k * 5
-        
-        results = self.collection.query(
+        results = self.file_collection.query(
             query_embeddings=[query_vector],
-            n_results=fetch_count
+            n_results=top_k  # Direct top_k, no multiplier
         )
         
+        # Extract file path from chunk IDs
         vector_results = []
         if results['ids'] and results['ids'][0]:
             for i in range(len(results['ids'][0])):
                 result_id = results['ids'][0][i]
-                
-                # Filter: only include IDs that start with 'file:'
-                if not result_id.startswith('file:'):
-                    continue
-                
-                # Convert distance to similarity score
+                # ID format: {file_path}:chunk_{n}
+                file_path = result_id.split(':chunk_')[0] if ':chunk_' in result_id else result_id
                 distance = results['distances'][0][i] if results['distances'] else 0.0
                 similarity = max(0.0, min(1.0, 1.0 - distance))
                 
-                # Extract file path from ID (format: file:{path}:chunk_{n})
-                # Keep full ID in chroma_id for retrieval, but use file path as changelist_id
-                parts = result_id.split(':chunk_')
-                file_path = parts[0][5:] if parts else result_id  # Remove 'file:' prefix
-                
                 vector_results.append(VectorSearchResult(
-                    changelist_id=file_path,  # Use file path for grouping
+                    result_id=file_path,  # File path for file results (used as result grouping key)
                     similarity_score=similarity,
-                    chroma_id=result_id  # Preserve full ID for chunk retrieval
+                    source="file",
+                    chroma_id=result_id
                 ))
-                
-                # Stop once we have enough file results
-                if len(vector_results) >= top_k:
-                    break
         
         return vector_results
     
-    def delete_by_ids(self, changelist_ids: list[str]) -> None:
-        """Delete vectors by changelist IDs."""
-        if not self.collection:
-            raise RuntimeError("Collection not initialized. Call initialize() first.")
+    def _parse_results(self, results) -> list[VectorSearchResult]:
+        """Helper to convert ChromaDB results to VectorSearchResult."""
+        vector_results = []
+        if results['ids'] and results['ids'][0]:
+            for i in range(len(results['ids'][0])):
+                distance = results['distances'][0][i] if results['distances'] else 0.0
+                similarity = max(0.0, min(1.0, 1.0 - distance))
+                vector_results.append(VectorSearchResult(
+                    result_id=results['ids'][0][i],  # Can be commit hash or chunk ID depending on collection
+                    similarity_score=similarity,
+                    source="metadata"  # Default to metadata for generic search
+                ))
+        return vector_results
+    
+    def delete_file_chunks(self, chunk_ids: list[str]) -> None:
+        """Delete file chunk vectors from the files collection."""
+        if not chunk_ids:
+            return
+            
+        if not self.file_collection:
+            raise RuntimeError("File collection not initialized. Call initialize() first.")
         
         try:
-            self.collection.delete(ids=changelist_ids)
+            self.file_collection.delete(ids=chunk_ids)
         except Exception:
             # Handle missing IDs gracefully
             pass
     
     def count(self) -> int:
-        """Get total number of vectors in the collection."""
-        if not self.collection:
-            return 0
-        return self.collection.count()
+        """Get total number of vectors across all collections."""
+        total = 0
+        if self.metadata_collection:
+            total += self.metadata_collection.count()
+        if self.diff_collection:
+            total += self.diff_collection.count()
+        if self.file_collection:
+            total += self.file_collection.count()
+        return total
     
     def close(self) -> None:
         """Close database connection and release resources."""
-        # Clear collection reference
-        self.collection = None
+        # Clear collection references
+        self.metadata_collection = None
+        self.diff_collection = None
+        self.file_collection = None
         
         # Properly shut down ChromaDB client to release file handles (critical on Windows)
         if self.client is not None:

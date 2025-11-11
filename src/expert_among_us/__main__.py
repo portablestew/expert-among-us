@@ -274,7 +274,8 @@ def populate(
 @main.command()
 @click.argument("expert_name", type=str)
 @click.argument("prompt", type=str)
-@click.option("--max-changes", default=15, type=int, help="Maximum results to return")
+@click.option("--max-changes", default=10, type=int, help="Maximum changelist results to return")
+@click.option("--max-file-chunks", default=10, type=int, help="Maximum file chunk results to return")
 @click.option("--users", type=str, help="Filter by authors (comma-separated)")
 @click.option("--files", type=str, help="Filter by files (comma-separated)")
 @click.option("--output", type=click.Path(path_type=Path), help="Output JSON file")
@@ -296,6 +297,7 @@ def query(
     expert_name: str,
     prompt: str,
     max_changes: int,
+    max_file_chunks: int,
     users: Optional[str],
     files: Optional[str],
     output: Optional[Path],
@@ -413,6 +415,7 @@ def query(
             expert_name=expert_name,
             prompt=prompt,
             max_changes=max_changes,
+            max_file_chunks=max_file_chunks,
             users=user_list,
             files=file_list,
             search_scope=search_scope,
@@ -523,7 +526,8 @@ def query(
 @main.command()
 @click.argument("expert_name", type=str)
 @click.argument("prompt", type=str)
-@click.option("--max-changes", default=15, type=int, help="Maximum context changes to use")
+@click.option("--max-changes", default=10, type=int, help="Maximum changelist results to use as context")
+@click.option("--max-file-chunks", default=10, type=int, help="Maximum file chunk results to use as context")
 @click.option("--users", type=str, help="Filter by authors (comma-separated)")
 @click.option("--files", type=str, help="Filter by files (comma-separated)")
 @click.option("--amogus", is_flag=True, help="ඞ")
@@ -536,6 +540,7 @@ def prompt(
     expert_name: str,
     prompt: str,
     max_changes: int,
+    max_file_chunks: int,
     users: Optional[str],
     files: Optional[str],
     amogus: bool,
@@ -630,6 +635,7 @@ def prompt(
                 expert_name=expert_name,
                 prompt=prompt,
                 max_changes=max_changes,
+                max_file_chunks=max_file_chunks,
                 users=user_list,
                 files=file_list,
                 amogus=amogus,

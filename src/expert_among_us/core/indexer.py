@@ -3,8 +3,8 @@ from expert_among_us.models.changelist import Changelist
 from expert_among_us.models.file_chunk import FileChunk
 from expert_among_us.embeddings.base import Embedder
 from expert_among_us.vcs.base import VCSProvider
-from expert_among_us.db.metadata.sqlite import SQLiteMetadataDB
-from expert_among_us.db.vector.chroma import ChromaVectorDB
+from expert_among_us.db.metadata.base import MetadataDB
+from expert_among_us.db.vector.base import VectorDB
 from expert_among_us.utils.chunking import chunk_text_with_lines
 from expert_among_us.utils.truncate import is_binary_file
 from expert_among_us.utils.progress import console
@@ -22,8 +22,8 @@ class Indexer:
         self,
         expert_config: dict,
         vcs: VCSProvider,
-        metadata_db: SQLiteMetadataDB,
-        vector_db: ChromaVectorDB,
+        metadata_db: MetadataDB,
+        vector_db: VectorDB,
         embedder: Embedder,
     ):
         """Create a new Indexer.
@@ -37,8 +37,8 @@ class Indexer:
         """
         self.expert_config = expert_config
         self.vcs: VCSProvider = vcs
-        self.metadata_db = metadata_db
-        self.vector_db = vector_db
+        self.metadata_db: MetadataDB = metadata_db
+        self.vector_db: VectorDB = vector_db
         self.embedder = embedder
 
         # Rich Progress is opt-in and used ONLY for:
@@ -182,12 +182,12 @@ class Indexer:
         
         # Delete from Chroma using exact IDs
         if chunk_ids:
-            self.vector_db.delete_by_ids(chunk_ids)
+            self.vector_db.delete_file_chunks(chunk_ids)
         
         # Delete from sqlite
         self.metadata_db.delete_file_chunks_by_path(file_path)
      
-    def _index_files_at_commit(self, file_paths: set[str], revision_id: str) -> None:
+    def _index_files_at_commit(self, file_paths: set[str], revision_id: str, min_file_size=128) -> None:
         """Index files at a specific commit using batched VCS reads.
 
         File reading semantics:
@@ -203,45 +203,21 @@ class Indexer:
         console.print(f"\n[cyan]Reading {len(file_paths)} files from VCS...")
 
         # Phase 1: Batched read from VCS.
-        # Prefer the new batched API when available, but fall back to per-file
-        # calls for older implementations/mocks to preserve test behavior.
-        if hasattr(self.vcs, "get_files_content_at_commit"):
-            try:
-                contents_by_path = self.vcs.get_files_content_at_commit(
-                workspace_path=self.expert_config["workspace_path"],
-                file_paths=list(file_paths),
-                commit_hash=revision_id,
-                )
-            except TypeError:
-                # Defensive: if signature mismatch, fall back to legacy path.
-                contents_by_path = {
-                    file_path: self.vcs.get_file_content_at_commit(
-                        self.expert_config["workspace_path"],
-                        file_path,
-                        revision_id,
-                    )
-                    for file_path in file_paths
-                }
-        else:
-            # Legacy providers: preserve original O(n) behavior.
-            contents_by_path = {
-                file_path: self.vcs.get_file_content_at_commit(
-                    self.expert_config["workspace_path"],
-                    file_path,
-                    revision_id,
-                )
-                for file_path in file_paths
-            }
+        contents_by_path = self.vcs.get_files_content_at_commit(
+            workspace_path=self.expert_config["workspace_path"],
+            file_paths=list(file_paths),
+            commit_hash=revision_id,
+        )
 
         file_chunks_map: dict[str, list[tuple[str, int, int]]] = {}
         total_chunks = 0
 
         # Normalize and filter results:
         # - Ensure an entry for every requested file (defensive if provider misbehaves).
-        # - Skip None/binary files.
+        # - Skip None/binary files, or files that are too small.
         for file_path in file_paths:
             content = contents_by_path.get(file_path)
-            if not content:
+            if not content or len(content) < min_file_size:
                 continue
 
             # Defensive binary check in case provider didn't filter.
@@ -337,7 +313,7 @@ class Indexer:
                     vectors_for_file.append((chunk.get_chroma_id(), vec))
 
             if vectors_for_file:
-                self.vector_db.insert_vectors(vectors_for_file)
+                self.vector_db.insert_files(vectors_for_file)
 
             if self.progress and file_task_id is not None:
                 self.progress.update(file_task_id, advance=1)
@@ -387,7 +363,7 @@ class Indexer:
             from collections import defaultdict
             commit_diff_vectors: dict[str, list[tuple[str, list[float]]]] = defaultdict(list)
             for (commit_id, chunk_idx), emb in zip(diff_chunk_keys, diff_embeddings):
-                vector_id = f"{commit_id}_diff_chunk_{chunk_idx}"
+                vector_id = f"{commit_id}_chunk_{chunk_idx}"
                 commit_diff_vectors[commit_id].append((vector_id, emb))
 
             # Optional rich progress for commit persistence (shared self.progress)
@@ -407,12 +383,12 @@ class Indexer:
 
                 # Store metadata
                 self.metadata_db.insert_changelists([commit])
-                self.vector_db.insert_vectors([(commit.id, metadata_emb)])
+                self.vector_db.insert_metadata([(commit.id, metadata_emb)])
 
                 # Store diffs for this commit, if any
                 diff_vectors = commit_diff_vectors.get(commit.id)
                 if diff_vectors:
-                    self.vector_db.insert_vectors(diff_vectors)
+                    self.vector_db.insert_diffs(diff_vectors)
 
                 if self.progress and commit_task_id is not None:
                     self.progress.update(commit_task_id, advance=1)

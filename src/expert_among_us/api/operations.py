@@ -22,7 +22,8 @@ from .models import ExpertInfo
 def query_expert(
     expert_name: str,
     prompt: str,
-    max_changes: int = 15,
+    max_changes: int,
+    max_file_chunks: int,
     users: Optional[List[str]] = None,
     files: Optional[List[str]] = None,
     search_scope: str = "all",
@@ -39,7 +40,8 @@ def query_expert(
     Args:
         expert_name: Name of the expert to query
         prompt: Search query describing what to look for
-        max_changes: Maximum number of results to return (default: 15)
+        max_changes: Maximum number of changelists to return
+        max_file_chunks: Maximum number of file chunks to return
         users: Optional list of authors to filter results by
         files: Optional list of file paths to filter results by
         search_scope: Search scope - "metadata", "diffs", "files", or "all" (default)
@@ -121,6 +123,7 @@ def query_expert(
         params = QueryParams(
             prompt=prompt,
             max_changes=max_changes,
+            max_file_chunks=max_file_chunks,
             users=users,
             files=files,
             amogus=False

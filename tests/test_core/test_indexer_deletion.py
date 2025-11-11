@@ -90,7 +90,7 @@ def test_delete_file_chunks_uses_sqlite_ids(indexer, mock_metadata_db, mock_vect
     mock_metadata_db.get_file_chunk_ids.assert_called_once_with(file_path)
     
     # Verify ChromaDB deletion used the exact IDs from SQLite
-    mock_vector_db.delete_by_ids.assert_called_once_with(expected_ids)
+    mock_vector_db.delete_file_chunks.assert_called_once_with(expected_ids)
     
     # Verify SQLite deletion happened after ChromaDB
     mock_metadata_db.delete_file_chunks_by_path.assert_called_once_with(file_path)
@@ -98,7 +98,7 @@ def test_delete_file_chunks_uses_sqlite_ids(indexer, mock_metadata_db, mock_vect
     # Verify call order: get_ids -> delete_chroma -> delete_sqlite
     calls = [
         mock_metadata_db.get_file_chunk_ids.call_args_list,
-        mock_vector_db.delete_by_ids.call_args_list,
+        mock_vector_db.delete_file_chunks.call_args_list,
         mock_metadata_db.delete_file_chunks_by_path.call_args_list,
     ]
     assert all(calls), "All deletion steps should be called"
@@ -114,8 +114,8 @@ def test_delete_file_chunks_handles_empty_results(indexer, mock_metadata_db, moc
     # Execute deletion
     indexer._delete_file_chunks(file_path)
     
-    # ChromaDB delete_by_ids should not be called with empty list
-    mock_vector_db.delete_by_ids.assert_not_called()
+    # ChromaDB delete_file_chunks should not be called with empty list
+    mock_vector_db.delete_file_chunks.assert_not_called()
     
     # SQLite deletion should still be called (idempotent)
     mock_metadata_db.delete_file_chunks_by_path.assert_called_once_with(file_path)
@@ -150,5 +150,5 @@ def test_indexer_detects_missing_files_and_deletes(indexer, mock_vcs, mock_metad
     
     # Verify deletion was triggered for the missing file
     mock_metadata_db.get_file_chunk_ids.assert_called_with("deleted_file.py")
-    mock_vector_db.delete_by_ids.assert_called_with(["file:deleted_file.py:chunk_0"])
+    mock_vector_db.delete_file_chunks.assert_called_with(["file:deleted_file.py:chunk_0"])
     mock_metadata_db.delete_file_chunks_by_path.assert_called_with("deleted_file.py")

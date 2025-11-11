@@ -25,8 +25,10 @@ class TestSearcher:
     def mock_metadata_db(self):
         """Mock metadata database."""
         db = Mock()
-        db.get_changelists_by_ids.return_value = [
-            Changelist(
+        
+        # Create all possible changelists
+        all_changelists = {
+            "abc123": Changelist(
                 id="abc123",
                 expert_name="TestExpert",
                 timestamp=datetime.now(),
@@ -35,7 +37,7 @@ class TestSearcher:
                 diff="diff content",
                 files=["src/main.py", "src/utils.py"]
             ),
-            Changelist(
+            "def456": Changelist(
                 id="def456",
                 expert_name="TestExpert",
                 timestamp=datetime.now(),
@@ -44,7 +46,13 @@ class TestSearcher:
                 diff="diff content 2",
                 files=["src/parser.py"]
             )
-        ]
+        }
+        
+        # Mock get_changelists_by_ids to properly filter based on input IDs
+        def mock_get_changelists_by_ids(ids):
+            return [all_changelists[id] for id in ids if id in all_changelists]
+        
+        db.get_changelists_by_ids.side_effect = mock_get_changelists_by_ids
         return db
     
     @pytest.fixture
@@ -52,11 +60,11 @@ class TestSearcher:
         """Mock vector database."""
         db = Mock()
         db.search_metadata.return_value = [
-            VectorSearchResult(changelist_id="abc123", similarity_score=0.95, source="metadata"),
-            VectorSearchResult(changelist_id="def456", similarity_score=0.85, source="metadata")
+            VectorSearchResult(result_id="abc123", similarity_score=0.95),
+            VectorSearchResult(result_id="def456", similarity_score=0.85)
         ]
         db.search_diffs.return_value = [
-            VectorSearchResult(changelist_id="abc123", similarity_score=0.90, source="diff")
+            VectorSearchResult(result_id="abc123", similarity_score=0.90)
         ]
         return db
     
@@ -98,51 +106,46 @@ class TestSearcher:
     def test_merge_scores_metadata_only(self, searcher):
         """Test score merging with metadata results only."""
         metadata_results = [
-            VectorSearchResult(changelist_id="abc123", similarity_score=0.95, source="metadata"),
-            VectorSearchResult(changelist_id="def456", similarity_score=0.85, source="metadata")
+            VectorSearchResult(result_id="abc123", similarity_score=0.95),
+            VectorSearchResult(result_id="def456", similarity_score=0.85)
         ]
         diff_results = []
         
-        merged = searcher._merge_scores(metadata_results, diff_results)
+        merged = searcher._merge_commit_scores(metadata_results, diff_results)
         
         assert len(merged) == 2
         assert merged["abc123"]["score"] == 0.95
-        assert merged["abc123"]["source"] == "metadata"
         assert merged["def456"]["score"] == 0.85
-        assert merged["def456"]["source"] == "metadata"
     
     def test_merge_scores_combined(self, searcher):
         """Test score merging with both metadata and diff results."""
         metadata_results = [
-            VectorSearchResult(changelist_id="abc123", similarity_score=0.90, source="metadata"),
-            VectorSearchResult(changelist_id="def456", similarity_score=0.80, source="metadata")
+            VectorSearchResult(result_id="abc123", similarity_score=0.90),
+            VectorSearchResult(result_id="def456", similarity_score=0.80)
         ]
         diff_results = [
-            VectorSearchResult(changelist_id="abc123", similarity_score=0.85, source="diff")
+            VectorSearchResult(result_id="abc123", similarity_score=0.85)
         ]
         
-        merged = searcher._merge_scores(metadata_results, diff_results)
+        merged = searcher._merge_commit_scores(metadata_results, diff_results)
         
         # abc123 should have combined score: 0.90*0.6 + 0.85*0.4 = 0.54 + 0.34 = 0.88
-        # Source should be "metadata" since metadata_score (0.90) > diff_score (0.85)
         assert len(merged) == 2
-        assert merged["abc123"]["source"] == "metadata"
         assert abs(merged["abc123"]["score"] - 0.88) < 0.01
         
         # def456 should only have metadata score
-        assert merged["def456"]["source"] == "metadata"
         assert merged["def456"]["score"] == 0.80
     
     def test_apply_filters_users(self, searcher, mock_metadata_db):
         """Test filtering by user."""
-        changelists = mock_metadata_db.get_changelists_by_ids.return_value
+        changelists = mock_metadata_db.get_changelists_by_ids(["abc123", "def456"])
         scores = {
             "abc123": {"score": 0.95, "source": "metadata"},
             "def456": {"score": 0.85, "source": "metadata"}
         }
         params = QueryParams(prompt="test", max_changes=10, users=["john"])
         
-        results = searcher._apply_filters(changelists, scores, params)
+        results = searcher._apply_commit_filters(changelists, scores, params)
         
         # Should only include john's changelist
         assert len(results) == 1
@@ -150,14 +153,14 @@ class TestSearcher:
     
     def test_apply_filters_files(self, searcher, mock_metadata_db):
         """Test filtering by files."""
-        changelists = mock_metadata_db.get_changelists_by_ids.return_value
+        changelists = mock_metadata_db.get_changelists_by_ids(["abc123", "def456"])
         scores = {
             "abc123": {"score": 0.95, "source": "metadata"},
             "def456": {"score": 0.85, "source": "metadata"}
         }
         params = QueryParams(prompt="test", max_changes=10, files=["src/parser.py"])
         
-        results = searcher._apply_filters(changelists, scores, params)
+        results = searcher._apply_commit_filters(changelists, scores, params)
         
         # Should only include changelist affecting parser.py
         assert len(results) == 1
@@ -165,14 +168,14 @@ class TestSearcher:
     
     def test_apply_filters_no_match(self, searcher, mock_metadata_db):
         """Test filtering with no matches."""
-        changelists = mock_metadata_db.get_changelists_by_ids.return_value
+        changelists = mock_metadata_db.get_changelists_by_ids(["abc123", "def456"])
         scores = {
             "abc123": {"score": 0.95, "source": "metadata"},
             "def456": {"score": 0.85, "source": "metadata"}
         }
         params = QueryParams(prompt="test", max_changes=10, users=["nonexistent"])
         
-        results = searcher._apply_filters(changelists, scores, params)
+        results = searcher._apply_commit_filters(changelists, scores, params)
         
         # Should be empty
         assert len(results) == 0

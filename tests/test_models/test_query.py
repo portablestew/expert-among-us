@@ -86,12 +86,12 @@ def test_query_params_prompt_trimming():
 def test_vector_search_result_creation():
     """Test basic vector search result creation."""
     result = VectorSearchResult(
-        changelist_id="abc123",
+        result_id="abc123",
         similarity_score=0.85,
         source="metadata",
     )
     
-    assert result.changelist_id == "abc123"
+    assert result.result_id == "abc123"
     assert result.similarity_score == 0.85
     assert result.source == "metadata"
 
@@ -99,7 +99,7 @@ def test_vector_search_result_creation():
 def test_vector_search_result_defaults():
     """Test default source value."""
     result = VectorSearchResult(
-        changelist_id="abc123",
+        result_id="abc123",
         similarity_score=0.85,
     )
     
@@ -110,13 +110,13 @@ def test_vector_search_result_validation_score_range():
     """Test similarity score range validation."""
     # Valid range
     result = VectorSearchResult(
-        changelist_id="abc123",
+        result_id="abc123",
         similarity_score=0.0,
     )
     assert result.similarity_score == 0.0
     
     result = VectorSearchResult(
-        changelist_id="abc123",
+        result_id="abc123",
         similarity_score=1.0,
     )
     assert result.similarity_score == 1.0
@@ -124,14 +124,14 @@ def test_vector_search_result_validation_score_range():
     # Below minimum
     with pytest.raises(ValidationError):
         VectorSearchResult(
-            changelist_id="abc123",
+            result_id="abc123",
             similarity_score=-0.1,
         )
     
     # Above maximum
     with pytest.raises(ValidationError):
         VectorSearchResult(
-            changelist_id="abc123",
+            result_id="abc123",
             similarity_score=1.1,
         )
 
@@ -140,14 +140,14 @@ def test_vector_search_result_validation_source():
     """Test source validation (must be 'metadata' or 'diff')."""
     # Valid sources
     result = VectorSearchResult(
-        changelist_id="abc123",
+        result_id="abc123",
         similarity_score=0.85,
         source="metadata",
     )
     assert result.source == "metadata"
     
     result = VectorSearchResult(
-        changelist_id="abc123",
+        result_id="abc123",
         similarity_score=0.85,
         source="diff",
     )
@@ -164,33 +164,33 @@ def test_vector_search_result_validation_source():
 
 def test_vector_search_result_sorting():
     """Test that results can be sorted by similarity score (descending)."""
-    result1 = VectorSearchResult(changelist_id="a", similarity_score=0.9)
-    result2 = VectorSearchResult(changelist_id="b", similarity_score=0.7)
-    result3 = VectorSearchResult(changelist_id="c", similarity_score=0.85)
+    result1 = VectorSearchResult(result_id="a", similarity_score=0.9)
+    result2 = VectorSearchResult(result_id="b", similarity_score=0.7)
+    result3 = VectorSearchResult(result_id="c", similarity_score=0.85)
     
     results = [result2, result3, result1]
     sorted_results = sorted(results)
     
     # Should be sorted by score descending (highest first)
-    assert sorted_results[0].changelist_id == "a"  # 0.9
-    assert sorted_results[1].changelist_id == "c"  # 0.85
-    assert sorted_results[2].changelist_id == "b"  # 0.7
+    assert sorted_results[0].result_id == "a"  # 0.9
+    assert sorted_results[1].result_id == "c"  # 0.85
+    assert sorted_results[2].result_id == "b"  # 0.7
 
 
 def test_vector_search_result_equality():
     """Test equality based on changelist_id and source."""
     result1 = VectorSearchResult(
-        changelist_id="abc123",
+        result_id="abc123",
         similarity_score=0.9,
         source="metadata",
     )
     result2 = VectorSearchResult(
-        changelist_id="abc123",
+        result_id="abc123",
         similarity_score=0.85,  # Different score
         source="metadata",
     )
     result3 = VectorSearchResult(
-        changelist_id="abc123",
+        result_id="abc123",
         similarity_score=0.9,
         source="diff",  # Different source
     )
@@ -205,17 +205,17 @@ def test_vector_search_result_equality():
 def test_vector_search_result_hashable():
     """Test that results can be used in sets/dicts."""
     result1 = VectorSearchResult(
-        changelist_id="abc123",
+        result_id="abc123",
         similarity_score=0.9,
         source="metadata",
     )
     result2 = VectorSearchResult(
-        changelist_id="abc123",
+        result_id="abc123",
         similarity_score=0.85,
         source="metadata",
     )
     result3 = VectorSearchResult(
-        changelist_id="abc123",
+        result_id="abc123",
         similarity_score=0.9,
         source="diff",
     )

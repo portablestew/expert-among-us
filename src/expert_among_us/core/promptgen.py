@@ -161,7 +161,7 @@ Output: "Add proper null handling to the user service to prevent crashes when pr
         response = self.llm.generate(
             messages=messages,
             model=self.model,
-            max_tokens=500,  # Prompts should be brief
+            max_tokens=1024,  # Prompts should be brief
             temperature=0.7,  # Some variety
             system=self.SYSTEM_PROMPT,
             debug_category="promptgen",

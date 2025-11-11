@@ -73,7 +73,9 @@ class TestCollectionInitialization:
             db = ChromaVectorDB("test_expert")
             db.client = __import__('chromadb').PersistentClient(path=tmpdir)
             db.initialize(dimension=1024)
-            assert db.collection is not None
+            assert db.metadata_collection is not None
+            assert db.diff_collection is not None
+            assert db.file_collection is not None
             db.close()
             
             # Clean up for Windows
@@ -84,8 +86,10 @@ class TestCollectionInitialization:
             time.sleep(0.2)
 
     def test_db_creates_collection(self, temp_vector_db):
-        """Verify that a collection is created on initialization."""
-        assert temp_vector_db.collection is not None
+        """Verify that three collections are created on initialization."""
+        assert temp_vector_db.metadata_collection is not None
+        assert temp_vector_db.diff_collection is not None
+        assert temp_vector_db.file_collection is not None
 
     def test_db_persists_directory(self):
         """Verify that database persists to the specified directory."""
@@ -127,8 +131,10 @@ class TestCollectionInitialization:
             db.client = __import__('chromadb').PersistentClient(path=tmpdir)
             db.initialize(dimension=512)
             
-            # Verify collection was created with metadata
-            assert db.collection is not None
+            # Verify collections were created
+            assert db.metadata_collection is not None
+            assert db.diff_collection is not None
+            assert db.file_collection is not None
             db.close()
             
             # Clean up for Windows
@@ -191,6 +197,21 @@ class TestVectorInsertion:
             gc.collect()
             time.sleep(0.2)
 
+    def test_insert_metadata_vectors(self, temp_vector_db, sample_vectors):
+        """Verify metadata-specific insert works."""
+        temp_vector_db.insert_metadata([("commit_1", sample_vectors[0])])
+        assert temp_vector_db.count() == 1
+
+    def test_insert_diff_vectors(self, temp_vector_db, sample_vectors):
+        """Verify diff-specific insert works."""
+        temp_vector_db.insert_diffs([("commit_1_chunk_0", sample_vectors[0])])
+        assert temp_vector_db.count() == 1
+
+    def test_insert_file_vectors(self, temp_vector_db, sample_vectors):
+        """Verify file-specific insert works."""
+        temp_vector_db.insert_files([("path/to/file.py:chunk_0", sample_vectors[0])])
+        assert temp_vector_db.count() == 1
+
 
 class TestVectorSearch:
     """Tests for vector search operations with similarity scores."""
@@ -218,9 +239,9 @@ class TestVectorSearch:
         
         assert len(results) == 1
         result = results[0]
-        assert hasattr(result, 'changelist_id')
+        assert hasattr(result, 'result_id')
         assert hasattr(result, 'similarity_score')
-        assert result.changelist_id == "vec_id_1"
+        assert result.result_id == "vec_id_1"
 
     def test_search_with_limit(self, temp_vector_db, sample_vectors):
         """Verify that search top_k parameter works correctly."""
@@ -246,7 +267,7 @@ class TestVectorSearch:
         results = temp_vector_db.search(sample_vectors[0], top_k=5)
         
         # The first result should be the query vector itself or very similar
-        assert results[0].changelist_id == "vec_id_0" or results[0].similarity_score > 0.99
+        assert results[0].result_id == "vec_id_0" or results[0].similarity_score > 0.99
 
     def test_search_similarity_ordering(self, temp_vector_db, sample_vectors):
         """Verify that search results are ordered by similarity score."""
@@ -291,80 +312,45 @@ class TestVectorSearch:
 class TestVectorDeletion:
     """Tests for vector deletion operations."""
 
-    def test_delete_single_vector(self, temp_vector_db, sample_vectors):
-        """Verify that a single vector can be deleted."""
-        temp_vector_db.insert_vectors([
-            ("vec_id_1", sample_vectors[0]),
-            ("vec_id_2", sample_vectors[1])
-        ])
+    def test_delete_file_chunks(self, temp_vector_db, sample_vectors):
+        """Verify file chunk deletion works correctly."""
+        # Insert file chunk vectors
+        file_chunk_ids = [("file:example.py:chunk_0", sample_vectors[0])]
+        temp_vector_db.insert_files(file_chunk_ids)
+        assert temp_vector_db.count() == 1
         
-        assert temp_vector_db.count() == 2
+        # Delete file chunks
+        temp_vector_db.delete_file_chunks(["file:example.py:chunk_0"])
+        assert temp_vector_db.count() == 0
+
+    def test_delete_file_chunks_multiple(self, temp_vector_db, sample_vectors):
+        """Verify multiple file chunks can be deleted at once."""
+        # Insert multiple file chunk vectors
+        file_chunk_ids = [
+            ("file:example.py:chunk_0", sample_vectors[0]),
+            ("file:example.py:chunk_1", sample_vectors[1]),
+            ("file:other.py:chunk_0", sample_vectors[2])
+        ]
+        temp_vector_db.insert_files(file_chunk_ids)
+        assert temp_vector_db.count() == 3
         
-        temp_vector_db.delete_by_ids(["vec_id_1"])
+        # Delete specific file chunks
+        temp_vector_db.delete_file_chunks(["file:example.py:chunk_0", "file:example.py:chunk_1"])
         assert temp_vector_db.count() == 1
 
-    def test_delete_multiple_vectors(self, temp_vector_db, sample_vectors):
-        """Verify that multiple vectors can be deleted."""
-        vectors_to_insert = [
-            (f"vec_id_{i}", sample_vectors[i])
-            for i in range(5)
-        ]
-        temp_vector_db.insert_vectors(vectors_to_insert)
-        
-        assert temp_vector_db.count() == 5
-        
-        temp_vector_db.delete_by_ids(["vec_id_0", "vec_id_1", "vec_id_2"])
-        assert temp_vector_db.count() == 2
-
-    def test_delete_nonexistent_vector(self, temp_vector_db):
-        """Verify that deleting non-existent vector doesn't raise error."""
+    def test_delete_file_chunks_nonexistent(self, temp_vector_db):
+        """Verify that deleting non-existent file chunks doesn't raise error."""
         # Should not raise an exception
-        temp_vector_db.delete_by_ids(["nonexistent_id"])
+        temp_vector_db.delete_file_chunks(["file:nonexistent.py:chunk_0"])
         assert temp_vector_db.count() == 0
 
-    def test_delete_vectors_partial_match(self, temp_vector_db, sample_vectors):
-        """Verify that delete handles partial matches gracefully."""
-        temp_vector_db.insert_vectors([
-            ("vec_id_1", sample_vectors[0]),
-            ("vec_id_2", sample_vectors[1])
-        ])
+    def test_delete_file_chunks_empty_list(self, temp_vector_db, sample_vectors):
+        """Verify delete with empty chunk ID list doesn't affect collection."""
+        temp_vector_db.insert_files([("file:example.py:chunk_0", sample_vectors[0])])
         
-        # Try to delete with mix of existing and non-existing IDs
-        temp_vector_db.delete_by_ids(["vec_id_1", "nonexistent"])
-        
+        temp_vector_db.delete_file_chunks([])
         assert temp_vector_db.count() == 1
 
-    def test_delete_all_vectors_sequentially(self, temp_vector_db, sample_vectors):
-        """Verify that all vectors can be deleted one by one."""
-        vectors_to_insert = [
-            (f"vec_id_{i}", sample_vectors[i])
-            for i in range(5)
-        ]
-        temp_vector_db.insert_vectors(vectors_to_insert)
-        
-        for i in range(len(sample_vectors)):
-            temp_vector_db.delete_by_ids([f"vec_id_{i}"])
-        
-        assert temp_vector_db.count() == 0
-
-    def test_delete_without_initialize_raises_error(self):
-        """Verify that deleting without initialization raises an error."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db = ChromaVectorDB("no_init_delete")
-            db.client = __import__('chromadb').PersistentClient(path=tmpdir)
-            # Don't call initialize()
-            
-            with pytest.raises(RuntimeError, match="Collection not initialized"):
-                db.delete_by_ids(["id_1"])
-            
-            db.close()
-            
-            # Clean up for Windows
-            import gc
-            import time
-            del db
-            gc.collect()
-            time.sleep(0.2)
 
 
 class TestCountOperations:
@@ -393,19 +379,6 @@ class TestCountOperations:
         
         temp_vector_db.insert_vectors(vectors_to_insert)
         assert temp_vector_db.count() == 5
-
-    def test_count_after_deletion(self, temp_vector_db, sample_vectors):
-        """Verify count decreases correctly after deletion."""
-        vectors_to_insert = [
-            (f"vec_id_{i}", sample_vectors[i])
-            for i in range(5)
-        ]
-        temp_vector_db.insert_vectors(vectors_to_insert)
-        
-        assert temp_vector_db.count() == 5
-        
-        temp_vector_db.delete_by_ids(["vec_id_0"])
-        assert temp_vector_db.count() == 4
 
     def test_count_with_duplicate_insert(self, temp_vector_db, sample_vectors):
         """Verify count doesn't increase with duplicate ID insertion."""
@@ -499,7 +472,7 @@ class TestEdgeCases:
         results = temp_vector_db.search(sample_vectors[0], top_k=5)
         
         assert len(results) == 1
-        assert results[0].changelist_id == "vec_id_1"
+        assert results[0].result_id == "vec_id_1"
 
     def test_large_batch_insertion(self, temp_vector_db):
         """Verify batch insertion works with large number of vectors."""
@@ -523,13 +496,6 @@ class TestEdgeCases:
         
         results = temp_vector_db.search(sample_vectors[0], top_k=100)
         assert len(results) == 3
-
-    def test_delete_empty_id_list(self, temp_vector_db, sample_vectors):
-        """Verify delete with empty ID list doesn't affect collection."""
-        temp_vector_db.insert_vectors([("vec_id_1", sample_vectors[0])])
-        
-        temp_vector_db.delete_by_ids([])
-        assert temp_vector_db.count() == 1
 
     def test_vector_normalization_consistency(self, temp_vector_db):
         """Verify that vector operations handle normalization consistently."""
@@ -568,7 +534,7 @@ class TestEdgeCases:
         # Should be able to search and find it
         results = temp_vector_db.search(sample_vectors[0], top_k=1)
         assert len(results) == 1
-        assert results[0].changelist_id == special_id
+        assert results[0].result_id == special_id
 
     def test_similarity_score_range(self, temp_vector_db, sample_vectors):
         """Verify that similarity scores are in valid range [0, 1]."""

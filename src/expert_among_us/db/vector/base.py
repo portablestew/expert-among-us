@@ -1,27 +1,13 @@
 """Abstract base class for vector database implementations.
 
 This module defines the VectorDB interface that all vector storage backends
-must implement, along with the VectorSearchResult dataclass for search results.
+must implement. The VectorSearchResult model is imported from the models module.
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 
+from ...models.query import VectorSearchResult
 from ...config.settings import TITAN_EMBEDDING_DIMENSION
-
-
-@dataclass
-class VectorSearchResult:
-    """Result from vector similarity search.
-    
-    Attributes:
-        changelist_id: Unique identifier of the matching changelist
-        similarity_score: Cosine similarity score (0-1, higher is more similar)
-        chroma_id: Optional ChromaDB ID for debugging chunk-level matching
-    """
-    changelist_id: str
-    similarity_score: float
-    chroma_id: str | None = None
 
 
 class VectorDB(ABC):
@@ -64,6 +50,54 @@ class VectorDB(ABC):
                 - embedding (list[float]): Embedding vector
         """
         pass
+    @abstractmethod
+    def insert_metadata(
+        self,
+        vectors: list[tuple[str, list[float]]]
+    ) -> None:
+        """Insert commit metadata vectors.
+        
+        Stores metadata embeddings (commit descriptions, messages, authors).
+        
+        Args:
+            vectors: List of tuples, each containing:
+                - changelist_id (str): Unique identifier for the commit
+                - embedding (list[float]): Metadata embedding vector
+        """
+        pass
+
+    @abstractmethod
+    def insert_diffs(
+        self,
+        vectors: list[tuple[str, list[float]]]
+    ) -> None:
+        """Insert diff chunk vectors.
+        
+        Stores embeddings for code change diffs, potentially chunked for large diffs.
+        
+        Args:
+            vectors: List of tuples, each containing:
+                - vector_id (str): Identifier for the diff chunk (e.g., commit_hash_chunk_N)
+                - embedding (list[float]): Diff embedding vector
+        """
+        pass
+
+    @abstractmethod
+    def insert_files(
+        self,
+        vectors: list[tuple[str, list[float]]]
+    ) -> None:
+        """Insert file content chunk vectors.
+        
+        Stores embeddings for file content at HEAD, chunked for large files.
+        
+        Args:
+            vectors: List of tuples, each containing:
+                - chunk_id (str): Identifier for the file chunk (e.g., file:path:chunk_N)
+                - embedding (list[float]): File content embedding vector
+        """
+        pass
+
 
     @abstractmethod
     def search(
@@ -82,7 +116,7 @@ class VectorDB(ABC):
             
         Returns:
             List of VectorSearchResult objects, sorted by similarity_score
-            (highest/most similar first). May contain duplicate changelist_ids
+            (highest/most similar first). May contain duplicate result_ids
             when searching across multiple collections.
             
         Note:
@@ -93,14 +127,14 @@ class VectorDB(ABC):
         pass
 
     @abstractmethod
-    def delete_by_ids(self, changelist_ids: list[str]) -> None:
-        """Delete vectors by changelist IDs.
-        
-        Removes all vectors associated with the specified changelist IDs.
-        Should handle missing IDs gracefully (no error if ID doesn't exist).
+    def delete_file_chunks(
+        self,
+        chunk_ids: list[str]
+    ) -> None:
+        """Delete file chunk vectors from the files collection.
         
         Args:
-            changelist_ids: List of changelist IDs whose vectors should be deleted
+            chunk_ids: List of file chunk IDs to delete (format: file:{path}:chunk_{n})
         """
         pass
 

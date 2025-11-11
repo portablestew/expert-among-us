@@ -33,7 +33,8 @@ from .models import PromptResponse
 async def prompt_expert_stream(
     expert_name: str,
     prompt: str,
-    max_changes: int = 15,
+    max_changes: int,
+    max_file_chunks: int,
     users: Optional[List[str]] = None,
     files: Optional[List[str]] = None,
     amogus: bool = False,
@@ -51,7 +52,8 @@ async def prompt_expert_stream(
     Args:
         expert_name: Name of the expert to query
         prompt: User's question or task
-        max_changes: Maximum context changes
+        max_changes: Maximum changelists to use as context
+        max_file_chunks: Maximum file chunks to use as context
         users: Filter by authors
         files: Filter by file paths
         amogus: Enable Among Us mode
@@ -122,6 +124,7 @@ async def prompt_expert_stream(
         params = QueryParams(
             prompt=prompt,
             max_changes=max_changes,
+            max_file_chunks=max_file_chunks,
             users=users,
             files=files,
             amogus=False
