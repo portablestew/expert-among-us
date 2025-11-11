@@ -9,7 +9,7 @@ SDEs with practitioner-level knowledge of sprawling legacy codebases have instin
 ### Beyond Semantic File Searches
 
 Traditional semantic code search tools focus on finding relevant files and functions based on current codebase state.
-Expert Among Us goes deeper by **indexing your repository's entire commit history**. 
+Expert Among Us goes deeper by **indexing your repository's entire commit history** in addition to current state.
 This unlocks a trove of unintended expert documentation, all written in natural language specifically to communicate intent to humans.
 By performing semantic search on commit messages alongside code diffs, Expert Among Us can:
 - Better match natural language queries to the developer's original explanation of their changes
@@ -56,21 +56,44 @@ The case study demonstrates measurable efficiency gains and qualitative improvem
 Not all commit messages are created equal. Fortunately, transformer LLMs are excellent at filling in the blanks. 
 When run with `--impostor` mode, Expert Among Us generates additional commit message content.
 This is presented as an ordered chain of user prompt -> assistant response entries, where the user is the generated prompts, and the real commits are the assistant responses.
-The actual user prompt is the final message. Effectively, a conversation is presented as if the LLM has authored all commits by itself. The AI becomes a trained impostor of human experts.
+The actual user prompt is the final message. Effectively, a conversation is presented as if the LLM has authored all commits by itself. The AI acts as an impostor of the human experts.
 
 ## Overview
 
-Expert Among Us creates a queryable "expert" from your repository's commit history using AI-powered semantic search and vector embeddings. 
+Expert Among Us creates a queryable "expert" from your repository's commit history using AI-powered semantic search and vector embeddings.
+It combines your complete commit history with the current codebase state, enabling insights not possible with either approach alone.
 It helps you understand development patterns, find relevant changes, and get AI-powered recommendations based on historical code changes.
 
 ### Key Capabilities
 
 - **Semantic Search**: Find commits by meaning, not just keywords, using vector embeddings
+- **Dual Indexing**: Seamlessly combines full commit history with current codebase state for comprehensive insights
+- **AI-Powered Reranking**: Cross-encoder reranking dramatically improves search result relevance
+- **Smart Text Sanitization**: Automatically removes high-entropy patterns (API keys, UUIDs, binary data) to improve search quality
 - **Metadata Extraction**: Index commit messages, authors, files, and code diffs
 - **Vector Embeddings**: Supports local (GPU-accelerated) or cloud (AWS Bedrock) embedding models
 - **Flexible Filtering**: Search by author, files, or time period
 - **Version Control Support**: Works with Git repositories (Perforce support planned)
 - **Commit Enhancement**: Optionally adds LLM-generated analysis of a commit to its context
+
+### Search Quality Features
+
+Expert Among Us includes several features that significantly improve search quality and relevance:
+
+**Cross-Encoder Reranking**
+- Uses modern cross-encoder models to re-rank search results
+- Provides dramatically better relevance than vector search alone
+- Works seamlessly with all search scopes (metadata, diffs, files)
+
+**Smart Text Sanitization**
+- Automatically removes high-entropy patterns like API keys, UUIDs, and binary data
+- Preserves semantic meaning while reducing noise in embeddings
+- Improves search quality by focusing on meaningful code patterns
+
+**Dual-Source Indexing**
+- Indexes both historical commit patterns and current file content
+- Seamlessly combines insights from development history with present-day code structure
+- Enables queries that span both "how we got here" and "what's here now"
 
 ## Installation
 
@@ -313,6 +336,10 @@ Search for commits similar to your query using semantic search.
 - `--max-changes INTEGER`: Maximum number of results to return (default: 10)
 - `--users TEXT`: Filter by commit authors (comma-separated, e.g., "john,jane")
 - `--files TEXT`: Filter by file paths (comma-separated, e.g., "src/main.py,src/utils.py")
+- `--search-scope [all|metadata|diffs|files]`: Search scope - "all" (default), "metadata" only, "diffs" only, or "files" only
+- `--no-reranking`: Disable cross-encoder reranking (faster but less accurate)
+- `--min-score FLOAT`: Minimum similarity score threshold (default: 0.1)
+- `--relative-threshold FLOAT`: Relative score threshold as fractional drop from top result (default: 0.8)
 - `--output PATH`: Save results to JSON file
 - `--embedding-provider [local|bedrock]`: Embedding provider - must match what was used during indexing (default: local)
 - `--data-dir PATH`: Base directory for expert data storage (default: ~/.expert-among-us)
@@ -331,6 +358,22 @@ Search for commits similar to your query using semantic search.
     --files src/handlers/ \
     --output search-results.json \
     --max-changes 20
+
+# Search only current file content
+./run.sh query ~/projects/myapp "AppExpert" "function implementation" \
+    --search-scope files
+
+# Search only commit history
+./run.sh query ~/projects/myapp "AppExpert" "why was this changed?" \
+    --search-scope metadata
+
+# Faster search without reranking
+./run.sh query ~/projects/myapp "AppExpert" "quick search" \
+    --no-reranking
+
+# Strict filtering with high similarity threshold
+./run.sh query ~/projects/myapp "AppExpert" "exact pattern" \
+    --min-score 0.3 --relative-threshold 0.2
 
 # Query with custom data directory
 ./run.sh --data-dir /mnt/data/experts query ~/projects/myapp "AppExpert" "feature implementation"
@@ -644,12 +687,15 @@ When searching, filter by:
 
 ## Architecture
 
-Expert Among Us uses a hybrid approach:
+Expert Among Us uses a sophisticated multi-layered approach:
 
-1. **Vector Search**: Semantic similarity using AWS Bedrock embeddings and ChromaDB
-2. **Metadata Filtering**: Fast filtering by author, files, and timestamps using SQLite
-3. **Incremental Updates**: Only new commits are processed on subsequent runs
-4. **Diff Processing**: Code diffs are embedded for semantic code change search
+1. **Dual-Source Indexing**: Seamlessly combines full commit history with current codebase state
+2. **AI-Powered Search**: Cross-encoder reranking dramatically improves result relevance
+3. **Smart Text Processing**: Automatic sanitization removes noise while preserving meaning
+4. **Multi-Collection Vector Database**: Separate collections for metadata, diffs, and files for optimal performance
+5. **Metadata Filtering**: Fast filtering by author, files, and timestamps using SQLite
+6. **Incremental Updates**: Only new commits are processed on subsequent runs
+7. **Diff Processing**: Code diffs are embedded for semantic code change search
 
 ## MCP Integration
 
