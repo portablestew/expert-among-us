@@ -5,21 +5,21 @@ Implements the search and lookup functionality for Expert Among Us.
 Handles vector similarity search, score merging, filtering, and result ranking.
 """
 
-from typing import List, Optional, Dict, Set
+from typing import List, Optional, Dict
 from dataclasses import dataclass
 from expert_among_us.models.changelist import Changelist
-from expert_among_us.models.file_chunk import FileChunk
 from expert_among_us.models.query import QueryParams, VectorSearchResult
 from expert_among_us.models.query_result import (
     QueryResult,
-    QueryResultBase,
     CommitResult,
     FileChunkResult,
 )
 from expert_among_us.embeddings.base import Embedder
 from expert_among_us.db.metadata.base import MetadataDB
 from expert_among_us.db.vector.base import VectorDB
-from expert_among_us.utils.progress import log_info, log_warning
+from expert_among_us.reranking.base import Reranker
+from expert_among_us.utils.debug import DebugLogger
+from expert_among_us.utils.progress import log_info
 
 
 @dataclass
@@ -53,11 +53,13 @@ class Searcher:
         embedder: Embedder,
         metadata_db: MetadataDB,
         vector_db: VectorDB,
+        reranker: Optional[Reranker] = None,
         enable_metadata_search: bool = True,
         enable_diff_search: bool = True,
         enable_file_search: bool = True,
-        min_similarity_score: float = 0.3,
-        relative_threshold: float = 0.3
+        enable_reranking: bool = True,
+        min_similarity_score: float = 0.1,
+        relative_threshold: float = 0.8
     ):
         """
         Initialize the search engine.
@@ -67,9 +69,11 @@ class Searcher:
             embedder: Embedding provider for query encoding
             metadata_db: Metadata database instance
             vector_db: Vector database instance
+            reranker: Optional reranker for post-processing results
             enable_metadata_search: Whether to search metadata embeddings
             enable_diff_search: Whether to search diff embeddings
             enable_file_search: Whether to search file content embeddings
+            enable_reranking: Whether to enable cross-encoder reranking
             min_similarity_score: Minimum similarity score threshold (0.0-1.0)
             relative_threshold: Relative score threshold as percentage drop from top result (0.0-1.0)
         """
@@ -77,9 +81,11 @@ class Searcher:
         self.embedder = embedder
         self.metadata_db: MetadataDB = metadata_db
         self.vector_db: VectorDB = vector_db
+        self.reranker = reranker
         self.enable_metadata_search = enable_metadata_search
         self.enable_diff_search = enable_diff_search
         self.enable_file_search = enable_file_search
+        self.enable_reranking = enable_reranking
         self.min_similarity_score = min_similarity_score
         self.relative_threshold = relative_threshold
     
@@ -87,17 +93,21 @@ class Searcher:
         """
         Perform comprehensive search across commit metadata, diff content, and file content.
         
-        This method orchestrates a multi-stage search process:
+        This method orchestrates a multi-stage search process with optional cross-encoder reranking:
         1. Generates query embedding from the input prompt
-        2. Searches metadata collection for similar commit summaries and descriptions
-        3. Optionally searches diff collection for similar code changes
-        4. Merges and deduplicates commit scores using weighted averaging
-        5. Fetches full changelist details and applies metadata filters (users, files)
-        6. Optionally searches file content collection for similar code patterns
-        7. Applies similarity score filters (absolute minimum and relative threshold)
-        8. Returns combined results sorted by similarity score
+        2. Retrieves 2x candidates for reranking (if enabled)
+        3. Searches metadata collection for similar commit summaries and descriptions
+        4. Optionally searches diff collection for similar code changes
+        5. Merges and deduplicates commit scores using weighted averaging
+        6. Fetches full changelist details and applies metadata filters (users, files)
+        7. Reranks commits separately with cross-encoder (if enabled)
+        8. Limits commits to final max_changes AFTER reranking
+        9. Optionally searches file content collection for similar code patterns
+        10. Reranks file chunks separately with cross-encoder (if enabled)
+        11. Limits file chunks to final max_file_chunks AFTER reranking
+        12. Combines and sorts final results
         
-        The search supports three types of results:
+        The search supports two types of results:
         - CommitResult: Full commit/changelist matches from metadata and diff searches
         - FileChunkResult: Individual file chunk matches from file content searches
         
@@ -113,6 +123,7 @@ class Searcher:
             List of QueryResult objects (either CommitResult or FileChunkResult)
             sorted in descending order by similarity score. Each result contains
             the matched entity, similarity score, source collection, and debugging info.
+            Original search scores are preserved in search_similarity_score field.
             
         Note:
             The method applies two similarity filters:
@@ -128,49 +139,71 @@ class Searcher:
         # Step 1: Generate query embedding
         query_embedding = self.embedder.embed(params.prompt)
         
-        # Step 2: Search metadata and diff collections
+        # Step 2: Retrieve 3x results for reranking (if enabled)
+        # Fetch more candidates so reranking can improve final top-K selection
+        retrieval_multiplier = 3 if (self.enable_reranking and self.reranker) else 1
+        commit_retrieval_limit = params.max_changes * retrieval_multiplier
+        file_retrieval_limit = params.max_file_chunks * retrieval_multiplier
+        
+        # Step 3: Search metadata and diff collections
         metadata_results: List[VectorSearchResult] = []
         if self.enable_metadata_search:
-            metadata_results = self._search_metadata(query_embedding, params.max_changes)
+            metadata_results = self._search_metadata(query_embedding, commit_retrieval_limit)
         
         diff_results: List[VectorSearchResult] = []
         if self.enable_diff_search:
-            raw_diff_results = self._search_diffs(query_embedding, params.max_changes)
-            
-            # Aggregate chunk scores using max pooling
+            raw_diff_results = self._search_diffs(query_embedding, commit_retrieval_limit)
             diff_results = self._aggregate_chunk_scores(raw_diff_results)
             if len(raw_diff_results) > len(diff_results):
                 log_info(f"Aggregated {len(raw_diff_results)} diff chunks into {len(diff_results)} commits")
 
-        # Step 3: Merge and deduplicate commit scores
-        # Get top K changelist IDs (K > N to allow for filtering)
+        # Step 4: Merge and deduplicate commit scores
         commit_scores = self._merge_commit_scores(metadata_results, diff_results)
         top_commits = sorted(commit_scores.keys(), key=lambda x: commit_scores[x]['score'], reverse=True)
-        top_commits = top_commits[:params.max_changes]
+        top_commits = top_commits[:commit_retrieval_limit]
         
-        # Step 4: Fetch full changelists from metadata DB and apply filters
+        # Step 5: Fetch full changelists and apply filters
         changelists = self.metadata_db.get_changelists_by_ids(top_commits)
         filtered_commits = self._apply_commit_filters(changelists, commit_scores, params)
         filtered_commits = self._apply_similarity_filters(filtered_commits)
         
-        # Step 5: Search file collection
-        # Separately apply filters to file chunks
+        # Step 6: Rerank commits separately (BEFORE limiting to max_changes)
+        if self.enable_reranking and self.reranker and filtered_commits:
+            filtered_commits = self._rerank_results(params.prompt, filtered_commits)
+            # Re-apply filters after reranking (scores have changed)
+            # Only apply relative_threshold to logits, skip min_similarity_score
+            filtered_commits = self._apply_relative_threshold_filter(filtered_commits)
+        
+        # Step 7: Limit commits to final max_changes AFTER reranking
+        filtered_commits = filtered_commits[:params.max_changes]
+        
+        # Step 8: Search file collection separately
         file_results: List[VectorSearchResult] = []
         if self.enable_file_search:
-            file_results = self._search_files(query_embedding, params.max_file_chunks)
+            file_results = self._search_files(query_embedding, file_retrieval_limit)
 
         file_scores = self._merge_file_scores(file_results)
         top_files = sorted(file_scores.keys(), key=lambda x: file_scores[x]['score'], reverse=True)
-        top_files = top_files[:params.max_file_chunks]
+        top_files = top_files[:file_retrieval_limit]
         
         filtered_files = self._apply_file_filters(top_files, file_scores, params)
         filtered_files = self._apply_similarity_filters(filtered_files)
         
-        # Step 7: Combine results from both commit and file searches
+        # Step 9: Rerank files separately (BEFORE limiting to max_file_chunks)
+        if self.enable_reranking and self.reranker and filtered_files:
+            filtered_files = self._rerank_results(params.prompt, filtered_files)
+            # Re-apply filters after reranking (scores have changed)
+            # Only apply relative_threshold to logits, skip min_similarity_score
+            filtered_files = self._apply_relative_threshold_filter(filtered_files)
+        
+        # Step 10: Limit files to final max_file_chunks AFTER reranking
+        filtered_files = filtered_files[:params.max_file_chunks]
+        
+        # Step 11: Combine final results (already at correct limits)
         final_results = filtered_commits + filtered_files
         final_results.sort(key=lambda x: x.similarity_score, reverse=True)
         
-        log_info(f"Found {len(final_results)} results after filtering")
+        log_info(f"Found {len(final_results)} results ({len(filtered_commits)} commits, {len(filtered_files)} files)")
         return final_results
     
     def _search_metadata(
@@ -508,9 +541,8 @@ class Searcher:
         """
         Apply similarity score filters to a list of results.
         
-        Filters:
-        1. Minimum similarity score (absolute threshold)
-        2. Relative threshold (percentage of top score)
+        For cosine similarity (before reranking): applies both min_similarity_score and relative_threshold
+        For cross-encoder logits (after reranking): applies only relative_threshold
         
         Args:
             results: List of QueryResult objects to filter
@@ -518,20 +550,65 @@ class Searcher:
         Returns:
             Filtered list of QueryResult objects
         """
+        return self._apply_filters(results, apply_min_score=True)
+
+    def _apply_relative_threshold_filter(
+        self,
+        results: List[QueryResult]
+    ) -> List[QueryResult]:
+        """
+        Apply only relative threshold filter to a list of results.
+        
+        Used after reranking where scores are logits, not cosine similarity.
+        
+        Args:
+            results: List of QueryResult objects to filter
+            
+        Returns:
+            Filtered list of QueryResult objects
+        """
+        return self._apply_filters(results, apply_min_score=False)
+
+    def _apply_filters(
+        self,
+        results: List[QueryResult],
+        apply_min_score: bool
+    ) -> List[QueryResult]:
+        """
+        Apply similarity score filters with configurable minimum score filtering.
+        
+        Args:
+            results: List of QueryResult objects to filter
+            apply_min_score: Whether to apply minimum similarity score filter
+            
+        Returns:
+            Filtered list of QueryResult objects
+        """
         if not results:
             return results
         
-        # Apply minimum similarity score filter (absolute threshold)
-        before_score_filter = len(results)
-        filtered_results = [r for r in results if r.similarity_score >= self.min_similarity_score]
-        filtered_count = before_score_filter - len(filtered_results)
-        if filtered_count > 0:
-            log_info(f"Filtered out {filtered_count} results below minimum score {self.min_similarity_score}")
+        filtered_results = results
         
-        # Apply relative threshold filter (percentage of top score)
+        # Apply minimum similarity score filter (absolute threshold)
+        # Only apply to cosine similarity, not cross-encoder logits
+        if apply_min_score:
+            before_score_filter = len(filtered_results)
+            filtered_results = [r for r in filtered_results if r.similarity_score >= self.min_similarity_score]
+            filtered_count = before_score_filter - len(filtered_results)
+            if filtered_count > 0:
+                log_info(f"Filtered out {filtered_count} results below minimum score {self.min_similarity_score}")
+        
+        # Apply relative threshold filter (range-based for logits, multiplicative for cosine)
+        # Range-based approach considers full score distribution with minimum range of 1.0
         if filtered_results and self.relative_threshold < 1.0:
             top_score = filtered_results[0].similarity_score  # Already sorted by score
-            relative_cutoff = top_score * (1 - self.relative_threshold)
+            bottom_score = filtered_results[-1].similarity_score
+            
+            # Range-based threshold with minimum range of 1.0 for compatibility
+            score_range = top_score - bottom_score
+            effective_range = max(1.0, score_range)
+            relative_cutoff = top_score - (effective_range * self.relative_threshold)
+            
             before_count = len(filtered_results)
             filtered_results = [r for r in filtered_results if r.similarity_score >= relative_cutoff]
             if len(filtered_results) < before_count:
@@ -539,6 +616,64 @@ class Searcher:
         
         return filtered_results
     
+    def _rerank_results(
+        self,
+        query: str,
+        results: List[QueryResult]
+    ) -> List[QueryResult]:
+        """Rerank results using cross-encoder with chunked max pooling.
+        
+        Long documents are automatically chunked by the reranker, with each
+        chunk scored independently. The maximum score across chunks is used
+        as the final document score.
+        
+        Args:
+            query: Original search query
+            results: List of QueryResult objects to rerank
+            
+        Returns:
+            Reranked list of QueryResult objects with updated scores.
+            Original scores are preserved in search_similarity_score field.
+        """
+        if not results or not self.reranker:
+            return results
+        
+        log_info(f"Reranking {len(results)} results with cross-encoder...")
+        
+        # Extract full text from results (no truncation - reranker handles chunking)
+        documents = []
+        
+        for result in results:
+            if isinstance(result, CommitResult):
+                # Use metadata text for commits (message + files)
+                # Prefer metadata over full diff (diff can be huge)
+                doc_text = result.changelist.get_metadata_text()
+            else:  # FileChunkResult
+                # Use full content for file chunks
+                doc_text = result.file_chunk.content
+        
+            documents.append(doc_text)
+        
+        # Rerank with automatic chunking and max pooling
+        # Reranker handles splitting long docs into 2KB chunks internally
+        ranked_pairs = self.reranker.rerank(query, documents)
+        
+        # Store original scores and update with reranked scores
+        reranked_results = []
+        for idx, rerank_score in ranked_pairs:
+            result = results[idx]
+            
+            # Preserve original search score before overwriting
+            result.search_similarity_score = result.similarity_score
+            result.similarity_score = float(rerank_score)
+            
+            reranked_results.append(result)
+        
+        if DebugLogger.is_enabled():
+            log_info(f"Reranking complete - score range: {reranked_results[0].similarity_score:.3f} to {reranked_results[-1].similarity_score:.3f}")
+        
+        return reranked_results
+
     def close(self):
         """Clean up resources."""
         self.metadata_db.close()

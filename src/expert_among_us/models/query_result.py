@@ -68,6 +68,7 @@ class CommitResult(QueryResultBase):
     similarity_score: float
     source: ResultSource
     chroma_id: Optional[str] = None
+    search_similarity_score: Optional[float] = None
     
     def get_id(self) -> str:
         return self.changelist.id
@@ -106,6 +107,7 @@ class FileChunkResult(QueryResultBase):
     similarity_score: float
     source: ResultSource
     chroma_id: Optional[str] = None
+    search_similarity_score: Optional[float] = None
     
     def get_id(self) -> str:
         # Use ChromaDB ID for uniqueness across file+revision+location

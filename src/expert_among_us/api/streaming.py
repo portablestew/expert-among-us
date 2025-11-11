@@ -43,6 +43,7 @@ async def prompt_expert_stream(
     data_dir: Optional[Path] = None,
     embedding_provider: str = "local",
     llm_provider: str = "auto",
+    enable_reranking: bool = True,
 ) -> AsyncIterator[StreamChunk]:
     """Stream AI recommendations from expert.
     
@@ -62,6 +63,7 @@ async def prompt_expert_stream(
         data_dir: Custom data directory
         embedding_provider: Embedding provider
         llm_provider: LLM provider
+        enable_reranking: Whether to enable cross-encoder reranking
         
     Yields:
         StreamChunk objects with incremental content
@@ -114,11 +116,26 @@ async def prompt_expert_stream(
         
         # Search for relevant examples
         logger.debug(f"[STREAM] Creating searcher at +{time.time() - start_time:.3f}s")
+        
+        # Create reranker if enabled
+        from expert_among_us.config.settings import Settings
+        settings = Settings(
+            embedding_provider=embedding_provider,
+            enable_reranking=enable_reranking
+        )
+
+        reranker = None
+        if enable_reranking:
+            from expert_among_us.reranking.factory import create_reranker
+            reranker = create_reranker(settings)
+
         searcher = Searcher(
             expert_name=expert_name,
             embedder=ctx.embedder,
             metadata_db=ctx.metadata_db,
-            vector_db=ctx.vector_db
+            vector_db=ctx.vector_db,
+            reranker=reranker,
+            enable_reranking=enable_reranking
         )
         
         params = QueryParams(

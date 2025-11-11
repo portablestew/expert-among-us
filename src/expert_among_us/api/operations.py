@@ -31,6 +31,7 @@ def query_expert(
     relative_threshold: float = 0.3,
     data_dir: Optional[Path] = None,
     embedding_provider: str = "local",
+    enable_reranking: bool = True,  # NEW PARAMETER
 ) -> List[SearchResult]:
     """Query expert for similar changes.
     
@@ -49,6 +50,7 @@ def query_expert(
         relative_threshold: Relative threshold from top score 0.0-1.0 (default: 0.3)
         data_dir: Optional custom data directory path
         embedding_provider: Embedding provider - "local" or "bedrock" (default: "local")
+        enable_reranking: Whether to enable cross-encoder reranking (default: True)
         
     Returns:
         List of SearchResult objects ordered by similarity score (highest first).
@@ -106,15 +108,29 @@ def query_expert(
         enable_diff_search = search_scope_lower in ("diffs", "all")
         enable_file_search = search_scope_lower in ("files", "all")
         
+        # Create reranker if enabled
+        from expert_among_us.config.settings import Settings
+        settings = Settings(
+            embedding_provider=embedding_provider,
+            enable_reranking=enable_reranking
+        )
+
+        reranker = None
+        if enable_reranking:
+            from expert_among_us.reranking.factory import create_reranker
+            reranker = create_reranker(settings)
+
         # Create searcher
         searcher = Searcher(
             expert_name=expert_name,
             embedder=ctx.embedder,
             metadata_db=ctx.metadata_db,
             vector_db=ctx.vector_db,
+            reranker=reranker,  # NEW
             enable_metadata_search=enable_metadata_search,
             enable_diff_search=enable_diff_search,
             enable_file_search=enable_file_search,
+            enable_reranking=enable_reranking,  # NEW
             min_similarity_score=min_score,
             relative_threshold=relative_threshold
         )

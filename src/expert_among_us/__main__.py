@@ -37,9 +37,10 @@ console = Console(stderr=True)
 @click.option('--embedding-provider', type=click.Choice(['local', 'bedrock']), default='local', help='Embedding provider: local=Jina Code, bedrock=AWS Titan (default: local)')
 @click.option('--expert-model', type=str, help='Override default expert model for the selected provider')
 @click.option('--promptgen-model', type=str, help='Override default promptgen model for the selected provider')
+@click.option('--no-reranking', is_flag=True, help='Disable cross-encoder reranking (enabled by default)')
 @click.version_option(version=__version__)
 @click.pass_context
-def main(ctx, debug: bool, data_dir: Optional[Path], llm_provider: str, base_url_override: Optional[str], embedding_provider: str, expert_model: Optional[str], promptgen_model: Optional[str]) -> None:
+def main(ctx, debug: bool, data_dir: Optional[Path], llm_provider: str, base_url_override: Optional[str], embedding_provider: str, expert_model: Optional[str], promptgen_model: Optional[str], no_reranking: bool) -> None:
     """Expert Among Us - Queryable expert from commit history using LLM and embeddings.
     
     Create experts from git repositories, search commit history, and get
@@ -66,6 +67,7 @@ def main(ctx, debug: bool, data_dir: Optional[Path], llm_provider: str, base_url
     ctx.obj['embedding_provider'] = embedding_provider
     ctx.obj['expert_model'] = expert_model
     ctx.obj['promptgen_model'] = promptgen_model
+    ctx.obj['enable_reranking'] = not no_reranking
     
     # Initialize debug logger if enabled
     if debug:
@@ -296,7 +298,7 @@ def populate(
               help="Minimum similarity score threshold (0.0-1.0, default: 0.1)")
 @click.option("--relative-threshold",
               type=float,
-              default=0.3,
+              default=0.8,
               help="Relative score threshold as percentage drop from top result (0.0-1.0, default: 0.3)")
 @click.pass_context
 def query(
@@ -418,6 +420,7 @@ def query(
             log_info(f"Using data directory: {data_dir}")
         
         # Call API function
+        enable_reranking = ctx.obj.get('enable_reranking', True)
         results = query_expert(
             expert_name=expert_name,
             prompt=prompt,
@@ -430,6 +433,7 @@ def query(
             relative_threshold=relative_threshold,
             data_dir=data_dir,
             embedding_provider=embedding_provider,
+            enable_reranking=enable_reranking,
         )
         
         # Display results
@@ -443,7 +447,14 @@ def query(
             table = Table(title=f"Search Results for '{expert_name}'")
             table.add_column("ID", style="cyan", no_wrap=True, width=12)
             table.add_column("Author", style="green")
-            table.add_column("Score", style="yellow", justify="right")
+
+            # Show dual scores in debug mode, single score otherwise
+            if debug:
+                table.add_column("Search", style="dim yellow", justify="right")   # NEW: Original vector search score
+                table.add_column("Rerank", style="yellow", justify="right")       # NEW: Reranked score
+            else:
+                table.add_column("Score", style="yellow", justify="right")
+
             table.add_column("Source", style="magenta")
             
             # Add ChromaDB ID column when debug is enabled
@@ -458,9 +469,19 @@ def query(
                 row_data = [
                     result.get_id()[:12],
                     result.get_author() or "",
-                    f"{result.similarity_score:.3f}",
-                    result.source,
                 ]
+                
+                # Score display: dual scores in debug, single score otherwise
+                if debug:
+                    # Show both search and reranked scores
+                    search_score = result.search_similarity_score or result.similarity_score
+                    row_data.append(f"{search_score:.3f}")
+                    row_data.append(f"{result.similarity_score:.3f}")
+                else:
+                    # Show only final score (after reranking if applied)
+                    row_data.append(f"{result.similarity_score:.3f}")
+                
+                row_data.append(result.source)
                 
                 # Add ChromaDB ID if debug is enabled
                 if debug:
@@ -638,6 +659,7 @@ def prompt(
         first_chunk = True  # Track if this is the first chunk
         
         try:
+            enable_reranking = ctx.obj.get('enable_reranking', True)
             async for chunk in prompt_expert_stream(
                 expert_name=expert_name,
                 prompt=prompt,
@@ -651,6 +673,7 @@ def prompt(
                 data_dir=data_dir,
                 embedding_provider=embedding_provider,
                 llm_provider=llm_provider,
+                enable_reranking=enable_reranking,
             ):
                 if chunk.delta:
                     # Print "Expert Response:" header on first chunk with content

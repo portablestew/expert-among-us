@@ -165,6 +165,13 @@ class Settings(BaseSettings):
     # Text sanitization settings
     enable_sanitization: bool = True
     
+    # Reranking settings
+    enable_reranking: bool = True  # Enabled by default
+    reranking_provider: str = "local"  # Only "local" supported initially
+    cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-12-v2"  # Changed to L-12 for better quality
+    reranking_batch_size: int = 20  # GPU batch size
+    reranking_max_length: int = 512  # Maximum tokens for query+document pair
+    
     # Debug settings
     debug: bool = False
     
