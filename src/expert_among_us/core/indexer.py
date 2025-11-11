@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 from expert_among_us.models.changelist import Changelist
 from expert_among_us.models.file_chunk import FileChunk
 from expert_among_us.embeddings.base import Embedder
@@ -8,7 +8,7 @@ from expert_among_us.db.vector.base import VectorDB
 from expert_among_us.utils.chunking import chunk_text_with_lines
 from expert_among_us.utils.truncate import is_binary_file
 from expert_among_us.utils.sanitization import TextSanitizer
-from expert_among_us.utils.progress import console
+from expert_among_us.utils.progress import console, log_info
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, MofNCompleteColumn
 
 
@@ -61,18 +61,26 @@ class Indexer:
             console=console,
         )
 
-    def index_unified(self, batch_size: int = 100):
+    def index_unified(self, batch_size: int = 100, start_after: Optional[str] = None):
         """Index both files and commits in a single pass.
 
         Respects the max_commits limit from expert_config by tracking the total
         number of processed commits (including any previously indexed ones) and
         stopping once the configured cap is reached.
+
+        Args:
+            batch_size: Maximum commits per batch
+            start_after: Optional commit hash to start indexing from (for testing specific commits)
         """
         
         # Get starting point
-        last_processed_id = self.metadata_db.get_last_processed_commit_hash(
-            self.expert_config['name']
-        )
+        # Override with start_after if provided (for testing specific commits)
+        if start_after is not None:
+            last_processed_id = start_after
+        else:
+            last_processed_id = self.metadata_db.get_last_processed_commit_hash(
+                self.expert_config['name']
+            )
 
         # Respect global max_commits across runs: treat already indexed commits as part of the total.
         max_commits = int(self.expert_config.get("max_commits", 10000))
@@ -87,6 +95,9 @@ class Indexer:
 
         if isinstance(total_available, int) and total_available > 0:
             max_commits = min(max_commits, total_available)
+        
+        if batch_size > max_commits:
+            batch_size = max_commits
 
         total_commits = already_indexed
 

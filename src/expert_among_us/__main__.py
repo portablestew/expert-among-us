@@ -79,6 +79,7 @@ def main(ctx, debug: bool, data_dir: Optional[Path], llm_provider: str, base_url
 @click.option("--max-commits", default=50000, type=int, help="Maximum commits to index")
 @click.option("--vcs-type", type=click.Choice(["git", "p4"]), default="git", help="Version control system type")
 @click.option("--batch-size", default=500, type=int, help="Maximum commits per embedding batch")
+@click.option("--start-at", type=str, help="Start indexing from this specific commit hash (use with --max-commits to test specific commits)")
 @click.pass_context
 def populate(
     ctx,
@@ -88,6 +89,7 @@ def populate(
     max_commits: int,
     vcs_type: str,
     batch_size: int,
+    start_at: Optional[str],
 ) -> None:
     """Build or update an expert index from a repository.
     
@@ -114,6 +116,10 @@ def populate(
         \b
         # Use Bedrock embeddings (global flag)
         $ expert-among-us --embedding-provider bedrock populate MyExpert /path/to/repo
+        
+        \b
+        # Test specific commit (useful for debugging sanitization)
+        $ expert-among-us populate MyExpert /path/to/repo --start-at abc123def --max-commits 1
     """
     # Get global options from context
     data_dir = ctx.obj.get('data_dir')
@@ -240,7 +246,7 @@ def populate(
             )
 
             # Run unified indexing
-            indexer.index_unified(batch_size=batch_size)
+            indexer.index_unified(batch_size=batch_size, start_after=start_at)
             log_success("Unified indexing complete!")
             
             # Get total processed commits for reporting
