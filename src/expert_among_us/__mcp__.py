@@ -19,6 +19,7 @@ Run with: python -m expert_among_us.__mcp__
 import argparse
 import asyncio
 import logging
+import math
 import os
 import sys
 import time
@@ -143,8 +144,8 @@ async def list_tools() -> list[Tool]:
                     },
                     "max_changes": {
                         "type": "integer",
-                        "description": "Maximum number of commits to return (default: 15)",
-                        "default": 15
+                        "description": "Maximum number of commits to return (default: 20)",
+                        "default": 20
                     },
                     "users": {
                         "type": "array",
@@ -199,8 +200,8 @@ async def list_tools() -> list[Tool]:
                     },
                     "max_changes": {
                         "type": "integer",
-                        "description": "Maximum context changes to use (default: 15)",
-                        "default": 15
+                        "description": "Maximum context changes to use (default: 20)",
+                        "default": 20
                     },
                     "users": {
                         "type": "array",
@@ -337,7 +338,7 @@ async def handle_import(source_path: str) -> list[TextContent]:
 async def handle_query(
     expert_name: str,
     prompt: str,
-    max_changes: int = 15,
+    max_changes: int = 20,
     users: Optional[List[str]] = None,
     files: Optional[List[str]] = None,
     search_scope: str = "all"
@@ -347,12 +348,11 @@ async def handle_query(
         results = query_expert(
             expert_name=expert_name,
             prompt=prompt,
-            max_changes=max_changes,
+            max_changes=math.ceil(max_changes / 2),
+            max_file_chunks=math.floor(max_changes / 2),
             users=users,
             files=files,
             search_scope=search_scope,
-            min_score=0.1,
-            relative_threshold=0.3,
             data_dir=None,
             embedding_provider="local"
         )
@@ -423,7 +423,7 @@ async def handle_query(
 async def handle_prompt(
     expert_name: str,
     prompt: str,
-    max_changes: int = 15,
+    max_changes: int = 20,
     users: Optional[List[str]] = None,
     files: Optional[List[str]] = None,
     impostor: bool = False,
@@ -450,7 +450,8 @@ async def handle_prompt(
         async for chunk in prompt_expert_stream(
             expert_name=expert_name,
             prompt=prompt,
-            max_changes=max_changes,
+            max_changes=math.ceil(max_changes / 2),
+            max_file_chunks=math.floor(max_changes / 2),
             users=users,
             files=files,
             amogus=amogus,

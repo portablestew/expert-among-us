@@ -28,7 +28,7 @@ def query_expert(
     files: Optional[List[str]] = None,
     search_scope: str = "all",
     min_score: float = 0.1,
-    relative_threshold: float = 0.3,
+    relative_threshold: float = 0.8,
     data_dir: Optional[Path] = None,
     embedding_provider: str = "local",
     enable_reranking: bool = True,  # NEW PARAMETER
