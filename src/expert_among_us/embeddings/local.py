@@ -8,13 +8,14 @@ from ..utils.progress import console
 class JinaCodeEmbedder(Embedder):
     """Local embeddings using Jina Code model with code2code task."""
     
-    def __init__(self, model_id: str, dimension: int = 512, compile_model: bool = True):
+    def __init__(self, model_id: str, dimension: int = 512, compile_model: bool = True, batch_size: int = 12):
         """Initialize the Jina Code embedder.
         
         Args:
             model_id: Hugging Face model identifier
             dimension: Target dimension for Matryoshka truncation
             compile_model: Whether to use torch.compile for optimization (default: True)
+            batch_size: Batch size for GPU inference (default: 12)
         """
         # Log loading message in debug mode
         if DebugLogger.is_enabled():
@@ -31,6 +32,7 @@ class JinaCodeEmbedder(Embedder):
         
         self.model_id = model_id
         self._dimension = dimension
+        self.batch_size = batch_size
         self.task = "code2code"
         self.task_prefix = "Represent this code for retrieving similar code: "
         
@@ -60,6 +62,10 @@ class JinaCodeEmbedder(Embedder):
             model_kwargs={'dtype': torch.float16}
         )
         
+        # Start multi-process pool for CPU/GPU/multi-GPU support
+        # Automatically handles single GPU, multi-GPU, and multi-CPU scenarios
+        self.pool = self.model.start_multi_process_pool()
+        
         # Compile model for faster inference (PyTorch 2.0+) if enabled
         compilation_enabled = False
         if compile_model:
@@ -76,9 +82,12 @@ class JinaCodeEmbedder(Embedder):
         
         # Log device being used
         if self.device == "cuda":
-            device_name = torch.cuda.get_device_name(0)
+            gpu_count = torch.cuda.device_count()
+            # List all GPUs that will be used (single or multi-GPU)
+            gpu_names = [torch.cuda.get_device_name(i) for i in range(gpu_count)]
+            gpu_list = ", ".join(gpu_names)
             compile_status = " (compiled)" if compilation_enabled else " (not compiled)"
-            console.print(f"{SYMBOLS['success']} Local embeddings using GPU: {device_name}{compile_status}")
+            console.print(f"{SYMBOLS['success']} Local embeddings using {gpu_count} GPUs: {gpu_list}{compile_status}")
         else:
             console.print(f"{SYMBOLS['info']} Local embeddings using CPU (this will be slower)")
             console.print(f"{SYMBOLS['info']} Using fp16 precision (auto-casts on CPU)")
@@ -172,17 +181,17 @@ class JinaCodeEmbedder(Embedder):
                 category="embedding"
             )
         
-        # Generate embeddings in batch with no_grad to prevent gradient accumulation.
+        # Generate embeddings in batch using multi-process pool.
+        # Automatically handles CPU/multi-CPU, single GPU, and multi-GPU scenarios.
         # We RE-ENABLE the internal tqdm progress bar here because batch embedding
         # progress is critical for UX. To keep output readable, rely on tqdm's
         # single-line behavior and avoid overlapping rich Progress for this section.
-        with self.torch.no_grad():
-            embeddings = self.model.encode(
-                prefixed_texts,
-                convert_to_numpy=True,
-                show_progress_bar=True,
-                batch_size=12,
-            )
+        embeddings = self.model.encode_multi_process(
+            prefixed_texts,
+            pool=self.pool,
+            batch_size=self.batch_size,
+            show_progress_bar=True
+        )
         
         # Truncate to target dimension (Matryoshka) and convert to lists
         embeddings_list = [emb[:self._dimension].tolist() for emb in embeddings]
@@ -204,6 +213,15 @@ class JinaCodeEmbedder(Embedder):
             )
         
         return embeddings_list
+    
+    def __del__(self):
+        """Cleanup multi-process pool when object is destroyed."""
+        if hasattr(self, 'pool'):
+            try:
+                self.model.stop_multi_process_pool(self.pool)
+            except Exception:
+                # Ignore cleanup errors during shutdown
+                pass
     
     @property
     def dimension(self) -> int:

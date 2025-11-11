@@ -14,6 +14,11 @@ class TestJinaCodeEmbedder(unittest.TestCase):
         mock_model = Mock()
         mock_sentence_transformer_class.return_value = mock_model
         
+        # Mock multi-process pool methods for multi-GPU support
+        mock_pool = Mock()
+        mock_model.start_multi_process_pool.return_value = mock_pool
+        mock_model.stop_multi_process_pool.return_value = None
+        
         # Mock encode to return numpy array that will be truncated to 512
         full_embedding = np.array([0.1] * 896)
         mock_model.encode.return_value = full_embedding
@@ -45,10 +50,15 @@ class TestJinaCodeEmbedder(unittest.TestCase):
         mock_model = Mock()
         mock_sentence_transformer_class.return_value = mock_model
         
-        # Mock encode to return numpy array for batch
+        # Mock multi-process pool methods for multi-GPU support
+        mock_pool = Mock()
+        mock_model.start_multi_process_pool.return_value = mock_pool
+        mock_model.stop_multi_process_pool.return_value = None
+        
+        # Mock encode_multi_process to return numpy array for batch
         # Return 2 embeddings of 896 dimensions each
         full_embeddings = np.array([[0.1] * 896, [0.2] * 896])
-        mock_model.encode.return_value = full_embeddings
+        mock_model.encode_multi_process.return_value = full_embeddings
         
         # Initialize embedder
         model_id = "jinaai/jina-code-embeddings-0.5b"
@@ -62,10 +72,10 @@ class TestJinaCodeEmbedder(unittest.TestCase):
         self.assertEqual(len(embeddings), 2)
         self.assertEqual(len(embeddings[0]), 512)
         self.assertEqual(len(embeddings[1]), 512)
-        self.assertTrue(mock_model.encode.called)
+        self.assertTrue(mock_model.encode_multi_process.called)
         
         # Verify task prefix was added to all texts
-        call_args = mock_model.encode.call_args
+        call_args = mock_model.encode_multi_process.call_args
         called_texts = call_args[0][0]
         self.assertEqual(len(called_texts), 2)
         for called_text in called_texts:
@@ -79,6 +89,11 @@ class TestJinaCodeEmbedder(unittest.TestCase):
         # Setup mocks
         mock_model = Mock()
         mock_sentence_transformer_class.return_value = mock_model
+        
+        # Mock multi-process pool methods for multi-GPU support
+        mock_pool = Mock()
+        mock_model.start_multi_process_pool.return_value = mock_pool
+        mock_model.stop_multi_process_pool.return_value = None
         
         # Initialize embedder with custom dimension
         model_id = "jinaai/jina-code-embeddings-0.5b"
@@ -95,6 +110,11 @@ class TestJinaCodeEmbedder(unittest.TestCase):
         # Setup mocks
         mock_model = Mock()
         mock_sentence_transformer_class.return_value = mock_model
+        
+        # Mock multi-process pool methods for multi-GPU support
+        mock_pool = Mock()
+        mock_model.start_multi_process_pool.return_value = mock_pool
+        mock_model.stop_multi_process_pool.return_value = None
         
         # Mock encode
         full_embedding = np.array([0.1] * 896)
@@ -123,6 +143,11 @@ class TestJinaCodeEmbedder(unittest.TestCase):
         mock_model = Mock()
         mock_sentence_transformer_class.return_value = mock_model
         
+        # Mock multi-process pool methods for multi-GPU support
+        mock_pool = Mock()
+        mock_model.start_multi_process_pool.return_value = mock_pool
+        mock_model.stop_multi_process_pool.return_value = None
+        
         # Initialize embedder
         model_id = "jinaai/jina-code-embeddings-0.5b"
         embedder = JinaCodeEmbedder(model_id=model_id, dimension=512)
@@ -141,6 +166,11 @@ class TestJinaCodeEmbedder(unittest.TestCase):
         # Setup mocks
         mock_model = Mock()
         mock_sentence_transformer_class.return_value = mock_model
+        
+        # Mock multi-process pool methods for multi-GPU support
+        mock_pool = Mock()
+        mock_model.start_multi_process_pool.return_value = mock_pool
+        mock_model.stop_multi_process_pool.return_value = None
         
         # Mock encode to return full 896-dimensional embedding
         full_embedding = np.array(list(range(896)))
@@ -167,6 +197,11 @@ class TestJinaCodeEmbedder(unittest.TestCase):
         mock_model = Mock()
         mock_sentence_transformer_class.return_value = mock_model
         
+        # Mock multi-process pool methods for multi-GPU support
+        mock_pool = Mock()
+        mock_model.start_multi_process_pool.return_value = mock_pool
+        mock_model.stop_multi_process_pool.return_value = None
+        
         # Initialize embedder with model_id and default dimension
         model_id = "jinaai/jina-code-embeddings-0.5b"
         embedder = JinaCodeEmbedder(model_id=model_id)
@@ -186,6 +221,11 @@ class TestJinaCodeEmbedder(unittest.TestCase):
         # Setup mocks
         mock_model = Mock()
         mock_sentence_transformer_class.return_value = mock_model
+        
+        # Mock multi-process pool methods for multi-GPU support
+        mock_pool = Mock()
+        mock_model.start_multi_process_pool.return_value = mock_pool
+        mock_model.stop_multi_process_pool.return_value = None
         
         # Initialize embedder
         model_id = "jinaai/jina-code-embeddings-0.5b"

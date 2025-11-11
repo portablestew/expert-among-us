@@ -169,7 +169,8 @@ class Settings(BaseSettings):
     enable_reranking: bool = True  # Enabled by default
     reranking_provider: str = "local"  # Only "local" supported initially
     cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-12-v2"  # Changed to L-12 for better quality
-    reranking_batch_size: int = 20  # GPU batch size
+    embedding_batch_size: int = 12  # GPU batch size for embeddings
+    reranking_batch_size: int = 20  # GPU batch size for reranking
     reranking_max_length: int = 512  # Maximum tokens for query+document pair
     
     # Debug settings

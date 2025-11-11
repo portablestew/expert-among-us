@@ -1,9 +1,8 @@
 from typing import List, Tuple
-import torch
-from sentence_transformers import CrossEncoder
 from .base import Reranker
 from expert_among_us.utils.progress import console
 from expert_among_us.utils.symbols import SYMBOLS
+from ..utils.debug import DebugLogger
 
 class LocalCrossEncoderReranker(Reranker):
     """Local cross-encoder reranker using sentence-transformers.
@@ -26,6 +25,19 @@ class LocalCrossEncoderReranker(Reranker):
             batch_size: Batch size for GPU inference
             max_chunk_chars: Maximum characters per chunk (~512 tokens)
         """
+        # Log loading message in debug mode
+        if DebugLogger.is_enabled():
+            console.print("[DEBUG] Loading PyTorch...")
+        
+        # Lazy import torch (heavy import ~2.4s)
+        import torch
+        
+        if DebugLogger.is_enabled():
+            console.print("[DEBUG] Loading sentence_transformers...")
+        
+        # Lazy import sentence_transformers (heavy import ~3.7s)
+        from sentence_transformers import CrossEncoder
+        
         self.model_id = model_id
         self.batch_size = batch_size
         self.max_chunk_chars = max_chunk_chars
@@ -36,6 +48,9 @@ class LocalCrossEncoderReranker(Reranker):
         
         # Load cross-encoder model
         self.model = CrossEncoder(model_id, device=self.device)
+        
+        # Store torch reference for later use
+        self.torch = torch
         
         # Log device
         if self.device == "cuda":
