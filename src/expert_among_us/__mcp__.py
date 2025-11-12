@@ -354,7 +354,9 @@ async def handle_query(
             files=files,
             search_scope=search_scope,
             data_dir=None,
-            embedding_provider="local"
+            embedding_provider="local",
+            llm_provider=_llm_provider,
+            enable_multiprocessing=False,
         )
         
         if not results:
@@ -459,7 +461,8 @@ async def handle_prompt(
             temperature=temperature,
             data_dir=None,
             embedding_provider="local",
-            llm_provider=_llm_provider
+            llm_provider=_llm_provider,
+            enable_multiprocessing=False,
         ):
             if chunk.delta:
                 if first_chunk_time is None:
@@ -574,10 +577,12 @@ async def main():
     # Initialize settings with selected providers and optional data_dir
     from expert_among_us.config.settings import Settings
     from expert_among_us.embeddings.factory import create_embedder
+    from expert_among_us.reranking.factory import create_reranker
     
     settings_kwargs = {
         "embedding_provider": args.embedding_provider,
         "llm_provider": args.llm_provider,
+        "enable_multiprocessing": False,  # Disable multiprocessing in MCP context to prevent hanging
     }
     if args.data_dir:
         settings_kwargs["data_dir"] = args.data_dir
@@ -587,11 +592,12 @@ async def main():
     logger.info("Warming up local embedding model (this may take ~60s on first run)...")
     warmup_start = time.time()
     try:
-        embedder = create_embedder(settings)
-        # Force model initialization
-        _ = embedder.dimension
+        # Force embedder and reranker model initializations
+        create_embedder(settings)
+        create_reranker(settings)
+
         warmup_time = time.time() - warmup_start
-        logger.info(f"Local embedding model ready (took {warmup_time:.1f}s)")
+        logger.info(f"Local transformer models ready (took {warmup_time:.1f}s)")
     except Exception as e:
         logger.warning(f"Failed to warm up local embedder: {e}")
     

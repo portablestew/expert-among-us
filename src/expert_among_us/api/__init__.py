@@ -22,7 +22,7 @@ Example:
     
     # Query an expert
     try:
-        results = query_expert("MyExpert", "How to add feature?")
+        results = query_expert("MyExpert", "How to add feature?", enable_multiprocessing=True)
         for result in results:
             print(f"Score: {result.similarity_score:.3f}")
             print(f"Message: {result.changelist.message}")
@@ -30,7 +30,7 @@ Example:
         print(f"Error: {e}")
     
     # Stream AI recommendations
-    async for chunk in prompt_expert_stream("MyExpert", "Implement X"):
+    async for chunk in prompt_expert_stream("MyExpert", "Implement X", enable_multiprocessing=True):
         if chunk.delta:
             print(chunk.delta, end="")
     

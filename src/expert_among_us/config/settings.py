@@ -173,6 +173,9 @@ class Settings(BaseSettings):
     reranking_batch_size: int = 20  # GPU batch size for reranking
     reranking_max_length: int = 512  # Maximum tokens for query+document pair
     
+    # Multiprocessing settings
+    enable_multiprocessing: bool = True  # Enable multiprocessing for embeddings (set to False in MCP context)
+    
     # Debug settings
     debug: bool = False
     

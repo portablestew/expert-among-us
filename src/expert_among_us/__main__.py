@@ -433,6 +433,8 @@ def query(
             relative_threshold=relative_threshold,
             data_dir=data_dir,
             embedding_provider=embedding_provider,
+            llm_provider="auto",
+            enable_multiprocessing=True,
             enable_reranking=enable_reranking,
         )
         
@@ -685,6 +687,7 @@ def prompt(
                 data_dir=data_dir,
                 embedding_provider=embedding_provider,
                 llm_provider=llm_provider,
+                enable_multiprocessing=True,
                 enable_reranking=enable_reranking,
             ):
                 if chunk.delta:

@@ -31,6 +31,8 @@ def query_expert(
     relative_threshold: float = 0.8,
     data_dir: Optional[Path] = None,
     embedding_provider: str = "local",
+    llm_provider: str = "auto",
+    enable_multiprocessing: bool = True,
     enable_reranking: bool = True,  # NEW PARAMETER
 ) -> List[SearchResult]:
     """Query expert for similar changes.
@@ -50,6 +52,8 @@ def query_expert(
         relative_threshold: Relative threshold from top score 0.0-1.0 (default: 0.3)
         data_dir: Optional custom data directory path
         embedding_provider: Embedding provider - "local" or "bedrock" (default: "local")
+        llm_provider: LLM provider - "auto", "openai", "openrouter", "ollama", "bedrock", "claude-code" (default: "auto")
+        enable_multiprocessing: Whether to enable multiprocessing for embeddings (default: True)
         enable_reranking: Whether to enable cross-encoder reranking (default: True)
         
     Returns:
@@ -84,7 +88,9 @@ def query_expert(
     ctx = ExpertContext(
         expert_name=expert_name,
         data_dir=data_dir,
-        embedding_provider=embedding_provider
+        embedding_provider=embedding_provider,
+        llm_provider=llm_provider,
+        enable_multiprocessing=enable_multiprocessing,
     )
     
     try:
@@ -108,17 +114,11 @@ def query_expert(
         enable_diff_search = search_scope_lower in ("diffs", "all")
         enable_file_search = search_scope_lower in ("files", "all")
         
-        # Create reranker if enabled
-        from expert_among_us.config.settings import Settings
-        settings = Settings(
-            embedding_provider=embedding_provider,
-            enable_reranking=enable_reranking
-        )
-
+        # Create reranker if enabled using ctx.settings to ensure consistency
         reranker = None
         if enable_reranking:
             from expert_among_us.reranking.factory import create_reranker
-            reranker = create_reranker(settings)
+            reranker = create_reranker(ctx.settings)
 
         # Create searcher
         searcher = Searcher(

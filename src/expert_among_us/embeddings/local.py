@@ -8,7 +8,7 @@ from ..utils.progress import console
 class JinaCodeEmbedder(Embedder):
     """Local embeddings using Jina Code model with code2code task."""
     
-    def __init__(self, model_id: str, dimension: int = 512, compile_model: bool = True, batch_size: int = 12):
+    def __init__(self, model_id: str, dimension: int = 512, compile_model: bool = True, batch_size: int = 12, enable_multiprocessing: bool = True):
         """Initialize the Jina Code embedder.
         
         Args:
@@ -16,6 +16,7 @@ class JinaCodeEmbedder(Embedder):
             dimension: Target dimension for Matryoshka truncation
             compile_model: Whether to use torch.compile for optimization (default: True)
             batch_size: Batch size for GPU inference (default: 12)
+            enable_multiprocessing: Whether to enable multiprocessing (default: True)
         """
         # Log loading message in debug mode
         if DebugLogger.is_enabled():
@@ -64,7 +65,20 @@ class JinaCodeEmbedder(Embedder):
         
         # Start multi-process pool for CPU/GPU/multi-GPU support
         # Automatically handles single GPU, multi-GPU, and multi-CPU scenarios
-        self.pool = self.model.start_multi_process_pool()
+        
+        # Start multi-process pool only if enabled in settings
+        if enable_multiprocessing:
+            try:
+                self.pool = self.model.start_multi_process_pool()
+            except Exception as e:
+                # If multiprocessing fails, fall back to single-process mode
+                self.pool = None
+                if DebugLogger.is_enabled():
+                    console.print(f"[DEBUG] Multiprocessing failed ({type(e).__name__}), using single-process mode")
+        else:
+            self.pool = None
+            if DebugLogger.is_enabled():
+                console.print(f"[DEBUG] Multiprocessing disabled in settings")
         
         # Compile model for faster inference (PyTorch 2.0+) if enabled
         compilation_enabled = False
@@ -82,7 +96,7 @@ class JinaCodeEmbedder(Embedder):
         
         # Log device being used
         if self.device == "cuda":
-            gpu_count = torch.cuda.device_count()
+            gpu_count = torch.cuda.device_count() if enable_multiprocessing else 1
             # List all GPUs that will be used (single or multi-GPU)
             gpu_names = [torch.cuda.get_device_name(i) for i in range(gpu_count)]
             gpu_list = ", ".join(gpu_names)
@@ -186,12 +200,25 @@ class JinaCodeEmbedder(Embedder):
         # We RE-ENABLE the internal tqdm progress bar here because batch embedding
         # progress is critical for UX. To keep output readable, rely on tqdm's
         # single-line behavior and avoid overlapping rich Progress for this section.
-        embeddings = self.model.encode_multi_process(
-            prefixed_texts,
-            pool=self.pool,
-            batch_size=self.batch_size,
-            show_progress_bar=True
-        )
+        
+        if self.pool is not None:
+            # Use multi-process pool if available
+            embeddings = self.model.encode_multi_process(
+                prefixed_texts,
+                pool=self.pool,
+                batch_size=self.batch_size,
+                show_progress_bar=True
+            )
+        else:
+            # Fallback to single-process mode
+            if DebugLogger.is_enabled():
+                console.print(f"[DEBUG] Using single-process encoding (multiprocessing unavailable)")
+            embeddings = self.model.encode(
+                prefixed_texts,
+                convert_to_numpy=True,
+                show_progress_bar=True,
+                batch_size=self.batch_size
+            )
         
         # Truncate to target dimension (Matryoshka) and convert to lists
         embeddings_list = [emb[:self._dimension].tolist() for emb in embeddings]
@@ -216,11 +243,17 @@ class JinaCodeEmbedder(Embedder):
     
     def __del__(self):
         """Cleanup multi-process pool when object is destroyed."""
-        if hasattr(self, 'pool'):
+        if hasattr(self, 'pool') and self.pool is not None:
             try:
+                if DebugLogger.is_enabled():
+                    console.print(f"[DEBUG] Stopping multi-process pool...")
                 self.model.stop_multi_process_pool(self.pool)
-            except Exception:
+                if DebugLogger.is_enabled():
+                    console.print(f"[DEBUG] Multi-process pool stopped successfully")
+            except Exception as e:
                 # Ignore cleanup errors during shutdown
+                if DebugLogger.is_enabled():
+                    console.print(f"[DEBUG] Error stopping pool (ignored): {e}")
                 pass
     
     @property

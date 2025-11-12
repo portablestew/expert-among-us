@@ -52,6 +52,7 @@ class ExpertContext:
     embedding_provider: str = "local"
     llm_provider: str = "auto"
     debug: bool = False
+    enable_multiprocessing: bool = True
     
     # Lazy-initialized components (use field with init=False)
     _settings: Optional[Settings] = field(default=None, init=False, repr=False)
@@ -71,6 +72,7 @@ class ExpertContext:
             settings_kwargs = {
                 'embedding_provider': self.embedding_provider,
                 'llm_provider': self.llm_provider,
+                'enable_multiprocessing': self.enable_multiprocessing,
             }
             if self.data_dir is not None:
                 settings_kwargs['data_dir'] = self.data_dir

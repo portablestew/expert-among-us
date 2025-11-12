@@ -740,6 +740,7 @@ Configuration file location: `~/Library/Application Support/Claude/claude_deskto
   "mcpServers": {
     "expert-among-us": {
       "command": "/absolute/path/to/expert-among-us/run-mcp.sh",
+      "timeout": 120,
       "alwaysAllow":["list","prompt","query"],
       "env": {
         "OPENAI_API_KEY": "your-key-here"
@@ -758,6 +759,7 @@ Configuration file location: `%APPDATA%\Claude\claude_desktop_config.json`
   "mcpServers": {
     "expert-among-us": {
       "command": "powershell -file C:\\absolute\\path\\to\\expert-among-us\\run-mcp.ps1 --debug",
+      "timeout": 120,
       "alwaysAllow":["list","prompt","query"],
       "env": {
         "AWS_PROFILE": "your-profile-here"
