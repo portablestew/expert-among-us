@@ -445,8 +445,15 @@ def query(
             
             # Create rich table
             table = Table(title=f"Search Results for '{expert_name}'")
-            table.add_column("ID", style="cyan", no_wrap=True, width=12)
+            table.add_column("ID", style="cyan", no_wrap=True, width=16)
+            table.add_column("Source", style="magenta")
             table.add_column("Author", style="green")
+
+            # Add ChromaDB ID column when debug is enabled
+            if debug:
+                table.add_column("ChromaDB ID", style="dim cyan", overflow="fold", max_width=40)
+
+            table.add_column("Message", style="white")
 
             # Show dual scores in debug mode, single score otherwise
             if debug:
@@ -454,23 +461,34 @@ def query(
                 table.add_column("Rerank", style="yellow", justify="right")       # NEW: Reranked score
             else:
                 table.add_column("Score", style="yellow", justify="right")
-
-            table.add_column("Source", style="magenta")
-            
-            # Add ChromaDB ID column when debug is enabled
-            if debug:
-                table.add_column("ChromaDB ID", style="dim cyan", overflow="fold", max_width=40)
             
             table.add_column("Timestamp", style="blue", width=19)
-            table.add_column("Message", style="white")
             
             for result in results:
                 # Use common interface instead of assuming Changelist
-                row_data = [
-                    result.get_id()[:12],
-                    result.get_author() or "",
-                ]
+                row_data = []
+
+                if isinstance(result, FileChunkResult):
+                    row_data.append(Path(result.get_file_path()).name[:16])
+                else:
+                    row_data.append(result.get_id()[:16])
+
+                row_data.append(result.source)
+
+                if result.get_author():
+                    row_data.append(result.get_author())
+                elif isinstance(result, FileChunkResult):
+                    row_data.append(f"{result.get_file_path()}:{result.get_line_range()[0]}-{result.get_line_range()[1]}")
+                else:
+                    row_data.append("N/A")
+
+                # Add ChromaDB ID if debug is enabled
+                if debug:
+                    chroma_id_display = result.chroma_id if result.chroma_id else "N/A"
+                    row_data.append(chroma_id_display)
                 
+                row_data.append(result.get_preview_text(max_len=60));
+
                 # Score display: dual scores in debug, single score otherwise
                 if debug:
                     # Show both search and reranked scores
@@ -481,21 +499,15 @@ def query(
                     # Show only final score (after reranking if applied)
                     row_data.append(f"{result.similarity_score:.3f}")
                 
-                row_data.append(result.source)
-                
-                # Add ChromaDB ID if debug is enabled
-                if debug:
-                    chroma_id_display = result.chroma_id if result.chroma_id else "N/A"
-                    row_data.append(chroma_id_display)
-                
                 ts = result.get_timestamp()
-                ts_str = ts.strftime("%Y-%m-%d %H:%M:%S") if ts else ""
-                
-                row_data.extend([
-                    ts_str,
-                    result.get_preview_text(max_len=60),
-                ])
-                
+                if ts:
+                    ts_str = ts.strftime("%Y-%m-%d %H:%M:%S")
+                elif isinstance(result, FileChunkResult):
+                    ts_str = "HEAD (indexed)"
+                else:
+                    ts_str = "N/A"
+                row_data.append(ts_str)
+
                 table.add_row(*row_data)
             
             console.print(table)

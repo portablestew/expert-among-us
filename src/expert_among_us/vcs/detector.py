@@ -8,13 +8,14 @@ from typing import Optional
 
 from expert_among_us.vcs.base import VCSProvider
 from expert_among_us.vcs.git import Git
+from expert_among_us.vcs.perforce import Perforce
 
 
 # Registry of available VCS providers to check during auto-detection
 # Providers are checked in order, so put more common ones first
 VCS_PROVIDERS: list[type[VCSProvider]] = [
     Git,
-    # Future providers can be added here (e.g., PerforceProvider)
+    Perforce,
 ]
 
 
