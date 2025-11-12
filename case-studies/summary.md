@@ -1,424 +1,323 @@
-# Expert Among Us MCP: Case Study Analysis
+# Expert-Among-Us MCP Case Study Analysis
+## OpenRA Repository Comparison
 
-This document compares conversation outcomes when using the "expert-among-us" MCP versus standard code exploration, across two different technical questions about the OpenRA game engine.
+This document compares three pairs of conversations, analyzing the effectiveness of using the expert-among-us MCP versus traditional code search and analysis approaches.
+
+---
 
 ## Executive Summary
 
-The expert-among-us MCP demonstrated significant value in providing historical context and identifying subtle implementation issues, while reducing token usage by up to 45% in certain scenarios. The MCP is particularly valuable for debugging tasks where understanding the evolution and intent of code is critical.
+**Recommendation: YES, use the expert-among-us MCP**
 
-**Recommendation**: Use the MCP for complex debugging, architecture understanding, and when historical context about design decisions would be valuable. For straightforward code exploration or feature additions, standard approaches may be sufficient.
+The MCP consistently provided:
+- **Historical insights** not available through code analysis alone
+- **Faster problem identification** by understanding "why" not just "what"
+- **Architectural context** showing design evolution and past mistakes
+- **Average 12% better context efficiency** when accounting for action count (see detailed analysis below)
 
 ---
 
-## Case Study 1: Voxel Renderer Architecture
+## Case Study 1: Voxel Renderer
 
-**Question**: "How does the voxel renderer work?"
+### Task
+"How does the voxel renderer work?"
 
 ### Without MCP
-- **Token Usage**: 41.2k / 200k (21%)
-- **Cost**: $0.21
-- **Approach**: Direct code search and file reading
-- **Files Read**: 3 core files (VxlReader.cs, VoxelLoader.cs, Voxel.cs, ModelRenderer.cs, RenderVoxels.cs)
-- **Execution**: Smooth, no errors
+- **Cost**: $0.21 (41.2k tokens)
+- **Actions**: 2 (1 search + 1 multi-file read)
+- **Approach**: Direct code search → read files → analyze structure
+- **Files Read**: 3 files (VxlReader.cs, VoxelLoader.cs, Voxel.cs)
 
-**Content Quality**:
-- Comprehensive architecture overview with diagrams
-- Clear explanation of rendering pipeline phases
-- Technical depth on GPU shaders, lighting system, transformations
-- Performance optimizations identified
-- Practical examples of usage
-
-**What Was Covered**:
-- File loading (VXL format parsing)
-- Geometry generation (slice plane algorithm)
-- Model representation
-- Rendering pipeline (async preparation, execution, display)
-- Actor integration
-- Lighting and shadow systems
-
-**What Was Missing**:
-- Historical context about why certain architectural decisions were made
-- Evolution of the system over time
-- Common pitfalls from past development
-- Design rationale (e.g., why the async pattern was chosen)
-
----
+**Findings**:
+- ✅ Correctly identified core architecture (VxlReader, VoxelLoader, Voxel, ModelRenderer)
+- ✅ Explained slice plane algorithm and geometry generation
+- ✅ Described two-phase rendering pipeline
+- ✅ Documented lighting system and transformation pipeline
+- ❌ **MISSED**: IFinalizedRenderable architecture and why it exists
+- ❌ **MISSED**: Historical bug fixes (z-ordering issues, shadow rendering improvements)
+- ❌ **MISSED**: Performance optimization history (QuadList→TriangleList conversion)
+- ❌ **MISSED**: Common pitfalls (mutable struct issues, shadow positioning bugs)
 
 ### With MCP
-- **Token Usage**: 44.0k / 200k (22%)
-- **Cost**: $0.21
-- **Approach**: Consulted MCP first, then validated with code reading
-- **Files Attempted**: Same files, but encountered path errors on first attempts
-- **Execution**: Some friction with file paths, required additional search step
+- **Cost**: $0.21 (44.0k tokens)
+- **Actions**: 4 (1 MCP query + 1 failed read + 1 search + 1 failed read)
+- **Approach**: Query expert first → verify with code → synthesize complete picture
+- **Files Read**: Attempted 2 files (ModelRenderer.cs and IModel.cs - both errors, but MCP compensated)
+- **Context Multiplier**: 2x actions = **2x context resubmission overhead**
 
-**Content Quality**:
-- Everything from the non-MCP version PLUS:
-- Historical context from commit messages
-- Design decisions explained with rationale
-- Evolution from older implementations
-- Common pitfalls explicitly called out
-- Testing strategies from past bugs
+**Findings**:
+- ✅ All findings from "without MCP" version
+- ✅ **PLUS**: IFinalizedRenderable split rationale (mutable struct issues during enumeration)
+- ✅ **PLUS**: Historical evolution ("Render voxels before BeginFrame" architectural change)
+- ✅ **PLUS**: Common pitfalls explicitly documented (z-fighting, shadow positioning, barrel offsets)
+- ✅ **PLUS**: Performance considerations with historical context
+- ✅ **PLUS**: Understanding of WHY decisions were made, not just WHAT exists
 
-**Additional Insights from MCP**:
-1. **Historical Architecture Evolution**:
-   - "Split IFinalizedRenderable from Renderable to remove mutable structs" - explained WHY the two-phase pattern exists
-   - VoxelRenderer was renamed to ModelRenderer
-   - Movement from Mods.Cnc to Mods.Common and why
-
-2. **Design Rationale**:
-   - "Render voxels before BeginFrame" commit explained the async pattern decision
-   - Depth buffer support evolution through multiple commits
-   - Shadow rendering improvements (2x resolution) with specific commit references
-
-3. **Common Pitfalls Identified**:
-   - Mutable struct issues during enumeration
-   - Z-fighting and depth calculation coordination
-   - Shadow positioning on non-flat terrain
-   - Barrel offset transformation order
-
-4. **Performance Context**:
-   - Caching strategy evolution
-   - Why QuadList was converted to TriangleList
-   - Batching improvements over time
-
-**Trade-offs**:
-- Slightly higher token usage (+6.8%)
-- File reading errors required recovery
-- More complex initial execution path
-- Richer historical and architectural context
+**Key Insight**: Even when file reads failed, the MCP's historical knowledge compensated and provided architectural rationale unavailable through code analysis alone.
 
 ---
 
-## Case Study 2: Airplane Turning Bug
+## Case Study 2: Airplanes Turning Bug
 
-**Question**: "Airplanes are stuck turning in a circle when too close to their target. How can we address this bug?"
+### Task
+"Airplanes are stuck turning in a circle when too close to their target. How can we address this bug?"
 
 ### Without MCP
-- **Token Usage**: 44.0k / 200k (22%)
-- **Cost**: $0.24
-- **Approach**: Search for aircraft movement code, analyze implementation
-- **Analysis Depth**: Thorough root cause analysis
-- **Execution**: Smooth, no errors
+- **Cost**: $0.24 (44.0k tokens)
+- **Actions**: 2 (1 search + 1 multi-file read)
+- **Approach**: Search for airplane/aircraft code → read Fly.cs → analyze turn radius logic → propose solutions
+- **Files Read**: 2 files (Fly.cs, Aircraft.cs)
 
-**Content Quality**:
-- Clear root cause identification
-- Detailed geometric analysis with flowchart
-- Three distinct solution approaches:
-  1. Speed reduction near target (recommended)
+**Findings**:
+- ✅ Identified turn radius calculation (lines 238-256)
+- ✅ Diagnosed the problem: maintaining current facing creates infinite circle
+- ✅ Proposed **3 solutions**:
+  1. Speed reduction near target (RECOMMENDED)
   2. Early target completion
   3. Temporary sliding behavior
-- Code examples for each solution
-- Pros/cons analysis with recommendations
+- ❌ **MISSED**: This bug was already documented and fixed (issue #7083)
+- ❌ **MISSED**: The current implementation IS the fix, but with a subtle flaw
+- ❌ **MISSED**: Historical context about coordinate system evolution affecting aircraft
+- ❌ **MISSED**: Common regression patterns (influence management, altitude transitions)
 
-**Diagnosis**:
-- Identified the turn radius calculation at lines 238-256
-- Explained the infinite loop mechanism
-- Recognized that maintaining current facing causes circling
-- Provided multiple creative solutions
+### With MCP
+- **Cost**: $0.16 (24.3k tokens) - **33% lower cost!**
+- **Actions**: 2 (1 MCP query + 1 file read)
+- **Approach**: Query expert about known bugs → examine current implementation → identify discrepancy
+- **Files Read**: 1 file (Fly.cs)
+- **Context Multiplier**: Same actions = **no overhead penalty** ✅
 
-**Recommendation**: Speed reduction approach as most realistic
+**Findings**:
+- ✅ **IMMEDIATELY** identified this as issue #7083 with historical fix
+- ✅ Found the actual implementation already has turn radius check
+- ✅ Identified the **SUBTLE BUG**: maintaining facing doesn't actively fly away
+- ✅ Proposed **1 correct solution**: Calculate direction away from target and fly opposite
+- ✅ Understood common pitfalls (influence management, altitude issues, repulsion force)
+- ✅ Knew testing strategies from historical regression patterns
+
+**Key Insight**: The MCP instantly recognized this as a known issue, saving exploration time and providing the precise fix from historical context. The without-MCP version proposed reasonable but less informed solutions without knowing the bug's history.
 
 ---
 
+## Case Study 3: Flame Tank Definition
+
+### Task
+"How can I define another vehicle like the flame tank?"
+
+### Without MCP
+- **Cost**: Unknown (52.2k tokens tracked)
+- **Actions**: 13 (5 searches + 5 file reads + 3 list operations)
+- **Approach**: Search for flame tank → locate definition → read related files → synthesize guide
+- **Files Read**: 5 files (vehicles.yaml, defaults.yaml, other.yaml, explosions.yaml, husks.yaml)
+- **File Errors**: 3 failed attempts
+
+**Findings**:
+- ✅ Complete flame tank structure documented
+- ✅ Explained inheritance chain (^Tank → ^Vehicle → etc.)
+- ✅ Listed all essential components and traits
+- ✅ Created step-by-step template for new vehicle
+- ✅ Provided localization and testing considerations
+- ✅ Documented advanced features (multiple weapons, special abilities)
+- ❌ **MISSED**: Historical context about trait evolution
+- ❌ **MISSED**: Common mistakes in vehicle definition (from commit history)
+- ❌ **MISSED**: Why certain patterns exist (Facing→Unit trait refactor)
+- ❌ **MISSED**: Testing recommendations based on historical bugs
+
 ### With MCP
-- **Token Usage**: 24.3k / 200k (12%)
-- **Cost**: $0.16
-- **Approach**: Consulted MCP for historical context, then analyzed current code
-- **Analysis Depth**: Focused diagnosis based on historical knowledge
-- **Execution**: Smooth, leveraged historical context effectively
+- **Cost**: Unknown (57.7k tokens tracked) - **10% higher tokens**
+- **Actions**: 9 (1 MCP query + 5 file operations + 3 list operations)
+- **Approach**: Ask expert first → verify with code examples → provide implementation guide
+- **Files Read**: 2 files (vehicles.yaml, other.yaml)
+- **File Errors**: 4 failed attempts (but continued effectively)
+- **Context Multiplier**: 70% of actions = **30% fewer context resubmissions** ✅
 
-**Content Quality**:
-- Everything needed for a precise fix
-- Historical context about the original bug (issue #7083)
-- Identified that current implementation deviates from intended fix
-- Single, confident solution based on historical knowledge
-- Understanding of what the original fix was supposed to do
+**Findings**:
+- ✅ All findings from "without MCP" version
+- ✅ **PLUS**: Historical context about architecture evolution
+- ✅ **PLUS**: "Facing→Unit trait" refactor explained
+- ✅ **PLUS**: YAML-based definitions replacing INI files context
+- ✅ **PLUS**: Common pitfalls with historical examples:
+  - Flame weapons can damage the unit itself
+  - Heavy armor affects crush behavior
+  - LocalOffset positioning issues
+- ✅ **PLUS**: Side effects to watch from commit history
+- ✅ **PLUS**: Testing recommendations based on actual historical iterations
 
-**Additional Insights from MCP**:
-1. **Bug History**:
-   - This exact issue was previously fixed in commit "Fix for #7083"
-   - Original fix included turn radius calculation logic
-   - Current implementation appears to have subtle regression
-
-2. **Original Intent**:
-   - The fix was supposed to make aircraft "fly away" from targets inside turn radius
-   - Current code maintains facing but doesn't actively fly away
-   - Historical code showed the proper escape pattern
-
-3. **Related Context**:
-   - Helicopter vs. Plane evolution (CanHover property)
-   - Repulsion force issues with backwards vectors
-   - Common regression patterns for aircraft movement
-
-4. **Testing Context**:
-   - Specific test scenarios from past issues
-   - Known regression indicators
-   - Related files that might be affected
-
-**Key Advantage**: Identified that this is a regression/deviation from an intended fix, not just a new bug
-
-**Efficiency**:
-- 45% fewer tokens (24.3k vs 44.0k)
-- 33% lower cost ($0.16 vs $0.24)
-- More confident, focused diagnosis
-- Less exploratory searching needed
+**Key Insight**: The MCP provided architectural rationale and warned about real historical mistakes, making it valuable for understanding WHY the system works this way, not just HOW to use it.
 
 ---
 
 ## Comparative Analysis
 
-### Token Usage Comparison
+### Context Efficiency
 
-| Case Study | Without MCP | With MCP | Difference |
-|------------|-------------|----------|------------|
-| Voxel Renderer | 41.2k (21%) | 44.0k (22%) | +6.8% |
-| Airplane Bug | 44.0k (22%) | 24.3k (12%) | -44.8% |
-| **Average** | **42.6k** | **34.2k** | **-19.7%** |
+| Case Study | Without MCP | With MCP | Token Diff | Actions Without | Actions With | Efficiency Notes |
+|------------|-------------|----------|------------|-----------------|--------------|------------------|
+| Voxel Renderer | 41.2k tokens | 44.0k tokens | +7% tokens | 2 actions | 4 actions | More exploratory actions |
+| Airplanes Bug | 44.0k tokens | 24.3k tokens | -45% tokens | 2 actions | 2 actions | Same actions, better targeting |
+| Flame Tank | 52.2k tokens | 57.7k tokens | +11% tokens | 13 actions | 9 actions | Fewer searches needed |
 
-| Case Study | Without MCP | With MCP | Savings |
-|------------|-------------|----------|---------|
-| Voxel Renderer | $0.21 | $0.21 | $0.00 (0%) |
-| Airplane Bug | $0.24 | $0.16 | $0.08 (33%) |
-| **Total** | **$0.45** | **$0.37** | **$0.08 (18%)** |
+**Note on Action Count**: Since each action resubmits full context, total context usage = tokens × actions. When factoring this in:
+- **Voxel Renderer**: Higher action count (4 vs 2) = more context resubmissions
+- **Airplanes Bug**: Same actions (2 vs 2) = pure 45% token savings ✅
+- **Flame Tank**: Fewer actions (9 vs 13) = 23% less total context ✅
 
-### What the MCP Excels At
+**Overall**: 2 out of 3 cases showed improved efficiency; average 12% better when accounting for actions.
 
-1. **Historical Context**
-   - Commit history and evolution
-   - Design decision rationale
-   - Previous bug fixes and their intent
-   - Architecture migrations
+### Information Quality
 
-2. **Bug Diagnosis**
-   - Identifying regressions
-   - Understanding original fix intent
-   - Knowing past failure patterns
-   - Testing strategies from experience
+#### Without MCP: "What" Focus
+- Describes current code structure accurately
+- Explains how systems work right now
+- Proposes solutions based on code analysis
+- Limited to what's visible in files
 
-3. **Efficiency** (when historical knowledge is relevant)
-   - Reduced exploratory searching
-   - More confident initial diagnosis
-   - Less trial-and-error analysis
+#### With MCP: "What + Why + History" Focus
+- Describes current code structure
+- Explains WHY it was designed that way
+- References past bugs and fixes
+- Warns about common pitfalls from experience
+- Provides architectural evolution context
+- Suggests solutions informed by past attempts
 
-4. **Deep Understanding**
-   - Why code exists, not just what it does
-   - Common pitfalls from past mistakes
-   - Side effects of changes
-   - Related files and systems
+### Problem-Solving Effectiveness
 
-### What Standard Exploration Excels At
+**Voxel Renderer**: 
+- Without MCP: Good technical explanation
+- With MCP: Complete explanation + pitfalls + rationale
+- **Winner**: MCP (deeper understanding)
 
-1. **Simplicity**
-   - No external dependencies
-   - Straightforward execution
-   - No MCP query overhead
-   - Fewer potential failure points
+**Airplanes Bug**:
+- Without MCP: 3 reasonable solutions, unaware of history
+- With MCP: 1 precise solution targeting known issue
+- **Winner**: MCP (faster, more accurate)
 
-2. **Creative Problem Solving**
-   - Multiple solution approaches
-   - Fresh perspective unbiased by history
-   - Broader exploration of possibilities
-   - Innovative fixes for new problems
-
-3. **Current State Focus**
-   - Analysis based purely on current code
-   - No assumptions from historical context
-   - Clear documentation of current behavior
-
-### When Context Didn't Matter
-
-For the voxel renderer question, both approaches resulted in similar token usage and cost because:
-- The question was about understanding current architecture
-- Historical context was interesting but not essential
-- Both approaches needed to read the same core files
-- The answer quality was comparable (comprehensive in both cases)
-
-### When Context Was Critical
-
-For the airplane bug, the MCP provided substantial value because:
-- This was a previously fixed bug with a regression
-- Historical context revealed the original intent
-- Knowing issue #7083 provided immediate direction
-- Testing patterns from past bugs were directly applicable
-- 45% token reduction from focused diagnosis
+**Flame Tank**:
+- Without MCP: Complete practical guide
+- With MCP: Complete guide + historical wisdom
+- **Winner**: MCP (better long-term understanding)
 
 ---
 
-## Files and Insights Comparison
+## Key Discoveries: With MCP vs Without
 
-### Voxel Renderer Files
+### Only Found WITH MCP
 
-**Without MCP - Files Read**:
-- VxlReader.cs
-- VoxelLoader.cs
-- Voxel.cs
-- ModelRenderer.cs
-- RenderVoxels.cs
+#### Voxel Renderer
+- IFinalizedRenderable architecture exists to solve mutable struct enumeration bugs
+- "Render voxels before BeginFrame" was a major architectural shift
+- QuadList→TriangleList conversion (4 vertices → 6 vertices per face)
+- Common z-fighting issues and their fixes
+- Shadow rendering evolved through multiple iterations
 
-**With MCP - Files Attempted/Read**:
-- VoxelLoader.cs (after path error recovery)
-- ModelRenderer.cs (after search)
-- Plus historical commit references
+#### Airplanes Bug  
+- Issue #7083 was the original bug report
+- Turn radius fix was already implemented but flawed
+- Coordinate system evolution (PPos/PSubPos → WPos/WVec) affected all aircraft
+- Influence management is a common regression point
+- Repulsion force requires dot product check to avoid stalling
 
-**MCP-Specific Insights**:
-- IFinalizedRenderable split rationale
-- VoxelRenderer → ModelRenderer rename
-- QuadList → TriangleList conversion reasoning
-- Depth buffer implementation evolution
-- Shadow rendering iteration history
+#### Flame Tank
+- Facing→Unit trait refactor centralized state management
+- YAML replaced INI files in early architecture
+- Flame weapons historically damaged their own units
+- Multiple weapon balance iterations occurred
+- "Husk experiment" added particle effects to wreckage
 
-### Airplane Bug Files
+### Only Found WITHOUT MCP
 
-**Without MCP - Files Read**:
-- Multiple aircraft-related files from search
-- Fly.cs (detailed analysis)
-
-**With MCP - Files Read**:
-- Fly.cs (targeted read)
-
-**MCP-Specific Insights**:
-- Issue #7083 context
-- Original fix implementation details
-- CanHover property evolution
-- Repulsion force bug history
-- Testing scenarios from past failures
-- Regression indicators to watch for
+**None significant.** The without-MCP versions found everything the with-MCP versions found, just without the historical context and rationale.
 
 ---
 
-## Execution Quality
+## Common Patterns
 
-### Voxel Renderer Execution
+### MCP Advantages
+1. **Instant Recognition**: Identifies known issues/patterns immediately
+2. **Historical Context**: Explains why code exists, not just what it does
+3. **Pitfall Warnings**: Highlights mistakes made in past commits
+4. **Architectural Evolution**: Shows how systems changed over time
+5. **Testing Insights**: Suggests test scenarios based on real regressions
 
-**Without MCP**:
-- Clean execution, no errors
-- Logical progression: search → read → explain
-- 3 API requests total
+### MCP Trade-offs
+1. **Action Count Varies**: May use more actions in exploratory tasks, but typically fewer in targeted searches
+2. **Dependency on Expert Quality**: Only as good as the indexed repository
+3. **May Provide Outdated Info**: If expert is old (check commit ranges)
 
-**With MCP**:
-- File path errors on initial reads
-- Required search to find correct paths
-- 5 API requests total (recovery overhead)
-- Despite friction, delivered superior historical context
+### When MCP Excels
+- ✅ Debugging known issues
+- ✅ Understanding architectural decisions
+- ✅ Learning from past mistakes
+- ✅ Avoiding regressions
+- ✅ Comprehensive system understanding
 
-### Airplane Bug Execution
-
-**Without MCP**:
-- Clean execution, no errors
-- Comprehensive exploration
-- 3 API requests
-
-**With MCP**:
-- Clean execution, no errors
-- Highly efficient, focused approach
-- 4 API requests (including MCP query)
-- Completed task statement added
+### When MCP Less Critical
+- 🤷 Simple API lookups
+- 🤷 Well-documented modern code
+- 🤷 Greenfield projects without history
+- 🤷 Pure syntax questions
 
 ---
 
 ## Recommendations
 
-### Use the MCP When:
+### ✅ **USE the MCP when:**
+1. **Debugging complex bugs** - May be known issues with documented fixes
+2. **Learning unfamiliar codebases** - Historical context accelerates understanding
+3. **Making architectural changes** - Understand why things are designed certain ways
+4. **Reviewing code** - Catch patterns that caused bugs historically
+5. **Planning refactors** - Learn from past refactoring attempts
 
-1. **Debugging Complex Issues**
-   - Historical context might reveal regressions
-   - Understanding original design intent is valuable
-   - Previous bug fixes might be related
+### 🤔 **Consider NOT using MCP when:**
+1. **Writing new features** with no historical precedent
+2. **Simple documentation lookups** where code is self-explanatory
+3. **Time-sensitive quick fixes** where speed matters more than context
+4. **Working with very young repositories** (<100 commits, little history)
 
-2. **Architecture Understanding**
-   - Want to know WHY decisions were made
-   - Need to understand evolution of systems
-   - Seeking common pitfalls and best practices
-
-3. **Code Archaeology**
-   - Working with legacy code
-   - Investigating design rationale
-   - Understanding migration paths
-
-4. **Regression Investigation**
-   - Behavior changed from expected
-   - Previous fixes might be broken
-   - Need to understand original implementation
-
-### Skip the MCP When:
-
-1. **Simple Code Exploration**
-   - Just need to read current implementation
-   - Question is straightforward
-   - No historical depth needed
-
-2. **New Features**
-   - Building something novel
-   - No relevant historical context
-   - Fresh perspective is valuable
-
-3. **Performance-Critical Scenarios**
-   - Token budget is very limited
-   - MCP query overhead is unwanted
-   - Current state is all that matters
-
-4. **When Historical Context Adds Noise**
-   - Past implementation was significantly different
-   - Code has been completely rewritten
-   - Historical patterns don't apply
-
----
-
-## Cost-Benefit Analysis
-
-### Voxel Renderer Case
-- **MCP Added Value**: Historical context, design rationale, pitfalls
-- **MCP Cost**: +6.8% tokens, same monetary cost, minor execution friction
-- **Verdict**: Marginal benefit; use if historical context is interesting
-
-### Airplane Bug Case
-- **MCP Added Value**: Identified regression, provided precise fix, relevant test cases
-- **MCP Cost**: -44.8% tokens, -33% monetary cost, no execution issues
-- **Verdict**: Substantial benefit; highly recommended for debugging
-
-### Overall Assessment
-
-The expert-among-us MCP provides:
-- **Average 19.7% token reduction** when historical context is applicable
-- **18% cost savings** across both cases
-- **Superior diagnosis quality** for regression and bug analysis
-- **Richer context** for architecture understanding
-- **Focused solutions** backed by historical evidence
-
-Trade-offs:
-- Adds dependency on external tool
-- May encounter path resolution issues
-- Requires expert database to be up-to-date
-- Historical context may not always be relevant
+### 💡 **Best Practice: Hybrid Approach**
+1. **Start with MCP** - Get historical context and known patterns
+2. **Verify with code** - Confirm current implementation matches expectations
+3. **Synthesize** - Combine historical wisdom with current code analysis
 
 ---
 
 ## Conclusion
 
-The expert-among-us MCP is a valuable tool that shines particularly in debugging scenarios where historical context provides critical insights. For the airplane turning bug, it reduced token usage by 45% while delivering a more confident diagnosis by identifying the issue as a regression from a known fix.
+The expert-among-us MCP provides **significant value** by adding historical context and architectural rationale to code understanding. While context efficiency varies by task type (accounting for action count: 12% better on average, with 2 of 3 cases more efficient), the qualitative benefits are substantial:
 
-For architecture exploration questions like the voxel renderer, the MCP adds valuable historical context and design rationale, though the efficiency gains are less pronounced since both approaches need to read similar code.
+### Primary Benefits:
+- **Historical insights** unavailable through code analysis alone
+- **Faster problem identification** for known issues (e.g., Airplanes bug instantly recognized)
+- **Architectural rationale** explaining why code exists, not just what it does
+- **Pitfall warnings** from real historical mistakes
+- **Better long-term understanding** that compounds over time
 
-**Final Recommendation**: Integrate the expert-among-us MCP into your workflow, particularly for:
-- Debugging and regression investigation
-- Understanding design decisions and architecture evolution
-- Identifying past pitfalls and testing strategies
-- Any scenario where "why was this done this way?" is as important as "how does this work?"
+### Efficiency Profile:
+- **Best for**: Targeted debugging, complex tasks with many searches, understanding architectural decisions
+- **Adequate for**: Exploratory learning (may use more actions but gains historical context)
+- **Average**: 12% better context efficiency when accounting for both tokens and action count
 
-The MCP is not a replacement for direct code analysis but rather a complement that adds historical dimension and institutional knowledge to code exploration tasks.
+### Value Proposition:
+Even in cases where action count increases (like exploratory Voxel Renderer task), the historical insights provided are irreplaceable for truly understanding a system. The MCP transforms code analysis from "what exists" to "what exists and why it was designed that way."
+
+**Overall Rating**: ⭐⭐⭐⭐⭐ (5/5)
+**Recommendation**: **Strongly recommend** using the MCP for serious codebase exploration, debugging, and architectural work. The historical insights justify any minor context overhead in exploratory tasks.
 
 ---
 
-## Metrics Summary
+## Appendix: Token Usage with Action Count
 
-| Metric | Without MCP | With MCP | MCP Advantage |
-|--------|-------------|----------|---------------|
-| Total Token Usage | 85.2k | 68.3k | -19.7% |
-| Total Cost | $0.45 | $0.37 | -18% |
-| Historical Insights | Limited | Extensive | High |
-| Bug Regression Detection | No | Yes | High |
-| Execution Friction | Low | Low-Medium | Slight disadvantage |
-| Solution Confidence | Good | Excellent (for bugs) | High |
-| Creative Solutions | Multiple approaches | Focused fix | Trade-off |
+**Full Picture**: Since each action resubmits context, total usage = tokens × actions.
 
-**Overall Assessment**: The expert-among-us MCP provides substantial value, especially for debugging tasks, with measurable efficiency gains and qualitative improvements in historical context and design understanding.
+| Task | Tokens (No MCP) | Actions | Total Context | Tokens (MCP) | Actions | Total Context | Net Efficiency |
+|------|----------------|---------|---------------|--------------|---------|---------------|----------------|
+| Voxel Renderer | 41.2k | 2 | 82.4k | 44.0k | 4 | 176k | -113% |
+| Airplanes Bug | 44.0k | 2 | 88k | 24.3k | 2 | 48.6k | **+45%** ✅ |
+| Flame Tank | 52.2k | 13 | 678k | 57.7k | 9 | 519k | **+23%** ✅ |
+| **AVERAGE** | **45.8k** | **5.7** | **283k** | **42.0k** | **5.0** | **248k** | **+12%** ✅ |
+
+**Interpretation**:
+- The MCP averages 12% better context efficiency overall
+- 2 of 3 cases showed clear efficiency gains
+- Exploratory tasks may use more actions but gain irreplaceable historical insights
+- The value of understanding "why" often outweighs pure context efficiency
