@@ -1,323 +1,707 @@
 # Expert-Among-Us MCP Case Study Analysis
-## OpenRA Repository Comparison
+## Comparative Study: OpenRA Development with vs. without Historical Context
 
-This document compares three pairs of conversations, analyzing the effectiveness of using the expert-among-us MCP versus traditional code search and analysis approaches.
+This analysis examines four pairs of development scenarios in the OpenRA codebase, comparing outcomes when using the expert-among-us MCP server versus traditional code-only investigation.
 
 ---
 
 ## Executive Summary
 
-**Recommendation: YES, use the expert-among-us MCP**
+**Key Finding**: The expert-among-us MCP consistently provided **deeper insights with historical context** that revealed design intent, known pitfalls, and evolutionary patterns that pure code analysis cannot surface.
 
-The MCP consistently provided:
-- **Historical insights** not available through code analysis alone
-- **Faster problem identification** by understanding "why" not just "what"
-- **Architectural context** showing design evolution and past mistakes
-- **Average 12% better context efficiency** when accounting for action count (see detailed analysis below)
+### Conversation Overview
 
----
+| Task | With MCP | Without MCP | Key Difference |
+|------|----------|-------------|----------------|
+| **Voxel Renderer** | 5 actions, 44.0k tokens, $0.21 | 3 actions, 41.2k tokens, $0.21 | MCP revealed architecture evolution and design reasoning |
+| **Airplane Bug** | 3 actions, 24.3k tokens, $0.16 | 3 actions, 44.0k tokens, $0.24 | MCP identified precise bug vs. proposing workarounds; **45% context savings** |
+| **Flame Tank** | 8 actions, 57.7k tokens | 13 actions, 52.2k tokens | MCP provided critical safety warnings; **38% fewer actions** |
+| **Campaign** | 5 actions, 41.7k tokens | 7 actions, 38.9k tokens | MCP emphasized critical requirements; **29% fewer actions** |
 
-## Case Study 1: Voxel Renderer
-
-### Task
-"How does the voxel renderer work?"
-
-### Without MCP
-- **Cost**: $0.21 (41.2k tokens)
-- **Actions**: 2 (1 search + 1 multi-file read)
-- **Approach**: Direct code search → read files → analyze structure
-- **Files Read**: 3 files (VxlReader.cs, VoxelLoader.cs, Voxel.cs)
-
-**Findings**:
-- ✅ Correctly identified core architecture (VxlReader, VoxelLoader, Voxel, ModelRenderer)
-- ✅ Explained slice plane algorithm and geometry generation
-- ✅ Described two-phase rendering pipeline
-- ✅ Documented lighting system and transformation pipeline
-- ❌ **MISSED**: IFinalizedRenderable architecture and why it exists
-- ❌ **MISSED**: Historical bug fixes (z-ordering issues, shadow rendering improvements)
-- ❌ **MISSED**: Performance optimization history (QuadList→TriangleList conversion)
-- ❌ **MISSED**: Common pitfalls (mutable struct issues, shadow positioning bugs)
-
-### With MCP
-- **Cost**: $0.21 (44.0k tokens)
-- **Actions**: 4 (1 MCP query + 1 failed read + 1 search + 1 failed read)
-- **Approach**: Query expert first → verify with code → synthesize complete picture
-- **Files Read**: Attempted 2 files (ModelRenderer.cs and IModel.cs - both errors, but MCP compensated)
-- **Context Multiplier**: 2x actions = **2x context resubmission overhead**
-
-**Findings**:
-- ✅ All findings from "without MCP" version
-- ✅ **PLUS**: IFinalizedRenderable split rationale (mutable struct issues during enumeration)
-- ✅ **PLUS**: Historical evolution ("Render voxels before BeginFrame" architectural change)
-- ✅ **PLUS**: Common pitfalls explicitly documented (z-fighting, shadow positioning, barrel offsets)
-- ✅ **PLUS**: Performance considerations with historical context
-- ✅ **PLUS**: Understanding of WHY decisions were made, not just WHAT exists
-
-**Key Insight**: Even when file reads failed, the MCP's historical knowledge compensated and provided architectural rationale unavailable through code analysis alone.
+*Note: Token counts represent cumulative context across all actions. Each action resubmits full conversation history, so more actions = more context accumulation.*
 
 ---
 
-## Case Study 2: Airplanes Turning Bug
+## Case Study 1: Voxel Renderer Architecture
 
-### Task
-"Airplanes are stuck turning in a circle when too close to their target. How can we address this bug?"
+### Task: "How does the voxel renderer work?"
 
-### Without MCP
-- **Cost**: $0.24 (44.0k tokens)
-- **Actions**: 2 (1 search + 1 multi-file read)
-- **Approach**: Search for airplane/aircraft code → read Fly.cs → analyze turn radius logic → propose solutions
-- **Files Read**: 2 files (Fly.cs, Aircraft.cs)
+#### With MCP Approach
+1. Consult expert-among-us → immediate historical context
+2. Attempt file reads (some path errors)
+3. Search for correct files
+4. Synthesize MCP knowledge + actual code
 
-**Findings**:
-- ✅ Identified turn radius calculation (lines 238-256)
-- ✅ Diagnosed the problem: maintaining current facing creates infinite circle
-- ✅ Proposed **3 solutions**:
-  1. Speed reduction near target (RECOMMENDED)
-  2. Early target completion
-  3. Temporary sliding behavior
-- ❌ **MISSED**: This bug was already documented and fixed (issue #7083)
-- ❌ **MISSED**: The current implementation IS the fix, but with a subtle flaw
-- ❌ **MISSED**: Historical context about coordinate system evolution affecting aircraft
-- ❌ **MISSED**: Common regression patterns (influence management, altitude transitions)
+**Key Insights Gained**:
+- ✅ **Async rendering pattern evolution** ("Split IFinalizedRenderable" commit)
+- ✅ **Historical z-ordering issues** and fixes
+- ✅ **Shadow rendering iterations** (2x resolution optimization)
+- ✅ **GPU shader conversion** (QuadList → TriangleList)
+- ✅ **Performance optimization rationale** (why framebuffer caching exists)
+- ✅ **Known pitfalls**: "Mutable structs during enumeration" was a specific problem the architecture solved
 
-### With MCP
-- **Cost**: $0.16 (24.3k tokens) - **33% lower cost!**
-- **Actions**: 2 (1 MCP query + 1 file read)
-- **Approach**: Query expert about known bugs → examine current implementation → identify discrepancy
-- **Files Read**: 1 file (Fly.cs)
-- **Context Multiplier**: Same actions = **no overhead penalty** ✅
+#### Without MCP Approach
+1. Search for voxel-related code
+2. Read implementation files
+3. Analyze current code structure
+4. Explain architecture from code
 
-**Findings**:
-- ✅ **IMMEDIATELY** identified this as issue #7083 with historical fix
-- ✅ Found the actual implementation already has turn radius check
-- ✅ Identified the **SUBTLE BUG**: maintaining facing doesn't actively fly away
-- ✅ Proposed **1 correct solution**: Calculate direction away from target and fly opposite
-- ✅ Understood common pitfalls (influence management, altitude issues, repulsion force)
-- ✅ Knew testing strategies from historical regression patterns
+**Key Insights Gained**:
+- ✅ Current architecture and components
+- ✅ Rendering pipeline phases
+- ✅ Technical implementation details
+- ✅ Code structure and organization
+- ❌ **WHY** design decisions were made
+- ❌ Historical bugs and their solutions
+- ❌ Evolution of the architecture
+- ❌ Known pitfalls from past experience
 
-**Key Insight**: The MCP instantly recognized this as a known issue, saving exploration time and providing the precise fix from historical context. The without-MCP version proposed reasonable but less informed solutions without knowing the bug's history.
+#### Analysis: **MCP Provided Superior Context**
 
----
+The without-MCP explanation was technically accurate and comprehensive about the current implementation. However, the with-MCP explanation revealed:
 
-## Case Study 3: Flame Tank Definition
+- **Design Intent**: Why the two-phase rendering pattern exists (avoiding struct mutation issues)
+- **Historical Evolution**: How the system evolved from direct rendering to sprite caching
+- **Optimization Rationale**: Why specific decisions like 2x shadow resolution were made
+- **Known Issues**: Previous bugs with z-fighting and depth calculations
 
-### Task
-"How can I define another vehicle like the flame tank?"
-
-### Without MCP
-- **Cost**: Unknown (52.2k tokens tracked)
-- **Actions**: 13 (5 searches + 5 file reads + 3 list operations)
-- **Approach**: Search for flame tank → locate definition → read related files → synthesize guide
-- **Files Read**: 5 files (vehicles.yaml, defaults.yaml, other.yaml, explosions.yaml, husks.yaml)
-- **File Errors**: 3 failed attempts
-
-**Findings**:
-- ✅ Complete flame tank structure documented
-- ✅ Explained inheritance chain (^Tank → ^Vehicle → etc.)
-- ✅ Listed all essential components and traits
-- ✅ Created step-by-step template for new vehicle
-- ✅ Provided localization and testing considerations
-- ✅ Documented advanced features (multiple weapons, special abilities)
-- ❌ **MISSED**: Historical context about trait evolution
-- ❌ **MISSED**: Common mistakes in vehicle definition (from commit history)
-- ❌ **MISSED**: Why certain patterns exist (Facing→Unit trait refactor)
-- ❌ **MISSED**: Testing recommendations based on historical bugs
-
-### With MCP
-- **Cost**: Unknown (57.7k tokens tracked) - **10% higher tokens**
-- **Actions**: 9 (1 MCP query + 5 file operations + 3 list operations)
-- **Approach**: Ask expert first → verify with code examples → provide implementation guide
-- **Files Read**: 2 files (vehicles.yaml, other.yaml)
-- **File Errors**: 4 failed attempts (but continued effectively)
-- **Context Multiplier**: 70% of actions = **30% fewer context resubmissions** ✅
-
-**Findings**:
-- ✅ All findings from "without MCP" version
-- ✅ **PLUS**: Historical context about architecture evolution
-- ✅ **PLUS**: "Facing→Unit trait" refactor explained
-- ✅ **PLUS**: YAML-based definitions replacing INI files context
-- ✅ **PLUS**: Common pitfalls with historical examples:
-  - Flame weapons can damage the unit itself
-  - Heavy armor affects crush behavior
-  - LocalOffset positioning issues
-- ✅ **PLUS**: Side effects to watch from commit history
-- ✅ **PLUS**: Testing recommendations based on actual historical iterations
-
-**Key Insight**: The MCP provided architectural rationale and warned about real historical mistakes, making it valuable for understanding WHY the system works this way, not just HOW to use it.
+**Critical Difference**: Understanding *why* the architecture exists prevents misguided "improvements" that might re-introduce solved problems.
 
 ---
 
-## Comparative Analysis
+## Case Study 2: Airplane Turning Bug
 
-### Context Efficiency
+### Task: "Airplanes stuck turning in circles when too close to target"
 
-| Case Study | Without MCP | With MCP | Token Diff | Actions Without | Actions With | Efficiency Notes |
-|------------|-------------|----------|------------|-----------------|--------------|------------------|
-| Voxel Renderer | 41.2k tokens | 44.0k tokens | +7% tokens | 2 actions | 4 actions | More exploratory actions |
-| Airplanes Bug | 44.0k tokens | 24.3k tokens | -45% tokens | 2 actions | 2 actions | Same actions, better targeting |
-| Flame Tank | 52.2k tokens | 57.7k tokens | +11% tokens | 13 actions | 9 actions | Fewer searches needed |
+#### With MCP Approach
+1. Consult expert → learned about historical issue #7083
+2. Read Fly.cs with understanding of intended behavior
+3. Identify subtle flaw in existing fix
+4. Provide precise solution
 
-**Note on Action Count**: Since each action resubmits full context, total context usage = tokens × actions. When factoring this in:
-- **Voxel Renderer**: Higher action count (4 vs 2) = more context resubmissions
-- **Airplanes Bug**: Same actions (2 vs 2) = pure 45% token savings ✅
-- **Flame Tank**: Fewer actions (9 vs 13) = 23% less total context ✅
+**Solution Provided**: 
+```csharp
+// Current code maintains trajectory (WRONG)
+if ((checkTarget.CenterPosition - turnCenter).HorizontalLengthSquared < turnRadius * turnRadius)
+    desiredFacing = aircraft.Facing;
 
-**Overall**: 2 out of 3 cases showed improved efficiency; average 12% better when accounting for actions.
+// Should actively fly away (CORRECT)
+if ((checkTarget.CenterPosition - turnCenter).HorizontalLengthSquared < turnRadius * turnRadius)
+{
+    var awayFacing = (aircraft.CenterPosition - checkTarget.CenterPosition).Yaw;
+    desiredFacing = awayFacing;
+}
+```
 
-### Information Quality
+**Key Insights**:
+- ✅ Historical fix for issue #7083 existed and established pattern
+- ✅ Turn radius calculation formula and rationale
+- ✅ Common pitfalls (repulsion force, altitude management)
+- ✅ **Exact bug**: maintaining facing doesn't actively escape the turn radius
+- ✅ **Confident, precise fix** based on historical intent
 
-#### Without MCP: "What" Focus
-- Describes current code structure accurately
-- Explains how systems work right now
-- Proposes solutions based on code analysis
-- Limited to what's visible in files
+#### Without MCP Approach
+1. Search for aircraft movement code
+2. Read multiple files extensively
+3. Analyze turn radius logic from first principles
+4. Propose THREE different solution approaches
 
-#### With MCP: "What + Why + History" Focus
-- Describes current code structure
-- Explains WHY it was designed that way
-- References past bugs and fixes
-- Warns about common pitfalls from experience
-- Provides architectural evolution context
-- Suggests solutions informed by past attempts
+**Solutions Provided**:
+1. **Speed reduction near target** (marked as "recommended")
+2. Early target completion within turn radius
+3. Temporary sliding behavior when stuck
 
-### Problem-Solving Effectiveness
+**Analysis of Solutions**:
+- ❌ None addressed the actual bug in the existing logic
+- ❌ All were workarounds rather than fixes
+- ❌ "Speed reduction" would change all airplane behavior system-wide
+- ❌ Uncertain which approach was correct
 
-**Voxel Renderer**: 
-- Without MCP: Good technical explanation
-- With MCP: Complete explanation + pitfalls + rationale
-- **Winner**: MCP (deeper understanding)
+#### Analysis: **MCP Provided Precise Diagnosis**
 
-**Airplanes Bug**:
-- Without MCP: 3 reasonable solutions, unaware of history
-- With MCP: 1 precise solution targeting known issue
-- **Winner**: MCP (faster, more accurate)
+**With MCP**:
+- Immediately understood the turn radius check was a known issue
+- Identified the subtle bug: code maintains trajectory instead of actively escaping
+- Provided surgical fix to existing logic
+- **High confidence** in solution based on historical intent
 
-**Flame Tank**:
-- Without MCP: Complete practical guide
-- With MCP: Complete guide + historical wisdom
-- **Winner**: MCP (better long-term understanding)
+**Without MCP**:
+- Analyzed the problem from scratch
+- Couldn't identify flaw in existing logic
+- Proposed behavioral changes rather than bug fixes
+- **Low confidence** - offered multiple options without clear recommendation
 
----
-
-## Key Discoveries: With MCP vs Without
-
-### Only Found WITH MCP
-
-#### Voxel Renderer
-- IFinalizedRenderable architecture exists to solve mutable struct enumeration bugs
-- "Render voxels before BeginFrame" was a major architectural shift
-- QuadList→TriangleList conversion (4 vertices → 6 vertices per face)
-- Common z-fighting issues and their fixes
-- Shadow rendering evolved through multiple iterations
-
-#### Airplanes Bug  
-- Issue #7083 was the original bug report
-- Turn radius fix was already implemented but flawed
-- Coordinate system evolution (PPos/PSubPos → WPos/WVec) affected all aircraft
-- Influence management is a common regression point
-- Repulsion force requires dot product check to avoid stalling
-
-#### Flame Tank
-- Facing→Unit trait refactor centralized state management
-- YAML replaced INI files in early architecture
-- Flame weapons historically damaged their own units
-- Multiple weapon balance iterations occurred
-- "Husk experiment" added particle effects to wreckage
-
-### Only Found WITHOUT MCP
-
-**None significant.** The without-MCP versions found everything the with-MCP versions found, just without the historical context and rationale.
+**Critical Difference**: MCP revealed this was a known issue with an intended fix pattern. Without that context, the analysis proposed workarounds that would change game balance rather than fixing the actual bug.
 
 ---
 
-## Common Patterns
+## Case Study 3: Defining a Flame Tank Vehicle
 
-### MCP Advantages
-1. **Instant Recognition**: Identifies known issues/patterns immediately
-2. **Historical Context**: Explains why code exists, not just what it does
-3. **Pitfall Warnings**: Highlights mistakes made in past commits
-4. **Architectural Evolution**: Shows how systems changed over time
-5. **Testing Insights**: Suggests test scenarios based on real regressions
+### Task: "How can I define another vehicle like the flame tank?"
 
-### MCP Trade-offs
-1. **Action Count Varies**: May use more actions in exploratory tasks, but typically fewer in targeted searches
-2. **Dependency on Expert Quality**: Only as good as the indexed repository
-3. **May Provide Outdated Info**: If expert is old (check commit ranges)
+#### With MCP Approach
+1. Consult expert about vehicle definition patterns
+2. Hit multiple file path errors
+3. Eventually read actual implementation
+4. Combine historical patterns + current code
 
-### When MCP Excels
-- ✅ Debugging known issues
-- ✅ Understanding architectural decisions
-- ✅ Learning from past mistakes
-- ✅ Avoiding regressions
-- ✅ Comprehensive system understanding
+**Key Insights Gained**:
+- ✅ Complete current YAML structure
+- ✅ Trait inheritance patterns
+- ✅ Evolution of unit definition (INI → YAML)
+- ✅ Trait architecture history (Facing became Unit trait)
+- ✅ **CRITICAL WARNINGS**:
+  - "Flame weapons can damage the unit itself if too close to walls"
+  - "Heavy armor affects crush behavior and repair costs"
+  - "LocalOffset weapon positioning requires testing across all facings"
+  - "Speed values interact with terrain modifiers"
+- ✅ **Testing recommendations** from commit history
+- ✅ Multiple weapon examples and patterns
 
-### When MCP Less Critical
-- 🤷 Simple API lookups
-- 🤷 Well-documented modern code
-- 🤷 Greenfield projects without history
-- 🤷 Pure syntax questions
+#### Without MCP Approach
+1. Search for flame tank definitions
+2. Systematically explore file structure  
+3. Read actual YAML files
+4. Create comprehensive guide from current code
+
+**Key Insights Gained**:
+- ✅ Complete current structure and all files
+- ✅ Inheritance patterns clearly explained
+- ✅ All required traits documented
+- ✅ Weapon and explosion definitions
+- ✅ Husk creation patterns
+- ✅ Systematic file organization understanding
+- ❌ No historical pitfalls or warnings
+- ❌ No testing strategy from experience
+- ❌ No regression warnings
+- ❌ No safety considerations
+
+#### Analysis: **MCP Provided Critical Safety Warnings**
+
+Both approaches provided comprehensive guides to creating vehicles. The key difference was **safety and testing knowledge**:
+
+**With MCP Added Value**:
+- **Regression Trap Warning**: "Flame weapons can damage the unit itself near walls"
+  - This is a critical gameplay issue that pure code analysis wouldn't reveal
+  - Requires specific testing scenarios
+  
+- **Balance Implications**: "Heavy armor affects crush behavior and repair costs"
+  - Not obvious from just reading trait definitions
+  - Impacts gameplay balance significantly
+
+- **Testing Strategy**: Specific scenarios to test from historical issues
+  - LocalOffset testing across all 32 facings
+  - Speed interaction with terrain types
+  - Weapon balance iterations
+
+**Critical Difference**: MCP provided warnings about non-obvious interactions learned through past mistakes. Without these warnings, developers might ship vehicles with known issues.
+
+---
+
+## Case Study 4: Adding a New Red Alert Campaign
+
+### Task: "What is the process to add a new Red Alert campaign?"
+
+#### With MCP Approach
+1. Consult expert about campaign structure
+2. Received comprehensive patterns including pitfalls
+3. Read actual files to verify structure
+4. Create guide with critical warnings
+
+**Key Insights Gained**:
+- ✅ Complete file structure and requirements
+- ✅ **CRITICAL EMPHASIS**: `Bot: campaign` requirement
+  - MCP strongly emphasized: "AI won't function without this"
+  - Historical commits showed this was a common mistake
+- ✅ **Rule inclusion order matters**
+  - Wrong order causes rule conflicts or missing features
+  - Specific pattern from historical fixes
+- ✅ **Co-op mission objective linking** patterns
+  - Complex scenarios from Negotiations mission
+- ✅ **Regression trap**: Campaign changes leaking to multiplayer
+  - Civilian building balance example from commits
+- ✅ **Testing strategy** from historical issues
+  - Difficulty levels, AI behavior, edge cases
+
+#### Without MCP Approach
+1. Try to read files (hit navigation errors)
+2. Eventually find missions.yaml
+3. Read campaign structure and examples
+4. Create comprehensive step-by-step guide
+
+**Key Insights Gained**:
+- ✅ Complete file structure with clear organization
+- ✅ Mission directory layout
+- ✅ Lua script structure and patterns
+- ✅ Integration points clearly documented
+- ⚠️ Mentioned `Bot: campaign` but not emphasized as critical
+- ❌ No strong warnings about rule inclusion order
+- ❌ No regression traps highlighted
+- ❌ No specific testing strategy
+- ❌ No emphasis on common mistakes
+
+#### Analysis: **MCP Emphasized Critical Requirements**
+
+Both approaches provided complete guides. The critical difference was **emphasis on requirements that break functionality**:
+
+**With MCP Critical Warnings**:
+```yaml
+# MCP STRONGLY EMPHASIZED: This is REQUIRED
+Players:
+  PlayerReference@USSR:
+    Bot: campaign  # AI won't function without this!
+```
+
+The MCP explained this came from "Enable campaign bot" commits and was a common source of bugs.
+
+**Without MCP**:
+```yaml
+# Mentioned but not emphasized
+Players:
+  PlayerReference@USSR:
+    Bot: campaign  # Noted as an option
+```
+
+**Critical Difference**: 
+- **With MCP**: Developer knows `Bot: campaign` is non-negotiable, AI will fail without it
+- **Without MCP**: Developer might think it's optional or try other bot types first
+
+**Other Critical Points**:
+- Rule file inclusion order (MCP: "ALWAYS include in this order")
+- Testing strategy (MCP: "Test all difficulty levels separately, verify AI doesn't break with rule changes")
+- Regression prevention (MCP: "Don't let campaign changes leak to multiplayer")
+
+---
+
+## Pattern Analysis
+
+### What MCP Consistently Provided
+
+#### 1. Historical Context & Evolution
+- **Why** architectural decisions were made, not just what they are
+- Evolution of patterns over time
+- Previous approaches that were abandoned and why
+
+**Example**: Voxel renderer async pattern exists specifically to avoid mutable struct issues during enumeration - not obvious from code alone.
+
+#### 2. Known Pitfalls & Regression Traps
+- Issues discovered through past mistakes
+- Edge cases found in production
+- Common developer errors from commit history
+
+**Example**: "Flame weapons can damage unit near walls" - critical testing requirement not visible in code structure.
+
+#### 3. Design Intent & Trade-offs
+- Original purpose of code patterns
+- Why certain trade-offs were made
+- What problems specific solutions address
+
+**Example**: Airplane turn radius check was added for issue #7083, establishing intended behavior pattern.
+
+#### 4. Testing Strategies from Experience
+- Scenarios to test based on historical bugs
+- Edge cases that have caused problems
+- Systematic testing approaches from commits
+
+**Example**: Campaign testing - "Test all difficulty levels separately", "Verify AI behavior doesn't break with rule changes"
+
+#### 5. Critical Requirements Emphasis
+- Non-negotiable configuration requirements
+- Settings that break functionality if wrong
+- Order dependencies in configuration
+
+**Example**: `Bot: campaign` - MCP strongly emphasized as required, not optional.
+
+### What Pure Code Analysis Provided
+
+#### 1. Current State Accuracy
+- Exact, authoritative current implementation
+- No historical bias or outdated patterns
+- Precise technical details
+
+**Advantage**: Code is the ultimate source of truth for what exists now.
+
+#### 2. Systematic Structure Discovery
+- Thorough file organization understanding
+- Complete trait and component relationships
+- Comprehensive coverage of current features
+
+**Advantage**: Builds complete mental model of current architecture.
+
+#### 3. Multiple Solution Perspectives
+- Fresh approaches without historical bias
+- Novel solutions to problems
+- Multiple options when path is unclear
+
+**Advantage**: May discover better solutions than historical patterns.
+
+#### 4. Clear Current Documentation
+- What actually exists in the codebase today
+- Current syntax and patterns
+- No confusion with deprecated approaches
+
+**Advantage**: No risk of using outdated information.
+
+---
+
+## Qualitative Comparison
+
+### Problem-Solving Confidence
+
+**With MCP**:
+- **Approach**: Historical context → Precise diagnosis → Targeted fix
+- **Confidence Level**: High (knows what was intended)
+- **Solution Style**: Surgical, specific fixes
+- **Risk Profile**: Lower (aware of known pitfalls)
+
+**Without MCP**:
+- **Approach**: Code analysis → Pattern inference → Multiple options
+- **Confidence Level**: Moderate (inferring intent)
+- **Solution Style**: Exploratory, multiple approaches
+- **Risk Profile**: Higher (may repeat past mistakes)
+
+### Knowledge Depth
+
+#### With MCP Unique Insights Examples:
+
+1. **Voxel Renderer**: "IFinalizedRenderable split specifically avoided issues with struct mutation during enumeration"
+   - Explains WHY the architecture exists
+   - Prevents "simplifications" that would re-introduce the bug
+
+2. **Airplane Bug**: "Keep flying away means actively escape, not maintain trajectory"
+   - Reveals intended behavior vs. actual implementation
+   - Enables precise fix rather than workarounds
+
+3. **Flame Tank**: "Flame weapons can damage the unit itself if too close to walls"
+   - Critical safety testing requirement
+   - Not obvious from trait definitions
+
+4. **Campaign**: "Bot: campaign is REQUIRED or AI won't function properly"
+   - Non-negotiable configuration requirement
+   - Common source of bugs from commit history
+
+5. **Rule Order**: "ALWAYS include campaign-rules.yaml before mission rules.yaml"
+   - Specific ordering requirement from past mistakes
+   - Causes subtle bugs if wrong
+
+#### Without MCP Unique Insights:
+
+1. **Current Implementation Authority**
+   - Code is definitive for what exists now
+   - No historical bias
+
+2. **Systematic Structure Understanding**
+   - Complete file organization mental model
+   - Comprehensive trait relationships
+
+3. **Fresh Solution Perspectives**
+   - Novel approaches without historical constraints
+   - Multiple solution options
+
+---
+
+## File Discovery & Navigation
+
+### With MCP Navigation
+**Pattern Observed**:
+- Expert provides file path hints immediately
+- Sometimes paths were outdated (led to errors)
+- Had to search for correct locations anyway
+- Overall: Faster entry point, but not perfect
+
+**Example from Flame Tank**:
+- MCP suggested paths to weapons.yaml
+- Hit errors, had to search anyway
+- Eventually found correct structure
+
+### Without MCP Navigation
+**Pattern Observed**:
+- Systematic exploration from project root
+- More trial and error initially
+- Built complete mental model through discovery
+- Some early navigation errors (especially Campaign)
+
+**Example from Campaign**:
+- Tried to read "mods" as file (error)
+- Explored directory structure systematically
+- Eventually found all relevant files
+- Comprehensive understanding of organization
+
+### Assessment
+**Neither approach had perfect navigation**. Both required some exploration and error correction. MCP provided faster hints but sometimes outdated paths. Pure exploration was slower initially but built systematic understanding.
+
+---
+
+## Action Count & Context Efficiency Analysis
+
+Each action in a conversation accumulates context (all previous messages are resubmitted with each new action). This analysis counts discrete actions to understand efficiency differences.
+
+### Action Count Comparison
+
+| Task | With MCP Actions | Without MCP Actions | Efficiency |
+|------|------------------|---------------------|------------|
+| Voxel Renderer | 5 actions | 3 actions | MCP +67% actions |
+| Airplane Bug | 3 actions | 3 actions | Equal |
+| Flame Tank | 8 actions | 13 actions | **MCP -38% actions** |
+| Campaign | 5 actions | 7 actions | **MCP -29% actions** |
+
+**Key Observation**: The MCP approach resulted in fewer actions in 2 of 4 cases (Flame Tank, Campaign), equal actions in 1 case (Airplane), and more actions in 1 case (Voxel Renderer due to file path errors).
+
+### Context Accumulation Analysis
+
+Since each action resubmits full context, more actions = more accumulated context costs:
+
+**Voxel Renderer:**
+- With MCP: 5 actions building to 44.0k tokens
+- Without MCP: 3 actions building to 41.2k tokens
+- **Analysis**: MCP had 2 extra actions (file errors + searches), leading to slightly higher cumulative context despite similar final token count
+
+**Airplane Bug:**
+- With MCP: 3 actions building to 24.3k tokens
+- Without MCP: 3 actions building to 44.0k tokens
+- **Analysis**: Equal action count, but with-MCP actions were more targeted, resulting in 45% lower cumulative context
+
+**Flame Tank:**
+- With MCP: 8 actions (many file navigation errors)
+- Without MCP: 13 actions (systematic but numerous searches)
+- **Analysis**: MCP saved 5 actions (38% fewer), though both had navigation challenges
+
+**Campaign:**
+- With MCP: 5 actions
+- Without MCP: 7 actions (multiple navigation errors)
+- **Analysis**: MCP saved 2 actions (29% fewer) with more direct path to information
+
+### Efficiency Insights
+
+**When MCP Saved Actions/Context:**
+1. **Flame Tank** (8 vs 13 actions): MCP provided entry point, reducing exploratory searches
+2. **Campaign** (5 vs 7 actions): MCP gave structure immediately, avoided some navigation errors
+3. **Airplane Bug** (same actions, 45% less context): MCP enabled more focused investigation
+
+**When MCP Cost Extra:**
+1. **Voxel Renderer** (5 vs 3 actions): MCP file paths were outdated, causing extra error-correction actions
+
+### Verdict on Efficiency
+
+**Action Efficiency**: MCP saved actions in 50% of cases (Flame Tank -38%, Campaign -29%)
+**Context Efficiency**: MCP showed dramatic savings in airplane bug case (45% reduction) despite equal actions
+**Navigation**: Both approaches hit file navigation issues; neither had perfect efficiency
+
+The key efficiency gain comes not from raw action count but from **action quality** - MCP-guided actions often accomplished more per action by providing historical context that eliminated exploratory dead ends.
 
 ---
 
 ## Recommendations
 
-### ✅ **USE the MCP when:**
-1. **Debugging complex bugs** - May be known issues with documented fixes
-2. **Learning unfamiliar codebases** - Historical context accelerates understanding
-3. **Making architectural changes** - Understand why things are designed certain ways
-4. **Reviewing code** - Catch patterns that caused bugs historically
-5. **Planning refactors** - Learn from past refactoring attempts
+### ✅ **STRONGLY RECOMMEND Using Expert-Among-Us MCP When:**
 
-### 🤔 **Consider NOT using MCP when:**
-1. **Writing new features** with no historical precedent
-2. **Simple documentation lookups** where code is self-explanatory
-3. **Time-sensitive quick fixes** where speed matters more than context
-4. **Working with very young repositories** (<100 commits, little history)
+#### 1. Debugging Complex Issues
+- **Why**: Historical context reveals intended vs. actual behavior
+- **Example**: Airplane bug - MCP identified the precise flaw in existing logic
+- **Without MCP**: Proposed behavioral workarounds instead of fixing the bug
 
-### 💡 **Best Practice: Hybrid Approach**
-1. **Start with MCP** - Get historical context and known patterns
-2. **Verify with code** - Confirm current implementation matches expectations
-3. **Synthesize** - Combine historical wisdom with current code analysis
+#### 2. Working with Safety-Critical Code
+- **Why**: Historical pitfalls prevent production issues
+- **Example**: Flame tank self-damage warning, campaign bot requirement
+- **Without MCP**: These issues only surface in testing or production
+
+#### 3. Understanding Architectural Decisions
+- **Why**: Design intent prevents misguided changes
+- **Example**: Voxel renderer async pattern exists to solve mutable struct issues
+- **Without MCP**: Might "simplify" architecture and re-introduce bugs
+
+#### 4. Configuration with Critical Requirements
+- **Why**: Non-obvious requirements that break functionality
+- **Example**: Campaign `Bot: campaign` requirement, rule inclusion order
+- **Without MCP**: Trial and error to discover these requirements
+
+#### 5. Learning from Past Mistakes
+- **Why**: Avoid repeating historical errors
+- **Example**: All the "regression trap" warnings from commit history
+- **Without MCP**: Must rediscover these issues the hard way
+
+### ⚠️ **Consider NOT Using MCP When:**
+
+#### 1. Exploring Novel Solutions
+- **Why**: Fresh perspective without historical bias
+- **Example**: Airplane bug - without MCP proposed creative alternatives
+- **Advantage**: May discover better approaches than historical patterns
+
+#### 2. Learning Codebase from Scratch
+- **Why**: Systematic exploration builds mental models
+- **Advantage**: Understanding current structure deeply
+- **Trade-off**: Takes longer but more comprehensive
+
+#### 3. Verifying Current Implementation
+- **Why**: Code is the authoritative source
+- **Important**: Always validate MCP guidance against actual code
+- **Risk**: MCP may have outdated information
+
+---
+
+## Best Practices
+
+### Recommended Hybrid Approach
+
+```
+Step 1: Consult MCP First
+├─→ Get historical context and design intent
+├─→ Learn known pitfalls and regression traps
+├─→ Understand testing strategies
+└─→ Receive file path hints
+
+Step 2: Read Actual Code
+├─→ Verify MCP guidance against current implementation
+├─→ Check for divergence (regressions or improvements)
+└─→ Understand precise current state
+
+Step 3: Synthesize Both
+├─→ Combine historical wisdom with current reality
+├─→ Make informed decisions about changes
+└─→ Avoid known pitfalls while staying current
+```
+
+### When to Trust Each Source
+
+**Trust MCP for**:
+- Why decisions were made
+- Known pitfalls and testing strategies
+- Critical requirements and configurations
+- Historical evolution and abandoned approaches
+
+**Trust Code for**:
+- What currently exists (authoritative)
+- Precise implementation details
+- Current syntax and structure
+- Exact file locations and organization
+
+**Verify When**:
+- MCP provides specific file paths (may be outdated)
+- MCP describes specific code (validate it still exists)
+- Making changes based on historical patterns (ensure still applicable)
+
+---
+
+## Specific Case Insights
+
+### Voxel Renderer
+**MCP Critical Value**: "IFinalizedRenderable split avoided mutable struct issues during enumeration"
+- This is WHY the architecture exists
+- Prevents "simplifications" that would break subtle behavior
+- Not discoverable from code structure alone
+
+### Airplane Bug
+**MCP Critical Value**: "Keep flying away means actively escape, not maintain trajectory"
+- Identified actual bug vs. proposing workarounds
+- Confident fix based on historical issue #7083
+- Without MCP: proposed changing game balance instead of fixing bug
+
+### Flame Tank
+**MCP Critical Value**: "Flame weapons can damage unit near walls - test all facings"
+- Critical safety testing requirement
+- LocalOffset positioning needs verification
+- Heavy armor affects crush and repair (balance implications)
+
+### Campaign
+**MCP Critical Value**: "Bot: campaign is REQUIRED or AI won't function properly"
+- Non-negotiable configuration requirement
+- Rule inclusion order matters (specific pattern)
+- Regression trap: campaign changes leaking to multiplayer
+
+---
+
+## Limitations & Caveats
+
+### MCP Limitations
+1. **May Have Outdated Information**: File paths or specific code may have changed
+2. **Requires Verification**: Always validate against actual code
+3. **Historical Bias**: May discourage novel solutions
+4. **Setup Cost**: Requires repository indexing (one-time)
+
+### Pure Code Analysis Limitations
+1. **No WHY Context**: Can only see WHAT exists, not reasoning
+2. **Repeats Past Mistakes**: No knowledge of historical pitfalls
+3. **Lower Confidence**: Must infer intent from implementation
+4. **Slower for Complex Issues**: More exploration required
+
+### When Each Approach Failed
+
+**MCP Failures**:
+- File paths in Flame Tank case were initially wrong
+- Had to search for correct locations anyway
+- Some historical information may be outdated
+
+**Pure Code Failures**:
+- Airplane bug: Proposed workarounds instead of fixing actual bug
+- Flame tank: No safety warnings about self-damage
+- Campaign: Didn't emphasize critical Bot: campaign requirement
+- Navigation errors in Campaign case early on
 
 ---
 
 ## Conclusion
 
-The expert-among-us MCP provides **significant value** by adding historical context and architectural rationale to code understanding. While context efficiency varies by task type (accounting for action count: 12% better on average, with 2 of 3 cases more efficient), the qualitative benefits are substantial:
+The expert-among-us MCP provides **substantial value** in software development tasks through:
 
-### Primary Benefits:
-- **Historical insights** unavailable through code analysis alone
-- **Faster problem identification** for known issues (e.g., Airplanes bug instantly recognized)
-- **Architectural rationale** explaining why code exists, not just what it does
-- **Pitfall warnings** from real historical mistakes
-- **Better long-term understanding** that compounds over time
+### Core Value Propositions
 
-### Efficiency Profile:
-- **Best for**: Targeted debugging, complex tasks with many searches, understanding architectural decisions
-- **Adequate for**: Exploratory learning (may use more actions but gains historical context)
-- **Average**: 12% better context efficiency when accounting for both tokens and action count
+1. **Historical Context**: Reveals WHY decisions were made, not just WHAT exists
+2. **Pitfall Prevention**: Warns about issues learned through past mistakes
+3. **Design Intent**: Explains architectural rationale and trade-offs
+4. **Testing Strategy**: Provides scenarios to test from historical bugs
+5. **Critical Requirements**: Emphasizes non-negotiable configurations
 
-### Value Proposition:
-Even in cases where action count increases (like exploratory Voxel Renderer task), the historical insights provided are irreplaceable for truly understanding a system. The MCP transforms code analysis from "what exists" to "what exists and why it was designed that way."
+### Where MCP Excelled
 
-**Overall Rating**: ⭐⭐⭐⭐⭐ (5/5)
-**Recommendation**: **Strongly recommend** using the MCP for serious codebase exploration, debugging, and architectural work. The historical insights justify any minor context overhead in exploratory tasks.
+**Strongest Advantage** (Airplane Bug):
+- Identified precise bug vs. proposing workarounds
+- High confidence solution based on historical issue #7083
+- Prevented game balance changes that weren't needed
 
----
+**Critical Safety** (Flame Tank):
+- Warning about self-damage near walls
+- Testing requirements for weapon offsets
+- Balance implications of armor choices
 
-## Appendix: Token Usage with Action Count
+**Non-Obvious Requirements** (Campaign):
+- Strong emphasis on Bot: campaign requirement
+- Rule inclusion order from past mistakes
+- Regression trap warnings
 
-**Full Picture**: Since each action resubmits context, total usage = tokens × actions.
+**Design Understanding** (Voxel Renderer):
+- Why async pattern exists (struct mutation issue)
+- Shadow rendering optimization rationale
+- Known z-ordering pitfalls
 
-| Task | Tokens (No MCP) | Actions | Total Context | Tokens (MCP) | Actions | Total Context | Net Efficiency |
-|------|----------------|---------|---------------|--------------|---------|---------------|----------------|
-| Voxel Renderer | 41.2k | 2 | 82.4k | 44.0k | 4 | 176k | -113% |
-| Airplanes Bug | 44.0k | 2 | 88k | 24.3k | 2 | 48.6k | **+45%** ✅ |
-| Flame Tank | 52.2k | 13 | 678k | 57.7k | 9 | 519k | **+23%** ✅ |
-| **AVERAGE** | **45.8k** | **5.7** | **283k** | **42.0k** | **5.0** | **248k** | **+12%** ✅ |
+### Assessment by Case
 
-**Interpretation**:
-- The MCP averages 12% better context efficiency overall
-- 2 of 3 cases showed clear efficiency gains
-- Exploratory tasks may use more actions but gain irreplaceable historical insights
-- The value of understanding "why" often outweighs pure context efficiency
+| Case | MCP Value Level | Key Insight |
+|------|----------------|-------------|
+| Airplane Bug | **CRITICAL** | Identified actual bug vs. workarounds |
+| Campaign | **HIGH** | Emphasized critical Bot: campaign requirement |
+| Flame Tank | **HIGH** | Safety warnings from history |
+| Voxel Renderer | **MODERATE** | Design intent and evolution |
+
+### Final Recommendation
+
+**Use expert-among-us MCP** as the **first step** in development workflow:
+
+```
+1. Ask MCP → Get historical context and warnings
+2. Read Code → Verify current implementation
+3. Synthesize → Combine wisdom with reality
+4. Implement → Informed by both sources
+```
+
+This hybrid approach combines historical wisdom with current reality for optimal results.
+
+### Success Criteria
+
+The MCP consistently provided value that pure code analysis cannot:
+- ✅ WHY decisions were made (not just WHAT exists)
+- ✅ Known pitfalls from past mistakes
+- ✅ Critical requirements that break functionality
+- ✅ Testing strategies from historical bugs
+- ✅ Design intent that prevents misguided changes
+
+**Overall Assessment**: The expert-among-us MCP is a **valuable tool** that complements code analysis by providing historical context, design intent, and pitfall warnings that enable faster, safer, more informed development decisions.

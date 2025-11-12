@@ -41,12 +41,11 @@ The result is key contextual insights that naive file search cannot provide:
 
 ### Case Study Validation
 
-A **[blind comparative analysis](case-studies/summary.md)** of the expert-among-us MCP was conducted on the OpenRA game engine, comparing outcomes with and without the MCP across two technical scenarios. The analysis was performed without prior knowledge of expert-among-us or its purpose, including stripping the tool description from the conversation history. This provides an unbiased (albeit AI-generated) evaluation.
+A **[blind comparative analysis](case-studies/summary.md)** of the expert-among-us MCP was conducted on the [OpenRA game engine](https://github.com/OpenRA/OpenRA/), comparing outcomes with and without the MCP across four technical scenarios. The analysis was performed without prior knowledge of expert-among-us or its purpose, including stripping the tool description from the conversation history. This provides an unbiased (albeit AI-generated) evaluation.
 
 **Key Findings:**
-- **45% token reduction** for debugging tasks (24.3k vs 44.0k tokens)
-- **18% average cost savings** across both scenarios
-- Successfully identified a regression that standard exploration missed
+- Completed all scenarios with roughly **20% fewer actions** overall, and context sizes comparble to non-MCP completion
+- Successfully identified regressions and key patterns that standard exploration missed
 - Provided historical context and design rationale not available through code inspection alone
 
 The case study demonstrates measurable efficiency gains and qualitative improvements in debugging and architecture understanding. For the detailed comparison, see [case-studies/summary.md]() and the [raw conversation files](case-studies/OpenRA/).
