@@ -244,17 +244,29 @@ class Perforce(VCSProvider):
                 result.stderr,
             )
         
-        # Parse: "Change 12345 on 2024/01/15 by user@client ..."
-        cl_numbers = []
+        # Parse: "Change 12345 on 2024/01/15 14:30:00 by user@client ..."
+        # Collect changelist numbers for sorting
+        cl_entries = []
         for line in result.stdout.splitlines():
             line = line.strip()
             if line.startswith("Change "):
                 parts = line.split()
                 if len(parts) >= 2:
-                    cl_numbers.append(parts[1])
+                    cl_number = parts[1]
+                    cl_entries.append(cl_number)
         
-        # P4 returns newest first, reverse for oldest→newest
-        return list(reversed(cl_numbers))
+        # Sort by changelist number (chronological order)
+        cl_entries.sort(key=lambda x: int(x))
+        
+        # Deduplicate adjacent entries (duplicates are now adjacent after sort)
+        cl_numbers = []
+        prev_cl_number = None
+        for cl_number in cl_entries:
+            if cl_number != prev_cl_number:
+                cl_numbers.append(cl_number)
+                prev_cl_number = cl_number
+        
+        return cl_numbers
     
     def _fetch_changelists_by_numbers(
         self,
@@ -845,36 +857,26 @@ class Perforce(VCSProvider):
     ) -> int:
         """Return the total number of changelists to consider for indexing.
         
-        Uses `p4 changes -s submitted [paths...]` to count changelists.
+        Reuses _fetch_all_changelist_numbers() to ensure consistent deduplication
+        and leverage existing cache.
         
         Args:
             workspace_path: Path to the workspace / repository root.
             subdirs: Optional list of subdirectories to filter by.
             
         Returns:
-            Integer count of changelists.
+            Integer count of changelists (deduplicated).
         """
-        cmd = ["p4", "changes", "-s", "submitted"]
+        # Reuse cache if available
+        subdirs_tuple = tuple(sorted(subdirs)) if subdirs else None
+        cache_key = (workspace_path, subdirs_tuple)
         
-        if subdirs:
-            for subdir in subdirs:
-                depot_path = self._local_to_depot_path(workspace_path, subdir)
-                cmd.append(depot_path)
-        else:
-            cmd.append("//...")
+        if self._cl_cache is not None and self._cl_cache_key == cache_key:
+            return len(self._cl_cache)
         
-        result = subprocess.run(
-            cmd,
-            cwd=workspace_path,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+        # Build cache and return count
+        cl_numbers = self._fetch_all_changelist_numbers(
+            workspace_path=workspace_path,
+            subdirs=subdirs,
         )
-        
-        if result.returncode != 0:
-            return 0
-        
-        # Count lines (each line is a changelist)
-        lines = [line for line in result.stdout.strip().split("\n") if line.strip()]
-        return len(lines)
+        return len(cl_numbers)
