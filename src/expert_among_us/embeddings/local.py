@@ -195,15 +195,23 @@ class JinaCodeEmbedder(Embedder):
         # We RE-ENABLE the internal tqdm progress bar here because batch embedding
         # progress is critical for UX. To keep output readable, rely on tqdm's
         # single-line behavior and avoid overlapping rich Progress for this section.
-        embeddings = self.model.encode(
-            prefixed_texts,
-            pool=self.pool,
-            batch_size=self.batch_size,
-            show_progress_bar=True
-        )
+        # Use no_grad to prevent gradient accumulation and memory leaks
+        with self.torch.no_grad():
+            embeddings = self.model.encode(
+                prefixed_texts,
+                pool=self.pool,
+                batch_size=self.batch_size,
+                convert_to_numpy=True,
+                show_progress_bar=True
+            )
         
         # Truncate to target dimension (Matryoshka) and convert to lists
         embeddings_list = [emb[:self._dimension].tolist() for emb in embeddings]
+        
+        # Explicitly free GPU memory to prevent leaks between batches
+        del embeddings
+        if self.device == "cuda":
+            self.torch.cuda.empty_cache()
         
         # Log response if debug enabled
         if DebugLogger.is_enabled():
