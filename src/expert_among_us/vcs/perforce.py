@@ -9,7 +9,7 @@ CLI to interact with Perforce servers.
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 from datetime import datetime, timezone
 
 from expert_among_us.vcs.base import VCSProvider
@@ -775,6 +775,7 @@ class Perforce(VCSProvider):
         workspace_path: str,
         file_paths: list[str],
         commit_hash: str,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> dict[str, Optional[str]]:
         """Get content for multiple files at a specific changelist (batched operation).
         
@@ -784,6 +785,8 @@ class Perforce(VCSProvider):
             workspace_path: Path to the workspace/repository
             file_paths: List of relative file paths to fetch
             commit_hash: Changelist number to read from
+            progress_callback: Optional callback(current, total) called after each batch.
+                             Receives the number of files processed so far and total files.
             
         Returns:
             Dictionary mapping file_path -> content (or None if missing/binary)
@@ -850,6 +853,14 @@ class Perforce(VCSProvider):
                 # <file content>
                 
                 self._parse_print_output(result.stdout, batch_paths, results, workspace_path)
+                
+                # Report progress after processing each batch
+                if progress_callback:
+                    try:
+                        progress_callback(batch_end, len(unique_paths))
+                    except Exception:
+                        # Ignore callback errors to prevent disrupting file reading
+                        pass
                 
             except (OSError, subprocess.TimeoutExpired):
                 # Skip this batch on error

@@ -1,6 +1,6 @@
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 from datetime import datetime, timezone, timedelta
 
 from expert_among_us.vcs.base import VCSProvider
@@ -647,6 +647,7 @@ class Git(VCSProvider):
         workspace_path: str,
         file_paths: list[str],
         commit_hash: str,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> dict[str, Optional[str]]:
         """Get content for multiple files at a specific commit using a single git process.
 
@@ -664,6 +665,7 @@ class Git(VCSProvider):
             - Binary blobs (per is_binary_file) as None
         - Always returns a dict entry for each requested path.
         - On any parsing/IO error for a given entry, falls back to None for that file.
+        - Calls progress_callback(current, total) after each batch if provided.
         """
         # Normalize and handle trivial cases up-front.
         if not file_paths:
@@ -787,6 +789,14 @@ class Git(VCSProvider):
                         continue
 
                     results[path] = text
+                
+                # Report progress after processing each batch
+                if progress_callback:
+                    try:
+                        progress_callback(batch_end, len(refs))
+                    except Exception:
+                        # Ignore callback errors to prevent disrupting file reading
+                        pass
         except Exception:
             # On any unexpected error, results accumulated so far remain;
             # the rest stay as None.

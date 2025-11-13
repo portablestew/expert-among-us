@@ -38,17 +38,15 @@ class JinaCodeEmbedder(Embedder):
         self.task_prefix = "Represent this code for retrieving similar code: "
         
         # Auto-detect GPU availability with diagnostics
-        cuda_available = torch.cuda.is_available()
-        self.device = "cuda" if cuda_available else "cpu"
+        gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        self.device = "cuda" if gpu_count > 0 else "cpu"
         
         # Detailed GPU diagnostics
-        if not cuda_available:
+        if gpu_count == 0:
             console.print(f"{SYMBOLS['warning']}  GPU not detected - using CPU")
             console.print(f"   PyTorch version: {torch.__version__}")
-            console.print(f"   CUDA available: {cuda_available}")
+            console.print(f"   CUDA GPUs available: {gpu_count}")
             console.print(f"   CUDA built: {torch.version.cuda if hasattr(torch.version, 'cuda') else 'N/A'}")
-            if hasattr(torch.cuda, 'device_count'):
-                console.print(f"   GPU count: {torch.cuda.device_count()}")
             console.print("\n   To enable GPU (run after uv sync):")
             console.print("   1. Check NVIDIA drivers: nvidia-smi")
             console.print("   2. Install PyTorch with CUDA: ./install-gpu.sh or ./install-gpu.ps1")
@@ -67,9 +65,10 @@ class JinaCodeEmbedder(Embedder):
         # Automatically handles single GPU, multi-GPU, and multi-CPU scenarios
         
         # Start multi-process pool only if enabled in settings
-        if enable_multiprocessing:
+        if enable_multiprocessing and gpu_count > 1:
             try:
-                self.pool = self.model.start_multi_process_pool()
+                self.pool = self.model.start_multi_process_pool([f"cuda:{i}" for i in range(gpu_count)])
+                console.print(f"{SYMBOLS['info']} Multiprocessing enabled: {gpu_count} GPUs")
             except Exception as e:
                 # If multiprocessing fails, fall back to single-process mode
                 self.pool = None
@@ -77,8 +76,6 @@ class JinaCodeEmbedder(Embedder):
                     console.print(f"[DEBUG] Multiprocessing failed ({type(e).__name__}), using single-process mode")
         else:
             self.pool = None
-            if DebugLogger.is_enabled():
-                console.print(f"[DEBUG] Multiprocessing disabled in settings")
         
         # Compile model for faster inference (PyTorch 2.0+) if enabled
         compilation_enabled = False
@@ -96,7 +93,6 @@ class JinaCodeEmbedder(Embedder):
         
         # Log device being used
         if self.device == "cuda":
-            gpu_count = torch.cuda.device_count() if enable_multiprocessing else 1
             # List all GPUs that will be used (single or multi-GPU)
             gpu_names = [torch.cuda.get_device_name(i) for i in range(gpu_count)]
             gpu_list = ", ".join(gpu_names)
@@ -104,7 +100,6 @@ class JinaCodeEmbedder(Embedder):
             console.print(f"{SYMBOLS['success']} Local embeddings using {gpu_count} GPUs: {gpu_list}{compile_status}")
         else:
             console.print(f"{SYMBOLS['info']} Local embeddings using CPU (this will be slower)")
-            console.print(f"{SYMBOLS['info']} Using fp16 precision (auto-casts on CPU)")
         
         # Store torch reference for later use
         self.torch = torch
@@ -200,25 +195,12 @@ class JinaCodeEmbedder(Embedder):
         # We RE-ENABLE the internal tqdm progress bar here because batch embedding
         # progress is critical for UX. To keep output readable, rely on tqdm's
         # single-line behavior and avoid overlapping rich Progress for this section.
-        
-        if self.pool is not None:
-            # Use multi-process pool if available
-            embeddings = self.model.encode_multi_process(
-                prefixed_texts,
-                pool=self.pool,
-                batch_size=self.batch_size,
-                show_progress_bar=True
-            )
-        else:
-            # Fallback to single-process mode
-            if DebugLogger.is_enabled():
-                console.print(f"[DEBUG] Using single-process encoding (multiprocessing unavailable)")
-            embeddings = self.model.encode(
-                prefixed_texts,
-                convert_to_numpy=True,
-                show_progress_bar=True,
-                batch_size=self.batch_size
-            )
+        embeddings = self.model.encode(
+            prefixed_texts,
+            pool=self.pool,
+            batch_size=self.batch_size,
+            show_progress_bar=True
+        )
         
         # Truncate to target dimension (Matryoshka) and convert to lists
         embeddings_list = [emb[:self._dimension].tolist() for emb in embeddings]

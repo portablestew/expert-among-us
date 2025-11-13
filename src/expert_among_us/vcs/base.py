@@ -7,7 +7,7 @@ for interacting with different version control systems (Git, Perforce, etc.).
 
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Optional
+from typing import Callable, Optional
 
 from expert_among_us.models.changelist import Changelist
 
@@ -98,6 +98,7 @@ class VCSProvider(ABC):
         workspace_path: str,
         file_paths: list[str],
         commit_hash: str,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> dict[str, Optional[str]]:
         """Get content for multiple files at a specific commit (batched operation).
 
@@ -105,6 +106,8 @@ class VCSProvider(ABC):
             workspace_path: Path to the workspace/repository
             file_paths: List of relative file paths to fetch
             commit_hash: Commit hash to read from
+            progress_callback: Optional callback(current, total) called after each batch.
+                             Receives the number of files processed so far and total files.
 
         Returns:
             Dictionary mapping file_path -> content (or None if missing/binary)
@@ -114,6 +117,7 @@ class VCSProvider(ABC):
             - Binary files should return None in the result dict
             - Missing files should return None in the result dict
             - The returned dict should contain an entry for every input file_path
+            - If progress_callback is provided, it will be called after each batch with (current, total)
         """
         pass
 

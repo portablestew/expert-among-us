@@ -55,10 +55,10 @@ class TestJinaCodeEmbedder(unittest.TestCase):
         mock_model.start_multi_process_pool.return_value = mock_pool
         mock_model.stop_multi_process_pool.return_value = None
         
-        # Mock encode_multi_process to return numpy array for batch
+        # Mock encode for fallback mode (used when pool is None)
         # Return 2 embeddings of 896 dimensions each
         full_embeddings = np.array([[0.1] * 896, [0.2] * 896])
-        mock_model.encode_multi_process.return_value = full_embeddings
+        mock_model.encode = Mock(return_value=full_embeddings)
         
         # Initialize embedder
         model_id = "jinaai/jina-code-embeddings-0.5b"
@@ -72,10 +72,10 @@ class TestJinaCodeEmbedder(unittest.TestCase):
         self.assertEqual(len(embeddings), 2)
         self.assertEqual(len(embeddings[0]), 512)
         self.assertEqual(len(embeddings[1]), 512)
-        self.assertTrue(mock_model.encode_multi_process.called)
+        self.assertTrue(mock_model.encode.called)
         
         # Verify task prefix was added to all texts
-        call_args = mock_model.encode_multi_process.call_args
+        call_args = mock_model.encode.call_args
         called_texts = call_args[0][0]
         self.assertEqual(len(called_texts), 2)
         for called_text in called_texts:

@@ -218,15 +218,35 @@ class Indexer:
         if not file_paths:
             return
 
-        # Informational message instead of rich per-file progress.
-        console.print(f"\n[cyan]Reading {len(file_paths)} files from VCS...")
+        # Create progress bar for file reading
+        file_read_task_id = None
+        if self.progress:
+            if self.progress.finished:
+                self.progress.start()
+            file_read_task_id = self.progress.add_task(
+                f"[cyan]Reading {len(file_paths)} files from VCS",
+                total=len(file_paths),
+            )
 
-        # Phase 1: Batched read from VCS.
+        # Define progress callback for VCS provider
+        def update_file_progress(current: int, total: int) -> None:
+            """Called by VCS provider after each batch of files is read."""
+            if self.progress and file_read_task_id is not None:
+                self.progress.update(file_read_task_id, completed=current)
+
+        # Phase 1: Batched read from VCS with progress tracking.
         contents_by_path = self.vcs.get_files_content_at_commit(
             workspace_path=self.expert_config["workspace_path"],
             file_paths=list(file_paths),
             commit_hash=revision_id,
+            progress_callback=update_file_progress,
         )
+
+        # Clean up progress bar
+        if self.progress and file_read_task_id is not None:
+            self.progress.remove_task(file_read_task_id)
+            # Stop after commit processing so tqdm has uncontested control before any subsequent embedding phases.
+            self.progress.stop()
 
         file_chunks_map: dict[str, list[tuple[str, int, int]]] = {}
         total_chunks = 0
