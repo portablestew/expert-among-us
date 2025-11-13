@@ -49,12 +49,17 @@ class Perforce(VCSProvider):
         self._cl_cache: list[str] | None = None
         self._cl_index: dict[str, int] | None = None
         self._cl_cache_key: tuple | None = None
+        
+        # Cache for depot root → local root mapping (workspace_path → (depot_root, local_root))
+        # This avoids calling p4 where for every file conversion
+        self._workspace_mapping_cache: dict[str, tuple[str, str]] = {}
     
     @staticmethod
     def detect(workspace_path: str) -> bool:
         """Detect if workspace is a Perforce client workspace.
         
-        Uses `p4 info` to verify the workspace is configured for Perforce.
+        Uses `p4 info` to verify the workspace is configured for Perforce,
+        and checks that the Client root matches the workspace path.
         
         Args:
             workspace_path: Path to the workspace directory to check
@@ -77,8 +82,33 @@ class Perforce(VCSProvider):
                 encoding="utf-8",
                 errors="replace",
             )
-            # Parse output for "Client root:" field
-            return result.returncode == 0 and "Client root:" in result.stdout
+            
+            if result.returncode != 0:
+                return False
+            
+            # Parse output for "Client root:" field and verify it matches workspace_path
+            for line in result.stdout.splitlines():
+                if line.startswith("Client root:"):
+                    # Extract the client root path from the line
+                    # Format: "Client root: /path/to/workspace" or "Client root: C:\path\to\workspace"
+                    client_root = line.split(":", 1)[1].strip()
+                    
+                    # Normalize paths for comparison (resolve symlinks, normalize separators)
+                    workspace_normalized = str(Path(workspace_path).resolve())
+                    client_root_normalized = str(Path(client_root).resolve())
+                    
+                    # Check if the workspace path is within or equal to the client root
+                    # This allows subdirectories of a client workspace to be detected
+                    try:
+                        Path(workspace_normalized).relative_to(client_root_normalized)
+                        return True
+                    except ValueError:
+                        # workspace_path is not under client_root
+                        return False
+            
+            # No "Client root:" found in output
+            return False
+            
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             return False
     
@@ -290,6 +320,16 @@ class Perforce(VCSProvider):
         if not cl_numbers:
             return []
         
+        # Convert subdirs to depot path prefixes for filtering
+        depot_prefixes = None
+        if subdirs:
+            depot_prefixes = []
+            for subdir in subdirs:
+                depot_path = self._local_to_depot_path(workspace_path, subdir)
+                # Remove trailing /... to get prefix for matching
+                prefix = depot_path.rstrip("/...")
+                depot_prefixes.append(prefix)
+        
         # Batch describe command for all CLs
         cmd = ["p4", "describe", "-du"]
         cmd.extend(cl_numbers)
@@ -319,7 +359,11 @@ class Perforce(VCSProvider):
             )
         
         # Parse the describe output into individual changelists
-        changelists = self._parse_describe_output(result.stdout, workspace_path)
+        changelists = self._parse_describe_output(
+            result.stdout,
+            workspace_path,
+            depot_prefixes=depot_prefixes
+        )
         
         return changelists
     
@@ -327,8 +371,11 @@ class Perforce(VCSProvider):
         self,
         output: str,
         workspace_path: str,
+        depot_prefixes: Optional[list[str]] = None,
     ) -> list[Changelist]:
         """Parse output from `p4 describe -du` command.
+        
+        Filters files and diffs to only include those matching depot_prefixes.
         
         Output format:
         ```
@@ -353,6 +400,7 @@ class Perforce(VCSProvider):
         Args:
             output: Raw output from p4 describe command
             workspace_path: Path to workspace (for context)
+            depot_prefixes: Optional list of depot path prefixes to filter files
             
         Returns:
             List of parsed Changelist objects
@@ -425,12 +473,24 @@ class Perforce(VCSProvider):
                         if len(parts) >= 2:
                             # Extract depot path
                             depot_path = parts[1]
-                            # Remove revision number (#42) and convert to local path
+                            # Remove revision number (#42)
                             if "#" in depot_path:
                                 depot_path = depot_path.split("#")[0]
-                            # Try to convert depot path to local path
+                            
+                            # Filter by depot prefixes if provided
+                            if depot_prefixes:
+                                matches = any(
+                                    depot_path.startswith(prefix)
+                                    for prefix in depot_prefixes
+                                )
+                                if not matches:
+                                    i += 1
+                                    continue  # Skip this file
+                            
+                            # Convert to local path
                             local_path = self._depot_to_local_path(workspace_path, depot_path)
-                            files.append(local_path)
+                            if local_path:
+                                files.append(local_path)
                         i += 1
                     else:
                         break
@@ -447,12 +507,40 @@ class Perforce(VCSProvider):
                     i += 1
                 
                 # Collect diff until next changelist or EOF
+                # If filtering by depot_prefixes, only include diff sections for matching files
                 diff_lines = []
+                current_file_matches = True  # Track if current diff section matches filter
+                
                 while i < len(lines):
-                    if lines[i].startswith("Change "):
+                    line = lines[i]
+                    
+                    if line.startswith("Change "):
                         # Start of next changelist
                         break
-                    diff_lines.append(lines[i])
+                    
+                    # Check for diff file headers: ==== //depot/path/file.cpp#42 (text) ====
+                    if line.startswith("==== //"):
+                        if depot_prefixes:
+                            # Extract depot path from header
+                            parts = line.split()
+                            if len(parts) >= 2:
+                                depot_spec = parts[1]  # //depot/path/file.cpp#42
+                                depot_path = depot_spec.split("#")[0] if "#" in depot_spec else depot_spec
+                                
+                                # Check if this file matches our filter
+                                current_file_matches = any(
+                                    depot_path.startswith(prefix)
+                                    for prefix in depot_prefixes
+                                )
+                            else:
+                                current_file_matches = True
+                        else:
+                            current_file_matches = True
+                    
+                    # Only include lines if current file matches filter
+                    if current_file_matches:
+                        diff_lines.append(line)
+                    
                     i += 1
                 
                 diff = "\n".join(diff_lines)
@@ -480,9 +568,10 @@ class Perforce(VCSProvider):
         return changelists
     
     def _local_to_depot_path(self, workspace_path: str, local_subdir: str) -> str:
-        """Convert local path to depot path syntax.
+        """Convert local path to depot path syntax using cached workspace mapping.
         
-        Uses `p4 where` to map local path to depot path.
+        Fast string substitution approach - only calls p4 once per workspace.
+        Uses the cached workspace mapping in reverse (local → depot).
         
         Args:
             workspace_path: Path to workspace
@@ -491,11 +580,51 @@ class Perforce(VCSProvider):
         Returns:
             Depot path with recursive wildcard (e.g., "//depot/src/engine/...")
         """
-        local_path = Path(workspace_path) / local_subdir
+        depot_root, local_root = self._get_workspace_mapping(workspace_path)
+        
+        if depot_root and local_root:
+            # Build full local path
+            local_path = Path(workspace_path) / local_subdir
+            local_path_normalized = str(local_path.resolve())
+            
+            # Try to get relative path from local_root
+            try:
+                # Normalize local_root for comparison
+                local_root_normalized = str(Path(local_root).resolve())
+                relative_path = str(Path(local_path_normalized).relative_to(local_root_normalized))
+                
+                # String substitution: replace local root with depot root
+                # Use forward slashes for depot paths
+                relative_path = relative_path.replace("\\", "/")
+                depot_path = f"{depot_root}/{relative_path}/..."
+                return depot_path
+            except ValueError:
+                # local_path is not under local_root, fall through to fallback
+                pass
+        
+        # Fallback: assume standard depot mapping
+        return f"//depot/{local_subdir}/..."
+    
+    def _get_workspace_mapping(self, workspace_path: str) -> tuple[str, str]:
+        """Get depot root and local root mapping for workspace (cached).
+        
+        Uses `p4 where` on the workspace root to determine the mapping between
+        depot paths and local paths. This is called once per workspace and cached
+        for performance.
+        
+        Args:
+            workspace_path: Path to workspace
+            
+        Returns:
+            Tuple of (depot_root, local_root) for string substitution
+        """
+        if workspace_path in self._workspace_mapping_cache:
+            return self._workspace_mapping_cache[workspace_path]
         
         try:
+            # Use p4 where on workspace root to get the mapping
             result = subprocess.run(
-                ["p4", "where", str(local_path)],
+                ["p4", "where", workspace_path],
                 cwd=workspace_path,
                 capture_output=True,
                 text=True,
@@ -504,43 +633,52 @@ class Perforce(VCSProvider):
                 timeout=5,
             )
             
-            # Parse output: "//depot/path/... //client/path/... /local/path/..."
             if result.returncode == 0:
                 lines = result.stdout.strip().split("\n")
                 if lines:
                     parts = lines[0].split()
-                    if parts:
-                        depot_path = parts[0]
-                        # Ensure recursive wildcard
-                        if not depot_path.endswith("/..."):
-                            # Remove trailing slash if present, then add /...
-                            depot_path = depot_path.rstrip("/") + "/..."
-                        return depot_path
+                    if len(parts) >= 3:
+                        # Extract depot and local roots, removing /... suffix
+                        depot_root = parts[0].rstrip("/...")
+                        local_root = parts[2].rstrip("/...").rstrip("\\")
+                        
+                        self._workspace_mapping_cache[workspace_path] = (depot_root, local_root)
+                        
+                        if DebugLogger.is_enabled():
+                            from expert_among_us.utils.progress import console as progress_console
+                            progress_console.print(
+                                f"[dim]Perforce._get_workspace_mapping: cached mapping "
+                                f"depot='{depot_root}' → local='{local_root}'[/dim]"
+                            )
+                        
+                        return (depot_root, local_root)
         except (subprocess.TimeoutExpired, OSError):
             pass
         
-        # Fallback: assume standard depot mapping
-        return f"//depot/{local_subdir}/..."
+        # Fallback: no mapping available
+        self._workspace_mapping_cache[workspace_path] = ("", workspace_path)
+        return ("", workspace_path)
     
     def _depot_to_local_path(self, workspace_path: str, depot_path: str) -> str:
-        """Convert depot path to local path.
+        r"""Convert depot path to local path using cached workspace mapping.
         
-        Extracts the relative path from depot path for display purposes.
+        Fast string substitution approach - only calls p4 once per workspace.
         
         Args:
             workspace_path: Path to workspace
-            depot_path: Depot path (e.g., "//depot/src/file.cpp")
+            depot_path: Depot path (e.g., "//javelin/mainline/dev/GameCode/Game/VersionTrack.h")
             
         Returns:
-            Local relative path
+            Full local path (e.g., "C:\Perforce\Javelin\mainline\dev\GameCode\Game\VersionTrack.h")
         """
-        # Simple heuristic: strip depot prefix and return relative path
-        # Example: "//depot/src/file.cpp" -> "src/file.cpp"
-        if depot_path.startswith("//"):
-            parts = depot_path.split("/", 3)
-            if len(parts) >= 4:
-                return parts[3]
-        return depot_path
+        depot_root, local_root = self._get_workspace_mapping(workspace_path)
+        
+        if depot_root and depot_path.startswith(depot_root):
+            # String substitution: replace depot root with local root
+            relative_path = depot_path[len(depot_root):].lstrip("/")
+            return str(Path(local_root) / relative_path)
+        
+        return None
     
     def get_tracked_files_at_commit(
         self,
@@ -550,7 +688,9 @@ class Perforce(VCSProvider):
     ) -> list[str]:
         """Get list of tracked files at a specific changelist.
         
-        Uses `p4 files [path...]@=CL` to list files at a changelist.
+        Uses `p4 files [path...]@CL` to list all files as they existed at that changelist.
+        Note: Uses @ (not @=) to get the state of files at that changelist, not just
+        files modified in that specific changelist.
         
         Args:
             workspace_path: Path to the workspace/repository
@@ -566,12 +706,17 @@ class Perforce(VCSProvider):
             # Query specific subdirectories
             for subdir in subdirs:
                 depot_path = self._local_to_depot_path(workspace_path, subdir)
-                # Remove trailing /... for the @= syntax
+                # Remove trailing /... for the @ syntax
                 depot_path = depot_path.rstrip("/...")
-                cmd.append(f"{depot_path}/...@={commit_hash}")
+                cmd.append(f"{depot_path}/...@{commit_hash}")
         else:
             # Query all files
-            cmd.append(f"//...@={commit_hash}")
+            cmd.append(f"//...@{commit_hash}")
+        
+        if DebugLogger.is_enabled():
+            from expert_among_us.utils.progress import console as progress_console
+            cmd_str = " ".join(str(part) for part in cmd)
+            progress_console.print(f"[dim]Perforce.get_tracked_files_at_commit: {cmd_str}[/dim]")
         
         result = subprocess.run(
             cmd,
@@ -594,7 +739,8 @@ class Perforce(VCSProvider):
                 if parts:
                     depot_path = parts[0]
                     local_path = self._depot_to_local_path(workspace_path, depot_path)
-                    files.append(local_path)
+                    if local_path:
+                        files.append(local_path)
         
         return files
     
@@ -664,7 +810,7 @@ class Perforce(VCSProvider):
             batch_paths = unique_paths[batch_start:batch_end]
             
             # Build p4 print command with depot paths
-            cmd = ["p4", "print", "-q"]
+            cmd = ["p4", "print"]
             depot_specs = []
             for local_path in batch_paths:
                 depot_path = self._local_to_depot_path(workspace_path, local_path)
@@ -735,33 +881,22 @@ class Perforce(VCSProvider):
             line = lines[i]
             
             # Look for file header: "//depot/path/file.cpp#42 - edit change 12345 (text)"
-            if line.startswith("//"):
-                parts = line.split()
-                if len(parts) < 2:
-                    i += 1
-                    continue
-                
-                # Extract depot path and file type
-                depot_spec = parts[0]  # //depot/path/file.cpp#42
-                file_type = None
-                
+            # It will match the cached depot root path
+            local_path = self._parse_local_path_line(workspace_path, line)
+            if local_path:
+                i += 1
+
                 # Check for binary marker (case-insensitive to be safe)
                 if "(binary)" in line.lower():
                     # Binary file, skip content and save bandwidth
                     if DebugLogger.is_enabled():
                         from expert_among_us.utils.progress import console as progress_console
-                        progress_console.print(f"[dim]Perforce: Skipping binary file {depot_spec}[/dim]")
+                        progress_console.print(f"[dim]Perforce: Skipping binary file {local_path}[/dim]")
                     i += 1
                     # Skip until next file header or EOF
-                    while i < len(lines) and not lines[i].startswith("//"):
+                    while i < len(lines) and not self._parse_local_path_line(workspace_path, lines[i]):
                         i += 1
                     continue
-                
-                # Extract depot path without revision
-                depot_path = depot_spec.split("#")[0] if "#" in depot_spec else depot_spec
-                local_path = self._depot_to_local_path(workspace_path, depot_path)
-                
-                i += 1
                 
                 # Skip empty line after header
                 if i < len(lines) and not lines[i].strip():
@@ -770,7 +905,7 @@ class Perforce(VCSProvider):
                 # Collect file content until next file header or EOF
                 content_lines = []
                 while i < len(lines):
-                    if lines[i].startswith("//"):
+                    if self._parse_local_path_line(workspace_path, lines[i]):
                         # Start of next file
                         break
                     content_lines.append(lines[i])
@@ -793,6 +928,11 @@ class Perforce(VCSProvider):
                     results[local_path] = content
             else:
                 i += 1
+    
+    def _parse_local_path_line(self, workspace_path: str, line: str):
+        """Returns local path if the line contains a depot path, else return None"""
+        depot_path = line.split("#")[0] if "#" in line else None
+        return self._depot_to_local_path(workspace_path, depot_path) if depot_path else None
     
     def get_latest_commit_time(
         self,

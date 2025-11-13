@@ -186,7 +186,7 @@ class JinaCodeEmbedder(Embedder):
                 "model_id": self.model_id,
                 "task": self.task,
                 "dimension": self._dimension,
-                "batch_size": len(texts),
+                "batch_size": self.batch_size,
                 "text_lengths": [len(text) for text in texts]
             }
             request_id = DebugLogger.log_request(

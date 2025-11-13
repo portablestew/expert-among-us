@@ -830,6 +830,11 @@ class Git(VCSProvider):
             cmd.append("--")
             cmd.extend(subdirs)
 
+        if DebugLogger.is_enabled():
+            from expert_among_us.utils.progress import console as progress_console
+            cmd_str = " ".join(str(part) for part in cmd)
+            progress_console.print(f"[dim]Git.get_tracked_files_at_commit: {cmd_str}[/dim]")
+
         result = subprocess.run(
             cmd,
             capture_output=True,

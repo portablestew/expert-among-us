@@ -76,9 +76,8 @@ def main(ctx, debug: bool, data_dir: Optional[Path], llm_provider: str, base_url
 
 @main.command()
 @click.argument("expert_name", type=str)
-@click.argument("workspace", type=click.Path(exists=True, file_okay=False, path_type=Path), required=False, default=None)
-@click.argument("subdirs", nargs=-1, type=str)
-@click.option("--max-commits", default=50000, type=int, help="Maximum commits to index")
+@click.argument("workspace_and_subdirs", nargs=-1, type=str)
+@click.option("--max-commits", default=60000, type=int, help="Maximum commits to index")
 @click.option("--vcs-type", type=click.Choice(["git", "p4"]), default="git", help="Version control system type")
 @click.option("--batch-size", default=500, type=int, help="Maximum commits per embedding batch")
 @click.option("--start-at", type=str, help="Start indexing from this specific commit hash (use with --max-commits to test specific commits)")
@@ -86,8 +85,7 @@ def main(ctx, debug: bool, data_dir: Optional[Path], llm_provider: str, base_url
 def populate(
     ctx,
     expert_name: str,
-    workspace: Optional[Path],
-    subdirs: tuple[str, ...],
+    workspace_and_subdirs: tuple[str, ...],
     max_commits: int,
     vcs_type: str,
     batch_size: int,
@@ -97,9 +95,7 @@ def populate(
     
     EXPERT_NAME: Unique name for this expert
     
-    WORKSPACE: Path to the repository root (optional for existing experts)
-    
-    SUBDIRS: Optional subdirectories to filter (e.g., src/main/ src/resources/)
+    [WORKSPACE] [SUBDIRS...]: Optional workspace path followed by subdirectories to filter
     
     Examples:
     
@@ -108,12 +104,16 @@ def populate(
         $ expert-among-us populate MyExpert /path/to/repo
         
         \b
-        # Update existing expert - workspace optional
+        # Update existing expert - workspace optional (looks up from existing expert)
         $ expert-among-us populate MyExpert
         
         \b
         # Index specific subdirectories
-        $ expert-among-us populate MyExpert /path/to/repo src/main/ src/resources/
+        $ expert-among-us populate MyExpert /path/to/repo _sharpmake_/ Code/ GameCode/ Gems/
+        
+        \b
+        # Update existing expert with different subdirectories
+        $ expert-among-us populate MyExpert src/main/ src/resources/
         
         \b
         # Use Bedrock embeddings (global flag)
@@ -126,6 +126,19 @@ def populate(
     # Get global options from context
     data_dir = ctx.obj.get('data_dir')
     embedding_provider = ctx.obj.get('embedding_provider')
+    
+    # Parse workspace_and_subdirs: first argument is workspace if it's an existing directory
+    workspace: Optional[Path] = None
+    subdirs_list: tuple[str, ...] = ()
+    
+    if workspace_and_subdirs:
+        # Check if first argument is an existing directory (workspace)
+        potential_workspace = Path(workspace_and_subdirs[0])
+        if not potential_workspace.exists() or not potential_workspace.is_dir():
+            log_error(f"Invalid workspace path: {potential_workspace}")
+            sys.exit(1)
+        workspace = potential_workspace
+        subdirs_list = workspace_and_subdirs[1:]
     
     # Step 0: Handle optional workspace - look up from existing expert if not provided
     if workspace is None:
@@ -161,8 +174,8 @@ def populate(
                 sys.exit(1)
     
     log_info(f"Populating expert index '{expert_name}' from workspace: {workspace}")
-    if subdirs:
-        log_info(f"Filtering to subdirectories: {', '.join(subdirs)}")
+    if subdirs_list:
+        log_info(f"Filtering to subdirectories: {', '.join(subdirs_list)}")
     
     try:
         # Get global options from context
@@ -189,7 +202,7 @@ def populate(
         expert_config = ExpertConfig(
             name=expert_name,
             workspace_path=workspace,
-            subdirs=list(subdirs) if subdirs else [],
+            subdirs=subdirs_list,
             vcs_type=vcs_type,
             max_commits=max_commits,
             data_dir=data_dir or Path.home() / ".expert-among-us"
@@ -229,7 +242,6 @@ def populate(
             log_info(f"Creating new expert '{expert_name}'")
             metadata_db.create_expert(expert_config.name, str(expert_config.workspace_path), expert_config.subdirs, expert_config.vcs_type)
         
-        subdirs_list = list(subdirs) if subdirs else None
         total_processed = 0
         
         # Step 4: Use unified indexing (processes both files and commits together)

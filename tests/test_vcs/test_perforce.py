@@ -14,6 +14,7 @@ import pytest
 from unittest.mock import Mock, patch, MagicMock
 import subprocess
 from datetime import datetime, timezone
+from pathlib import Path
 
 from expert_among_us.vcs.perforce import Perforce
 from expert_among_us.models.changelist import Changelist
@@ -45,9 +46,10 @@ class TestPerforceDetection:
 
     def test_detect_with_p4_info(self, mock_subprocess_run, mock_which, tmp_path):
         """Verify detection via p4 info command with Client root."""
+        # Mock p4 info to return the tmp_path as the client root
         mock_subprocess_run.return_value = Mock(
             returncode=0,
-            stdout="Client root: /path/to/workspace\nServer address: perforce:1666"
+            stdout=f"Client root: {tmp_path}\nServer address: perforce:1666"
         )
         
         assert Perforce.detect(str(tmp_path)) is True
@@ -123,9 +125,13 @@ Differences ...
  int main() { return 0; }
 +// Comment"""
         
+        # Mock p4 where for workspace mapping
+        where_output = f"//depot //client {tmp_path}"
+        
         mock_subprocess_run.side_effect = [
             Mock(returncode=0, stdout=changes_output),  # p4 changes
             Mock(returncode=0, stdout=describe_output),  # p4 describe
+            Mock(returncode=0, stdout=where_output),  # p4 where (for depot_to_local_path)
         ]
         
         changelists = perforce_provider.get_commits_after(
@@ -135,8 +141,8 @@ Differences ...
             subdirs=None
         )
         
-        # Should have called p4 changes and p4 describe
-        assert mock_subprocess_run.call_count == 2
+        # Should have called p4 changes, p4 describe, and p4 where (for workspace mapping)
+        assert mock_subprocess_run.call_count == 3
         
         # Verify results
         assert len(changelists) == 2
@@ -162,9 +168,12 @@ Differences ...
 
 +content"""
         
+        where_output = f"//depot //client {tmp_path}"
+        
         mock_subprocess_run.side_effect = [
             Mock(returncode=0, stdout=changes_output),
             Mock(returncode=0, stdout=describe_output),
+            Mock(returncode=0, stdout=where_output),  # p4 where
         ]
         
         changelists = perforce_provider.get_commits_after(
@@ -198,9 +207,12 @@ Differences ...
 
 +int main() {}"""
         
+        where_output = f"//depot //client {tmp_path}"
+        
         mock_subprocess_run.side_effect = [
             Mock(returncode=0, stdout=changes_output),
             Mock(returncode=0, stdout=describe_output),
+            Mock(returncode=0, stdout=where_output),  # p4 where
         ]
         
         changelists = perforce_provider.get_commits_after(
@@ -260,9 +272,12 @@ Differences ...
 
 +line2"""
         
+        where_output = f"//depot //client {tmp_path}"
+        
         mock_subprocess_run.side_effect = [
             Mock(returncode=0, stdout=changes_output),
             Mock(returncode=0, stdout=describe_output),
+            Mock(returncode=0, stdout=where_output),  # p4 where
         ]
         
         # Get CLs after 12345
@@ -297,12 +312,14 @@ Differences ...
 +code"""
         
         # Mock p4 where for path mapping
-        where_output = "//depot/src/engine/... //client/src/engine/... /local/src/engine/..."
+        where_output_subdir = "//depot/src/engine/... //client/src/engine/... /local/src/engine/..."
+        where_output_workspace = f"//depot //client {tmp_path}"
         
         mock_subprocess_run.side_effect = [
-            Mock(returncode=0, stdout=where_output),  # p4 where
+            Mock(returncode=0, stdout=where_output_subdir),  # p4 where for subdir
             Mock(returncode=0, stdout=changes_output),  # p4 changes
             Mock(returncode=0, stdout=describe_output),  # p4 describe
+            Mock(returncode=0, stdout=where_output_workspace),  # p4 where for workspace mapping
         ]
         
         changelists = perforce_provider.get_commits_after(
@@ -547,7 +564,14 @@ class TestFileOperations:
 //depot/src/file2.cpp#15 - add change 12345 (text)
 //depot/include/header.h#3 - edit change 12345 (text)"""
         
-        mock_subprocess_run.return_value = Mock(returncode=0, stdout=files_output)
+        where_output = f"//depot //client {tmp_path}"
+        
+        mock_subprocess_run.side_effect = [
+            Mock(returncode=0, stdout=files_output),  # p4 files
+            Mock(returncode=0, stdout=where_output),  # p4 where (called 3 times for 3 files)
+            Mock(returncode=0, stdout=where_output),
+            Mock(returncode=0, stdout=where_output),
+        ]
         
         files = perforce_provider.get_tracked_files_at_commit(
             workspace_path=str(tmp_path),
@@ -560,11 +584,12 @@ class TestFileOperations:
         assert any("file2.cpp" in f for f in files)
         assert any("header.h" in f for f in files)
         
-        # Verify command construction
-        args = mock_subprocess_run.call_args[0][0]
+        # Verify command construction (first call is p4 files)
+        files_call = mock_subprocess_run.call_args_list[0]
+        args = files_call[0][0]
         assert "p4" in args
         assert "files" in args
-        assert any("@=12345" in str(arg) for arg in args)
+        assert any("@12345" in str(arg) for arg in args)
 
     def test_get_files_content_at_commit_batched(self, mock_subprocess_run, perforce_provider, tmp_path):
         """Verify p4 print -q fetches multiple files in single call."""
@@ -576,14 +601,13 @@ int main() { return 0; }
 
 void foo() {}"""
         
-        # Mock p4 where calls for path mapping
-        where_output1 = "//depot/src/file1.cpp //client/src/file1.cpp /local/src/file1.cpp"
-        where_output2 = "//depot/src/file2.cpp //client/src/file2.cpp /local/src/file2.cpp"
+        # Workspace mapping for both local_to_depot and depot_to_local conversions
+        where_output_workspace = f"//depot //client {tmp_path}"
         
         mock_subprocess_run.side_effect = [
-            Mock(returncode=0, stdout=where_output1),
-            Mock(returncode=0, stdout=where_output2),
-            Mock(returncode=0, stdout=print_output),
+            Mock(returncode=0, stdout=where_output_workspace),  # p4 where for workspace mapping (local_to_depot_path)
+            Mock(returncode=0, stdout=print_output),  # p4 print
+            Mock(returncode=0, stdout=where_output_workspace),  # p4 where for workspace mapping (depot_to_local_path) - may be cached
         ]
         
         result = perforce_provider.get_files_content_at_commit(
@@ -624,11 +648,13 @@ void foo() {}"""
 
 int main() {}"""
         
-        where_output = "//depot/src/file.cpp //client/src/file.cpp /local/src/file.cpp"
+        # Workspace mapping for both local_to_depot and depot_to_local conversions
+        where_output_workspace = f"//depot //client {tmp_path}"
         
         mock_subprocess_run.side_effect = [
-            Mock(returncode=0, stdout=where_output),
-            Mock(returncode=0, stdout=print_output),
+            Mock(returncode=0, stdout=where_output_workspace),  # p4 where for workspace mapping (local_to_depot_path)
+            Mock(returncode=0, stdout=print_output),  # p4 print
+            Mock(returncode=0, stdout=where_output_workspace),  # p4 where for workspace mapping (depot_to_local_path) - may be cached
         ]
         
         content = perforce_provider.get_file_content_at_commit(
@@ -640,7 +666,7 @@ int main() {}"""
         assert content is not None
         assert "main()" in content
 
-    def test_parse_print_output_multiple_files(self, perforce_provider, tmp_path):
+    def test_parse_print_output_multiple_files(self, mock_subprocess_run, perforce_provider, tmp_path):
         """Test p4 print output parsing extracts multiple file contents."""
         print_output = """//depot/src/file1.cpp#1 - add change 12345 (text)
 
@@ -651,6 +677,10 @@ content1
 content2
 with multiple lines"""
         
+        # Workspace mapping that matches depot root in print_output
+        where_output = f"//depot //client {tmp_path}"
+        mock_subprocess_run.return_value = Mock(returncode=0, stdout=where_output)
+        
         results = {"src/file1.cpp": None, "src/file2.cpp": None}
         perforce_provider._parse_print_output(
             print_output,
@@ -659,6 +689,7 @@ with multiple lines"""
             str(tmp_path)
         )
         
+        # Depot paths //depot/src/file1.cpp should map to src/file1.cpp with workspace mapping //depot -> tmp_path
         assert results["src/file1.cpp"] == "content1\n"
         assert "content2" in results["src/file2.cpp"]
         assert "multiple lines" in results["src/file2.cpp"]
@@ -782,6 +813,123 @@ class TestHelperMethods:
         
         # Should ensure recursive wildcard
         assert depot_path.endswith("/...")
+
+
+class TestDepotToLocalPathMapping:
+    """Tests for depot-to-local path conversion with caching."""
+    
+    def test_get_workspace_mapping_caches_result(self, mock_subprocess_run, perforce_provider, tmp_path):
+        """Verify workspace mapping is cached after first call."""
+        where_output = "//javelin/mainline/dev //client/mainline/dev C:\\Perforce\\Javelin\\mainline\\dev"
+        
+        mock_subprocess_run.return_value = Mock(returncode=0, stdout=where_output)
+        
+        # First call should invoke p4 where
+        depot_root, local_root = perforce_provider._get_workspace_mapping(str(tmp_path))
+        
+        assert depot_root == "//javelin/mainline/dev"
+        assert local_root == "C:\\Perforce\\Javelin\\mainline\\dev"
+        assert mock_subprocess_run.call_count == 1
+        
+        # Second call should use cache (no additional subprocess call)
+        depot_root2, local_root2 = perforce_provider._get_workspace_mapping(str(tmp_path))
+        
+        assert depot_root2 == depot_root
+        assert local_root2 == local_root
+        assert mock_subprocess_run.call_count == 1  # Still only 1 call
+    
+    def test_get_workspace_mapping_handles_trailing_wildcards(self, mock_subprocess_run, perforce_provider, tmp_path):
+        """Verify /... suffix is properly stripped from depot and local roots."""
+        where_output = "//depot/src/engine/... //client/src/engine/... /local/src/engine/..."
+        
+        mock_subprocess_run.return_value = Mock(returncode=0, stdout=where_output)
+        
+        depot_root, local_root = perforce_provider._get_workspace_mapping(str(tmp_path))
+        
+        # Should strip /... from both paths
+        assert depot_root == "//depot/src/engine"
+        assert local_root == "/local/src/engine"
+    
+    def test_get_workspace_mapping_fallback_on_error(self, mock_subprocess_run, perforce_provider, tmp_path):
+        """Verify fallback mapping when p4 where fails."""
+        mock_subprocess_run.return_value = Mock(returncode=1, stdout="", stderr="Error")
+        
+        depot_root, local_root = perforce_provider._get_workspace_mapping(str(tmp_path))
+        
+        # Should fallback to empty depot root and workspace path
+        assert depot_root == ""
+        assert local_root == str(tmp_path)
+    
+    def test_depot_to_local_path_with_cached_mapping(self, mock_subprocess_run, perforce_provider, tmp_path):
+        """Verify depot path conversion uses cached workspace mapping."""
+        where_output = "//javelin/mainline/dev //client/mainline/dev C:\\Perforce\\Javelin\\mainline\\dev"
+        
+        mock_subprocess_run.return_value = Mock(returncode=0, stdout=where_output)
+        
+        depot_path = "//javelin/mainline/dev/GameCode/Game/VersionTrack.h"
+        local_path = perforce_provider._depot_to_local_path(str(tmp_path), depot_path)
+        
+        # Should produce full local path
+        expected = str(Path("C:\\Perforce\\Javelin\\mainline\\dev") / "GameCode/Game/VersionTrack.h")
+        assert local_path == expected
+        
+        # Verify only one p4 where call was made
+        assert mock_subprocess_run.call_count == 1
+    
+    def test_depot_to_local_path_with_multiple_files(self, mock_subprocess_run, perforce_provider, tmp_path):
+        """Verify multiple file conversions use cached mapping (performance test)."""
+        where_output = "//javelin/mainline/dev //client/mainline/dev C:\\Perforce\\Javelin\\mainline\\dev"
+        
+        mock_subprocess_run.return_value = Mock(returncode=0, stdout=where_output)
+        
+        # Convert multiple depot paths
+        depot_paths = [
+            "//javelin/mainline/dev/GameCode/Game/VersionTrack.h",
+            "//javelin/mainline/dev/GameCode/Engine/Core.cpp",
+            "//javelin/mainline/dev/Content/Maps/Level1.umap",
+        ]
+        
+        local_paths = [
+            perforce_provider._depot_to_local_path(str(tmp_path), dp)
+            for dp in depot_paths
+        ]
+        
+        # Verify all paths were converted correctly
+        assert len(local_paths) == 3
+        assert all("C:\\Perforce\\Javelin\\mainline\\dev" in lp for lp in local_paths)
+        assert "VersionTrack.h" in local_paths[0]
+        assert "Core.cpp" in local_paths[1]
+        assert "Level1.umap" in local_paths[2]
+        
+        # Critical: Only ONE p4 where call should have been made for all conversions
+        assert mock_subprocess_run.call_count == 1
+    
+    def test_depot_to_local_path_fallback_for_unmapped_paths(self, mock_subprocess_run, perforce_provider, tmp_path):
+        """Verify fallback behavior for depot paths outside workspace mapping."""
+        where_output = "//javelin/mainline/dev //client/mainline/dev C:\\Perforce\\Javelin\\mainline\\dev"
+        
+        mock_subprocess_run.return_value = Mock(returncode=0, stdout=where_output)
+        
+        # Path from different depot branch
+        depot_path = "//different-depot/branch/file.cpp"
+        local_path = perforce_provider._depot_to_local_path(str(tmp_path), depot_path)
+        
+        # Should use fallback: workspace_path + relative portion
+        expected = str(Path(tmp_path) / "branch/file.cpp")
+        assert local_path == expected
+    
+    def test_depot_to_local_path_windows_path_separators(self, mock_subprocess_run, perforce_provider, tmp_path):
+        """Verify proper handling of Windows path separators."""
+        where_output = "//javelin/mainline/dev //client/mainline/dev C:\\Perforce\\Javelin\\mainline\\dev"
+        
+        mock_subprocess_run.return_value = Mock(returncode=0, stdout=where_output)
+        
+        depot_path = "//javelin/mainline/dev/GameCode/Game/VersionTrack.h"
+        local_path = perforce_provider._depot_to_local_path(str(tmp_path), depot_path)
+        
+        # Path object should handle separators correctly for the platform
+        assert "GameCode" in local_path
+        assert "VersionTrack.h" in local_path
 
 
 class TestEdgeCases:
