@@ -24,7 +24,7 @@ def create_embedder(settings: Settings) -> Embedder:
         return JinaCodeEmbedder(
             model_id=settings.local_embedding_model,
             dimension=settings.local_embedding_dimension,
-            batch_size=settings.embedding_batch_size,
+            batch_per_gb=settings.embedding_batch_per_gb,
             enable_multiprocessing=settings.enable_multiprocessing,
         )
 

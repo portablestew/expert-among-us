@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import List
+from typing import List, Optional, Callable
 
 
 class Embedder(ABC):
@@ -8,8 +8,17 @@ class Embedder(ABC):
         """Generate embedding vector for text"""
         
     @abstractmethod
-    def embed_batch(self, texts: List[str]) -> List[List[float]]:
-        """Generate embeddings for multiple texts efficiently"""
+    def embed_batch(
+        self,
+        texts: List[str],
+        progress_callback: Optional[Callable[[int, int], None]] = None
+    ) -> List[List[float]]:
+        """Generate embeddings for multiple texts efficiently
+        
+        Args:
+            texts: List of input texts to embed
+            progress_callback: Optional callback(current, total) called after each batch
+        """
         
     @property
     @abstractmethod

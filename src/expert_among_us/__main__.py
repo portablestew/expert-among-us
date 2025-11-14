@@ -149,6 +149,7 @@ def populate(
         
         if existing_expert:
             workspace = Path(existing_expert['workspace_path'])
+            subdirs_list = existing_expert['subdirs'] or []
             log_info(f"Found workspace: {workspace}")
         else:
             log_error(f"Expert '{expert_name}' does not exist. Workspace path is required for new experts.")

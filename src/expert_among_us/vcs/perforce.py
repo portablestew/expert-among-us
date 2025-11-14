@@ -17,6 +17,14 @@ from expert_among_us.models.changelist import Changelist
 from expert_among_us.utils.truncate import filter_binary_from_diff, is_binary_file
 from expert_among_us.utils.debug import DebugLogger
 
+# Automated users to exclude from changelist queries
+# These patterns use Perforce wildcard syntax (* for multiple chars)
+EXCLUDED_AUTOMATED_USERS = (
+    "*jenkins*",
+    "*builder*",
+    "lumbery@*",
+)
+
 
 class Perforce(VCSProvider):
     """Perforce VCS provider implementation.
@@ -77,7 +85,7 @@ class Perforce(VCSProvider):
                 ["p4", "info"],
                 cwd=workspace_path,
                 capture_output=True,
-                timeout=5,
+                timeout=10,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
@@ -141,29 +149,19 @@ class Perforce(VCSProvider):
         if batch_size == 0:
             return []
         
-        # Normalize subdirs for cache key (after_hash is NOT part of the key;
-        # it is treated as a cursor into the global ordered sequence).
-        subdirs_tuple = tuple(sorted(subdirs)) if subdirs else None
-        cache_key = (workspace_path, subdirs_tuple)
+        # Fetch CL numbers (will use cache if available)
+        cl_numbers = self._fetch_all_changelist_numbers(
+            workspace_path=workspace_path,
+            subdirs=subdirs,
+        )
         
-        # (Re)build cache if it does not exist or the parameters changed
-        if self._cl_cache is None or self._cl_cache_key != cache_key:
-            self._cl_cache = self._fetch_all_changelist_numbers(
-                workspace_path=workspace_path,
-                subdirs=subdirs,
+        if DebugLogger.is_enabled():
+            subdirs_tuple = tuple(sorted(subdirs)) if subdirs else None
+            from expert_among_us.utils.progress import console as progress_console
+            progress_console.print(
+                f"[dim]Perforce.get_commits_after: using {len(cl_numbers)} cached changelists "
+                f"(after={after_hash or 'START'}, subdirs={subdirs_tuple})[/dim]"
             )
-            # Build index for O(1) lookup of positions
-            self._cl_index = {
-                cl_num: idx for idx, cl_num in enumerate(self._cl_cache)
-            }
-            self._cl_cache_key = cache_key
-            
-            if DebugLogger.is_enabled():
-                from expert_among_us.utils.progress import console as progress_console
-                progress_console.print(
-                    f"[dim]Perforce.get_commits_after: cached {len(self._cl_cache)} changelists "
-                    f"(after={after_hash or 'START'}, subdirs={subdirs_tuple})[/dim]"
-                )
         
         # Determine starting index based on after_hash cursor
         if after_hash:
@@ -198,11 +196,11 @@ class Perforce(VCSProvider):
             # No cursor: start from the beginning
             start = 0
         
-        if not self._cl_cache:
+        if not cl_numbers:
             return []
         
         end = start + batch_size
-        batch_cl_numbers = self._cl_cache[start:end]
+        batch_cl_numbers = cl_numbers[start:end]
         
         if not batch_cl_numbers:
             # No more changelists after the given cursor
@@ -228,7 +226,10 @@ class Perforce(VCSProvider):
         workspace_path: str,
         subdirs: Optional[list[str]] = None,
     ) -> list[str]:
-        """Fetch all CL numbers matching filters (lightweight operation).
+        """Fetch all CL numbers matching filters (with caching).
+        
+        Caches results keyed by (workspace_path, subdirs_tuple) to avoid
+        redundant p4 calls. Returns cached results when available.
         
         Uses `p4 changes -s submitted [paths...]` to get all submitted changelists.
         Perforce returns newest first, so we reverse to get oldest → newest order.
@@ -240,7 +241,19 @@ class Perforce(VCSProvider):
         Returns:
             List of CL numbers as strings, ordered oldest → newest
         """
-        cmd = ["p4", "changes", "-s", "submitted"]
+        # Check cache first
+        subdirs_tuple = tuple(sorted(subdirs)) if subdirs else None
+        cache_key = (workspace_path, subdirs_tuple)
+        
+        if self._cl_cache is not None and self._cl_cache_key == cache_key:
+            return self._cl_cache
+        
+        # Cache miss - fetch from Perforce
+        cmd = ["p4", "changes", "-E", "-s", "submitted"]
+        
+        # Add automated user exclusions
+        for user_pattern in EXCLUDED_AUTOMATED_USERS:
+            cmd.append(f"-u-{user_pattern}")
         
         if subdirs:
             # Convert local paths to depot paths
@@ -263,7 +276,7 @@ class Perforce(VCSProvider):
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=30,  # Longer timeout than detect() since this can legitimately take time
+            timeout=60,  # Longer timeout than detect() since this can legitimately take time
         )
         
         if result.returncode != 0:
@@ -295,6 +308,11 @@ class Perforce(VCSProvider):
             if cl_number != prev_cl_number:
                 cl_numbers.append(cl_number)
                 prev_cl_number = cl_number
+        
+        # Update cache before returning
+        self._cl_cache = cl_numbers
+        self._cl_index = {cl_num: idx for idx, cl_num in enumerate(cl_numbers)}
+        self._cl_cache_key = cache_key
         
         return cl_numbers
     
@@ -348,6 +366,7 @@ class Perforce(VCSProvider):
             text=True,
             encoding="utf-8",
             errors="replace",
+            timeout=180,
         )
         
         if result.returncode != 0:
@@ -630,7 +649,7 @@ class Perforce(VCSProvider):
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=5,
+                timeout=10,
             )
             
             if result.returncode == 0:
@@ -1008,8 +1027,7 @@ class Perforce(VCSProvider):
     ) -> int:
         """Return the total number of changelists to consider for indexing.
         
-        Reuses _fetch_all_changelist_numbers() to ensure consistent deduplication
-        and leverage existing cache.
+        Uses _fetch_all_changelist_numbers() which caches results.
         
         Args:
             workspace_path: Path to the workspace / repository root.
@@ -1018,14 +1036,6 @@ class Perforce(VCSProvider):
         Returns:
             Integer count of changelists (deduplicated).
         """
-        # Reuse cache if available
-        subdirs_tuple = tuple(sorted(subdirs)) if subdirs else None
-        cache_key = (workspace_path, subdirs_tuple)
-        
-        if self._cl_cache is not None and self._cl_cache_key == cache_key:
-            return len(self._cl_cache)
-        
-        # Build cache and return count
         cl_numbers = self._fetch_all_changelist_numbers(
             workspace_path=workspace_path,
             subdirs=subdirs,

@@ -1,21 +1,24 @@
 from .base import Embedder
-from typing import List
+from typing import List, Optional, Callable
 from ..utils.debug import DebugLogger
 from ..utils.symbols import SYMBOLS
 from ..utils.progress import console
+import gc
 
+torch_import = None
+sentence_transformers_import = None
 
 class JinaCodeEmbedder(Embedder):
     """Local embeddings using Jina Code model with code2code task."""
     
-    def __init__(self, model_id: str, dimension: int = 512, compile_model: bool = True, batch_size: int = 12, enable_multiprocessing: bool = True):
+    def __init__(self, model_id: str, dimension: int = 512, compile_model: bool = True, batch_per_gb: int = 1.0, enable_multiprocessing: bool = True):
         """Initialize the Jina Code embedder.
         
         Args:
             model_id: Hugging Face model identifier
             dimension: Target dimension for Matryoshka truncation
             compile_model: Whether to use torch.compile for optimization (default: True)
-            batch_size: Batch size for GPU inference (default: 12)
+            batch_per_gb: Batch size per GB of GPU memory for inference (default: 1.0)
             enable_multiprocessing: Whether to enable multiprocessing (default: True)
         """
         # Log loading message in debug mode
@@ -23,23 +26,44 @@ class JinaCodeEmbedder(Embedder):
             console.print("[DEBUG] Loading PyTorch...")
         
         # Lazy import torch (heavy import ~2.4s)
-        import torch
+        global torch_import
+        if torch_import is None:
+            torch_import = __import__("torch")
+        torch = torch_import
         
         if DebugLogger.is_enabled():
             console.print("[DEBUG] Loading sentence_transformers...")
         
         # Lazy import sentence_transformers (heavy import ~3.7s)
-        from sentence_transformers import SentenceTransformer
+        global sentence_transformers_import
+        if sentence_transformers_import is None:
+            sentence_transformers_import = __import__("sentence_transformers")
+        sentence_transformers = sentence_transformers_import
         
         self.model_id = model_id
         self._dimension = dimension
-        self.batch_size = batch_size
         self.task = "code2code"
         self.task_prefix = "Represent this code for retrieving similar code: "
         
         # Auto-detect GPU availability with diagnostics
         gpu_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
         self.device = "cuda" if gpu_count > 0 else "cpu"
+        
+        # Calculate actual batch size based on GPU memory
+        if self.device == "cuda":
+            # Get total GPU memory in GB
+            props = torch.cuda.get_device_properties(0)
+            total_memory_gb = props.total_memory / (1024**3)
+            self.batch_size = round(batch_per_gb * total_memory_gb)
+            if DebugLogger.is_enabled():
+                console.print(f"[DEBUG] GPU memory: {total_memory_gb:.2f} GB, batch_per_gb: {batch_per_gb}, calculated batch_size: {self.batch_size}")
+        else:
+            # For CPU, use number of cores * batch_per_gb
+            import os
+            cpu_cores = os.cpu_count() or 1
+            self.batch_size = round(batch_per_gb * cpu_cores)
+            if DebugLogger.is_enabled():
+                console.print(f"[DEBUG] CPU cores: {cpu_cores}, batch_per_gb: {batch_per_gb}, calculated batch_size: {self.batch_size}")
         
         # Detailed GPU diagnostics
         if gpu_count == 0:
@@ -54,7 +78,7 @@ class JinaCodeEmbedder(Embedder):
             console.print()
         
         # Load model with trust_remote_code for FlashAttention2 and fp16 for GPU optimization
-        self.model = SentenceTransformer(
+        self.model = sentence_transformers.SentenceTransformer(
             model_id,
             trust_remote_code=True,
             device=self.device,
@@ -162,11 +186,16 @@ class JinaCodeEmbedder(Embedder):
         
         return embedding
     
-    def embed_batch(self, texts: List[str]) -> List[List[float]]:
+    def embed_batch(
+        self,
+        texts: List[str],
+        progress_callback: Optional[Callable[[int, int], None]] = None
+    ) -> List[List[float]]:
         """Generate embeddings for multiple texts efficiently.
         
         Args:
             texts: List of input texts to embed
+            progress_callback: Optional callback(current, total) called after each job batch
             
         Returns:
             List of embedding vectors
@@ -190,28 +219,37 @@ class JinaCodeEmbedder(Embedder):
                 category="embedding"
             )
         
-        # Generate embeddings in batch using multi-process pool.
-        # Automatically handles CPU/multi-CPU, single GPU, and multi-GPU scenarios.
-        # We RE-ENABLE the internal tqdm progress bar here because batch embedding
-        # progress is critical for UX. To keep output readable, rely on tqdm's
-        # single-line behavior and avoid overlapping rich Progress for this section.
-        # Use no_grad to prevent gradient accumulation and memory leaks
+        embeddings_list = []
+        total_texts = len(prefixed_texts)
+        processed = 0
+        
+        # Process texts in small batches to avoid them hanging around in GPU memory
         with self.torch.no_grad():
-            embeddings = self.model.encode(
-                prefixed_texts,
-                pool=self.pool,
-                batch_size=self.batch_size,
-                convert_to_numpy=True,
-                show_progress_bar=True
-            )
-        
-        # Truncate to target dimension (Matryoshka) and convert to lists
-        embeddings_list = [emb[:self._dimension].tolist() for emb in embeddings]
-        
-        # Explicitly free GPU memory to prevent leaks between batches
-        del embeddings
-        if self.device == "cuda":
-            self.torch.cuda.empty_cache()
+            job_batch_size = self.batch_size * 8
+            for i in range(0, len(prefixed_texts), job_batch_size):
+                batch = prefixed_texts[i:i + job_batch_size]
+                
+                # Perform embedding jobs
+                embeddings = self.model.encode(
+                    batch,
+                    pool=self.pool,
+                    batch_size=self.batch_size,
+                    convert_to_numpy=True,
+                    show_progress_bar=not progress_callback  # Use built-in if no callback
+                )
+                
+                # Truncate to target dimension (Matryoshka) and convert to lists
+                embeddings_list.extend([emb[:self._dimension].tolist() for emb in embeddings])
+                
+                # Update progress after each job batch
+                processed += len(batch)
+                if progress_callback:
+                    progress_callback(processed, total_texts)
+                
+                del embeddings
+                gc.collect()
+                if self.device == "cuda":
+                    self.torch.cuda.empty_cache()
         
         # Log response if debug enabled
         if DebugLogger.is_enabled():

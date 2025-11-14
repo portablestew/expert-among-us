@@ -15,14 +15,14 @@ class LocalCrossEncoderReranker(Reranker):
     def __init__(
         self,
         model_id: str = 'cross-encoder/ms-marco-MiniLM-L-6-v2',
-        batch_size: int = 32,
+        batch_per_gb: int = 1.0,
         max_chunk_chars: int = 2000  # ~512 tokens
     ):
         """Initialize cross-encoder reranker.
         
         Args:
             model_id: HuggingFace model identifier
-            batch_size: Batch size for GPU inference
+            batch_per_gb: Batch size per GB of GPU memory for inference
             max_chunk_chars: Maximum characters per chunk (~512 tokens)
         """
         # Log loading message in debug mode
@@ -39,12 +39,27 @@ class LocalCrossEncoderReranker(Reranker):
         from sentence_transformers import CrossEncoder
         
         self.model_id = model_id
-        self.batch_size = batch_size
         self.max_chunk_chars = max_chunk_chars
         
         # Auto-detect device (same pattern as JinaCodeEmbedder)
         cuda_available = torch.cuda.is_available()
         self.device = "cuda" if cuda_available else "cpu"
+        
+        # Calculate actual batch size based on GPU memory
+        if self.device == "cuda":
+            # Get total GPU memory in GB
+            props = torch.cuda.get_device_properties(0)
+            total_memory_gb = props.total_memory / (1024**3)
+            self.batch_size = round(batch_per_gb * total_memory_gb)
+            if DebugLogger.is_enabled():
+                console.print(f"[DEBUG] GPU memory: {total_memory_gb:.2f} GB, batch_per_gb: {batch_per_gb}, calculated batch_size: {self.batch_size}")
+        else:
+            # For CPU, use number of cores * batch_per_gb
+            import os
+            cpu_cores = os.cpu_count() or 1
+            self.batch_size = round(batch_per_gb * cpu_cores)
+            if DebugLogger.is_enabled():
+                console.print(f"[DEBUG] CPU cores: {cpu_cores}, batch_per_gb: {batch_per_gb}, calculated batch_size: {self.batch_size}")
         
         # Load cross-encoder model
         self.model = CrossEncoder(model_id, device=self.device)
@@ -102,11 +117,13 @@ class LocalCrossEncoderReranker(Reranker):
                 chunk_to_doc.append(doc_idx)
         
         # Batch predict all chunks (uses GPU if available)
-        chunk_scores = self.model.predict(
-            all_pairs,
-            batch_size=self.batch_size,
-            show_progress_bar=False  # Avoid conflict with rich Progress
-        )
+        # Use no_grad to prevent gradient accumulation during inference
+        with self.torch.no_grad():
+            chunk_scores = self.model.predict(
+                all_pairs,
+                batch_size=self.batch_size,
+                show_progress_bar=False  # Avoid conflict with rich Progress
+            )
         
         # Max pooling: aggregate chunk scores by document
         doc_scores = {}

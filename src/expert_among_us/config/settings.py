@@ -171,8 +171,8 @@ class Settings(BaseSettings):
     cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-12-v2"  # Changed to L-12 for better quality
 
     # GPU tuning
-    embedding_batch_size: int = 8  # GPU batch size for embeddings
-    reranking_batch_size: int = 8  # GPU batch size for reranking
+    embedding_batch_per_gb: int = 1.0  # GPU batch size for embeddings
+    reranking_batch_per_gb: int = 1.0  # GPU batch size for reranking
     
     # Multiprocessing settings
     enable_multiprocessing: bool = True  # Enable multiprocessing for embeddings (set to False in MCP context)

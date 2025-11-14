@@ -126,19 +126,39 @@ class Changelist(BaseModel):
         """
         return cls.model_validate(data)
 
-    def get_metadata_text(self) -> str:
-        """Combine message + files + comments for embedding.
+    def get_metadata_text(self, max_files: int = 100, max_message_bytes: int = 16384) -> str:
+        """Combine message + files + comments for embedding with size limits.
         
         This creates the text that will be used for metadata embeddings,
         combining the commit message, file list, and review comments into
-        a single string suitable for embedding generation.
+        a single string suitable for embedding generation. Limits are applied
+        to prevent oversized metadata for commits with many files or verbose messages.
+        
+        Args:
+            max_files: Maximum number of files to include (default: 100)
+            max_message_bytes: Maximum commit message size in bytes (default: 16KB)
         
         Returns:
             Combined text string for metadata embedding
         """
+        # Truncate commit message if too large
+        message = self.message
+        message_bytes = len(message.encode('utf-8'))
+        if message_bytes > max_message_bytes:
+            bytes_truncated = message_bytes - max_message_bytes
+            encoded = message.encode('utf-8')[:max_message_bytes]
+            message = encoded.decode('utf-8', errors='ignore')
+            message += f"\n[...{bytes_truncated} bytes truncated]"
+        
+        # Limit file list
+        files_text = ', '.join(self.files[:max_files])
+        if len(self.files) > max_files:
+            omitted = len(self.files) - max_files
+            files_text += f"\n[...{omitted} files omitted]"
+        
         parts = [
-            f"Commit Message: {self.message}",
-            f"Files: {', '.join(self.files)}",
+            f"Commit Message: {message}",
+            f"Files: {files_text}",
         ]
         
         if self.review_comments:

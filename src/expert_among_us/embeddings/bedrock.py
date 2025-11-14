@@ -1,7 +1,7 @@
 import boto3
 import json
 from .base import Embedder
-from typing import List
+from typing import List, Optional, Callable
 from ..utils.debug import DebugLogger
 
 class BedrockEmbedder(Embedder):
@@ -47,10 +47,17 @@ class BedrockEmbedder(Embedder):
         
         return embedding
     
-    def embed_batch(self, texts: List[str]) -> List[List[float]]:
+    def embed_batch(
+        self,
+        texts: List[str],
+        progress_callback: Optional[Callable[[int, int], None]] = None
+    ) -> List[List[float]]:
         embeddings = []
-        for text in texts:
+        total = len(texts)
+        for i, text in enumerate(texts):
             embeddings.append(self.embed(text))
+            if progress_callback:
+                progress_callback(i + 1, total)
         return embeddings
     
     @property

@@ -9,7 +9,7 @@ from expert_among_us.utils.chunking import chunk_text_with_lines
 from expert_among_us.utils.truncate import is_binary_file
 from expert_among_us.utils.sanitization import TextSanitizer
 from expert_among_us.utils.progress import console, log_info
-from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, MofNCompleteColumn
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, MofNCompleteColumn, TaskID, TimeElapsedColumn, TimeRemainingColumn
 
 
 class Indexer:
@@ -49,17 +49,46 @@ class Indexer:
         # so search results show original content while embeddings are clean
         self.sanitizer = TextSanitizer()
 
+        # Description constants for progress tasks
+        self._TASK_DESC_FILE_READ = "[cyan]  ├─ Reading from VCS"
+        self._TASK_DESC_FILE_EMBED = "[cyan]  ├─ Embedding file chunks"
+        self._TASK_DESC_FILE_STORE = "[cyan]  ├─ Storing file data"
+        self._TASK_DESC_COMMIT_META = "[cyan]  ├─ Embedding commit metadata"
+        self._TASK_DESC_COMMIT_DIFF = "[cyan]  ├─ Embedding commit diffs"
+        self._TASK_DESC_COMMIT_STORE = "[cyan]  └─ Storing commit data"
+
+        # Progress task IDs for persistent multi-level display
+        self._overall_task: Optional[TaskID] = None
+        # File operation tasks
+        self._file_read_task: Optional[TaskID] = None
+        self._file_embed_task: Optional[TaskID] = None
+        self._file_store_task: Optional[TaskID] = None
+        # Commit operation tasks
+        self._commit_meta_task: Optional[TaskID] = None
+        self._commit_diff_task: Optional[TaskID] = None
+        self._commit_store_task: Optional[TaskID] = None
+
         # Rich Progress is opt-in and used ONLY for:
         # - Processing files into databases
         # - Processing commits into databases
         # Guard all uses with `if self.progress` so it can be disabled easily.
         self.progress: Progress | None = Progress(
-            SpinnerColumn(),
             TextColumn("{task.description}"),
             BarColumn(),
             MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
             console=console,
         )
+
+    def _make_active_desc(self, base: str, detail: str) -> str:
+        """Add ➤ arrow and detail to base description"""
+        active = base.replace('  ├─', '➤ ├─').replace('  └─', '➤ └─')
+        return f"{active} ({detail})"
+
+    def _make_complete_desc(self, base: str, detail: str) -> str:
+        """Add detail to base description without arrow"""
+        return f"{base} ({detail})"
 
     def index_unified(self, batch_size: int = 100, start_after: Optional[str] = None):
         """Index both files and commits in a single pass.
@@ -107,66 +136,161 @@ class Indexer:
             return
 
         # Intro line before any processing: show constraints and starting point.
-        # We do not call into VCS here (to keep the interface simple); instead we rely on:
-        # - last_processed_id from metadata DB
-        # - commit timestamps carried on Changelist objects once batches are fetched
         console.print(
-            f"[green]Indexing {self.expert_config['name']}: {already_indexed}/{max_commits} commits = {last_processed_id or 'OLDEST'}, batch_size={batch_size}"
+            f"[green]Indexing {self.expert_config['name']}: {already_indexed}/{max_commits} commits = {last_processed_id or 'OLDEST'}, batch_size={batch_size}\n"
         )
 
-        while total_commits < max_commits:
-            # Fetch next batch of commits
-            batch = self.vcs.get_commits_after(
-                workspace_path=self.expert_config['workspace_path'],
-                after_hash=last_processed_id,
-                batch_size=batch_size,
-                subdirs=self.expert_config.get('subdirs')
+        # Single progress context for entire indexing operation
+        with self.progress:
+            # Create persistent progress tasks
+            self._overall_task = self.progress.add_task(
+                "[green]Overall: 0/0 commits",
+                total=max_commits,
+                completed=already_indexed
             )
-            
-            if not batch:
-                console.print(f"[green]All commits processed: {total_commits}/{max_commits}")
-                break
-
-            # Enforce max_commits across batches by trimming this batch if needed.
-            remaining_allowed = max_commits - total_commits
-            if remaining_allowed <= 0:
-                break
-            if len(batch) > remaining_allowed:
-                batch = batch[:remaining_allowed]
-            
-            # Collect unique file paths from batch
-            file_paths = set()
-            for commit in batch:
-                file_paths.update(commit.files)
-            
-            # Index files with progress
-            if file_paths:
-                existing, missing = self._check_file_existence(file_paths, batch[-1].id)
-
-                if existing:
-                    self._index_files_at_commit(existing, batch[-1].id)
-
-                if missing:
-                    for file_path in missing:
-                        self._delete_file_chunks(file_path)
-
-            # Index commits with batched embeddings + progress
-            self._index_commit_batch(batch)
-
-            # Update tracking
-            final_commit = batch[-1]
-            last_processed_id = final_commit.id
-            total_commits += len(batch)
-            self.metadata_db.update_last_processed_commit(
-                self.expert_config['name'],
-                last_processed_id,
+            # File operation tasks (total=1 prevents scrolling, start=True+stop prevents pulse and stops timer)
+            self._file_read_task = self.progress.add_task(
+                self._TASK_DESC_FILE_READ,
+                total=1,
+                visible=True,
+                start=True
             )
-
-            # Batch summary with final commit hash (continuation point) and its timestamp.
-            console.print(
-                f"[green]Progress: {total_commits}/{max_commits} commits "
-                f" -- {final_commit.id}, {final_commit.timestamp.strftime('%Y-%m-%d %H:%M:%S%z')})"
+            self.progress.stop_task(self._file_read_task)
+            
+            self._file_embed_task = self.progress.add_task(
+                self._TASK_DESC_FILE_EMBED,
+                total=1,
+                visible=True,
+                start=True
             )
+            self.progress.stop_task(self._file_embed_task)
+            
+            self._file_store_task = self.progress.add_task(
+                self._TASK_DESC_FILE_STORE,
+                total=1,
+                visible=True,
+                start=True
+            )
+            self.progress.stop_task(self._file_store_task)
+            
+            # Commit operation tasks (total=1 prevents scrolling, start=True+stop prevents pulse and stops timer)
+            self._commit_meta_task = self.progress.add_task(
+                self._TASK_DESC_COMMIT_META,
+                total=1,
+                visible=True,
+                start=True
+            )
+            self.progress.stop_task(self._commit_meta_task)
+            
+            self._commit_diff_task = self.progress.add_task(
+                self._TASK_DESC_COMMIT_DIFF,
+                total=1,
+                visible=True,
+                start=True
+            )
+            self.progress.stop_task(self._commit_diff_task)
+            
+            self._commit_store_task = self.progress.add_task(
+                self._TASK_DESC_COMMIT_STORE,
+                total=1,
+                visible=True,
+                start=True
+            )
+            self.progress.stop_task(self._commit_store_task)
+            
+            batch_num = 0
+            
+            while total_commits < max_commits:
+                # Fetch next batch of commits
+                batch = self.vcs.get_commits_after(
+                    workspace_path=self.expert_config['workspace_path'],
+                    after_hash=last_processed_id,
+                    batch_size=batch_size,
+                    subdirs=self.expert_config.get('subdirs')
+                )
+                
+                if not batch:
+                    console.print(f"[green]All commits processed: {total_commits}/{max_commits}")
+                    break
+                
+                # Print starting point on first batch only
+                if batch_num == 0:
+                    start_commit = batch[0]  # Oldest commit in first batch
+                    console.print(
+                        f"[green]🚀 Start: commit {start_commit.id}, "
+                        f"{start_commit.timestamp.strftime('%Y-%m-%d %H:%M:%S%z')}"
+                    )
+                
+                batch_num += 1
+                
+                # Reset all subtasks to inactive state for the new batch
+                # total=1 prevents scrolling, start=True+stop prevents pulse and stops timer
+                self.progress.update(self._file_read_task, description=self._TASK_DESC_FILE_READ, completed=0, total=1, start=True)
+                self.progress.stop_task(self._file_read_task)
+                
+                self.progress.update(self._file_embed_task, description=self._TASK_DESC_FILE_EMBED, completed=0, total=1, start=True)
+                self.progress.stop_task(self._file_embed_task)
+                
+                self.progress.update(self._file_store_task, description=self._TASK_DESC_FILE_STORE, completed=0, total=1, start=True)
+                self.progress.stop_task(self._file_store_task)
+                
+                self.progress.update(self._commit_meta_task, description=self._TASK_DESC_COMMIT_META, completed=0, total=1, start=True)
+                self.progress.stop_task(self._commit_meta_task)
+                
+                self.progress.update(self._commit_diff_task, description=self._TASK_DESC_COMMIT_DIFF, completed=0, total=1, start=True)
+                self.progress.stop_task(self._commit_diff_task)
+                
+                self.progress.update(self._commit_store_task, description=self._TASK_DESC_COMMIT_STORE, completed=0, total=1, start=True)
+                self.progress.stop_task(self._commit_store_task)
+
+                # Enforce max_commits across batches by trimming this batch if needed.
+                remaining_allowed = max_commits - total_commits
+                if remaining_allowed <= 0:
+                    break
+                if len(batch) > remaining_allowed:
+                    batch = batch[:remaining_allowed]
+                
+                # Collect unique file paths from batch
+                file_paths = set()
+                for commit in batch:
+                    file_paths.update(commit.files)
+                
+                # Index files with progress
+                if file_paths:
+                    existing, missing = self._check_file_existence(file_paths, batch[-1].id)
+
+                    if existing:
+                        self._index_files_at_commit(existing, batch[-1].id)
+
+                    if missing:
+                        for file_path in missing:
+                            self._delete_file_chunks(file_path)
+
+                # Index commits with batched embeddings + progress
+                self._index_commit_batch(batch)
+
+                # Update tracking
+                final_commit = batch[-1]
+                last_processed_id = final_commit.id
+                total_commits += len(batch)
+                self.metadata_db.update_last_processed_commit(
+                    self.expert_config['name'],
+                    last_processed_id,
+                )
+
+                # Batch summary with final commit hash (continuation point) and its timestamp.
+                console.print(
+                    f"[green]✅ Batch {batch_num}: "
+                    f"commit {final_commit.id}, "
+                    f"{final_commit.timestamp.strftime('%Y-%m-%d %H:%M:%S%z')}"
+                )
+                
+                # Update overall progress
+                self.progress.update(
+                    self._overall_task,
+                    completed=total_commits,
+                    description=f"[green]Overall: {total_commits}/{max_commits} commits (batch {batch_num})"
+                )
 
         # If loop exited because total_commits hit max_commits, print a clear message.
         if total_commits >= max_commits:
@@ -218,23 +342,21 @@ class Indexer:
         if not file_paths:
             return
 
-        # Create progress bar for file reading
-        file_read_task_id = None
-        if self.progress:
-            if self.progress.finished:
-                self.progress.start()
-            file_read_task_id = self.progress.add_task(
-                f"[cyan]Reading {len(file_paths)} files from VCS",
-                total=len(file_paths),
-            )
+        # Task 1: File reading with progress
+        self.progress.start_task(self._file_read_task)
+        self.progress.update(
+            self._file_read_task,
+            description=self._make_active_desc(self._TASK_DESC_FILE_READ, f"{len(file_paths)} files"),
+            total=len(file_paths),
+            completed=0
+        )
 
         # Define progress callback for VCS provider
         def update_file_progress(current: int, total: int) -> None:
             """Called by VCS provider after each batch of files is read."""
-            if self.progress and file_read_task_id is not None:
-                self.progress.update(file_read_task_id, completed=current)
+            self.progress.update(self._file_read_task, completed=current)
 
-        # Phase 1: Batched read from VCS with progress tracking.
+        # Batched read from VCS with progress tracking
         contents_by_path = self.vcs.get_files_content_at_commit(
             workspace_path=self.expert_config["workspace_path"],
             file_paths=list(file_paths),
@@ -242,11 +364,13 @@ class Indexer:
             progress_callback=update_file_progress,
         )
 
-        # Clean up progress bar
-        if self.progress and file_read_task_id is not None:
-            self.progress.remove_task(file_read_task_id)
-            # Stop after commit processing so tqdm has uncontested control before any subsequent embedding phases.
-            self.progress.stop()
+        # Update description to show completion details
+        files_to_read = len(file_paths)
+        self.progress.update(
+            self._file_read_task,
+            description=self._make_complete_desc(self._TASK_DESC_FILE_READ, f"{files_to_read} files")
+        )
+        self.progress.stop_task(self._file_read_task)
 
         file_chunks_map: dict[str, list[tuple[str, int, int]]] = {}
         total_chunks = 0
@@ -290,25 +414,61 @@ class Indexer:
                     )
                 )
 
-        # Phase 2: Embedding (tqdm-only). No rich progress here.
-        console.print(f"[blue]Embedding {total_chunks} chunks from {len(file_paths)} files...")
+        # Task 2: Embedding with progress
+        self.progress.start_task(self._file_embed_task)
+        self.progress.update(
+            self._file_embed_task,
+            description=self._make_active_desc(self._TASK_DESC_FILE_EMBED, f"{total_chunks} chunks"),
+            total=len(all_chunks),
+            completed=0
+        )
+        
+        def update_embed_progress(current: int, total: int) -> None:
+            self.progress.update(self._file_embed_task, completed=current)
         
         # Sanitize content before embedding to reduce high-entropy noise (if enabled)
         if self.settings.enable_sanitization:
             sanitized_contents = [self.sanitizer.sanitize(c.content) for c in all_chunks]
         else:
             sanitized_contents = [c.content for c in all_chunks]
-        embeddings = self.embedder.embed_batch(sanitized_contents)
+        
+        embeddings = self.embedder.embed_batch(
+            sanitized_contents,
+            progress_callback=update_embed_progress
+        )
+        
+        # Update description to show completion details
+        self.progress.update(
+            self._file_embed_task,
+            description=self._make_complete_desc(self._TASK_DESC_FILE_EMBED, f"{total_chunks} chunks")
+        )
+        self.progress.stop_task(self._file_embed_task)
 
-        # Phase 3: Storage - optional rich progress is handled inside _store_file_chunks
-        self._store_file_chunks(all_chunks, embeddings)
+        # Task 3: Storage with progress
+        self.progress.start_task(self._file_store_task)
+        self.progress.update(
+            self._file_store_task,
+            description=self._make_active_desc(self._TASK_DESC_FILE_STORE, f"{len(file_chunks_map)} files"),
+            total=len(file_chunks_map),
+            completed=0
+        )
+        
+        self._store_file_chunks(all_chunks, embeddings, self._file_store_task)
+        
+        # Update description to show completion details
+        self.progress.update(
+            self._file_store_task,
+            description=self._make_complete_desc(self._TASK_DESC_FILE_STORE, f"{len(file_chunks_map)} files")
+        )
+        self.progress.stop_task(self._file_store_task)
     
-    def _store_file_chunks(self, chunks: List[FileChunk], embeddings: List[List[float]]):
+    def _store_file_chunks(self, chunks: List[FileChunk], embeddings: List[List[float]], task_id: TaskID):
         """Store file chunks in both databases.
 
-        Rich progress (if enabled) is used NARROWLY to track:
-        - Per-file completion of (metadata + chunks + vectors).
-        Embedding progress is handled exclusively by sentence_transformers/tqdm.
+        Args:
+            chunks: List of file chunks to store
+            embeddings: Corresponding embeddings for each chunk
+            task_id: Progress task ID for tracking storage progress
         """
         from collections import defaultdict
 
@@ -324,17 +484,6 @@ class Indexer:
         vector_by_id: dict[str, list[float]] = {}
         for chunk, embedding in zip(chunks, embeddings):
             vector_by_id[chunk.get_chroma_id()] = embedding
-
-        file_task_id = None
-        if self.progress:
-            # Restart progress dedicated to post-embedding file processing.
-            # Reading-files progress was stopped before embedding to keep tqdm clean.
-            if self.progress.finished:
-                self.progress.start()
-            file_task_id = self.progress.add_task(
-                "[green]Processing files (chunks + vectors)",
-                total=len(chunks_by_file),
-            )
 
         # Insert per-file metadata, chunks, and vectors
         for file_path, file_chunks in chunks_by_file.items():
@@ -360,20 +509,12 @@ class Indexer:
             if vectors_for_file:
                 self.vector_db.insert_files(vectors_for_file)
 
-            if self.progress and file_task_id is not None:
-                self.progress.update(file_task_id, advance=1)
-
-        if self.progress and file_task_id is not None:
-            self.progress.remove_task(file_task_id)
-            # Stop after commit processing so tqdm has uncontested control before any subsequent embedding phases.
-            self.progress.stop()
+            self.progress.update(task_id, advance=1)
     
     def _index_commit_batch(self, batch: list[Changelist]) -> None:
         """Process commits with batched embeddings.
 
-        Rich progress (if enabled) is used ONLY for:
-        - Per-commit completion when writing to databases.
-        Embedding itself uses only sentence_transformers/tqdm.
+        Uses progress tasks for each phase: metadata embedding, diff embedding, and storage.
         """
         if not batch:
             return
@@ -393,68 +534,102 @@ class Indexer:
                 diff_chunk_texts.append(chunk_text)
                 diff_chunk_keys.append((commit.id, idx))
 
-        try:
-            # Batch 1: metadata embeddings (tqdm-only)
-            console.print(f"[blue]Embedding {len(metadata_texts)} commit descriptions...")
+        # Task 1: Metadata embeddings
+        self.progress.start_task(self._commit_meta_task)
+        self.progress.update(
+            self._commit_meta_task,
+            description=self._make_active_desc(self._TASK_DESC_COMMIT_META, f"{len(metadata_texts)} items"),
+            total=len(metadata_texts),
+            completed=0
+        )
+        
+        def update_meta_progress(current: int, total: int) -> None:
+            self.progress.update(self._commit_meta_task, completed=current)
+        
+        # Sanitize metadata before embedding to reduce high-entropy noise (if enabled)
+        if self.settings.enable_sanitization:
+            sanitized_metadata = [self.sanitizer.sanitize(text) for text in metadata_texts]
+        else:
+            sanitized_metadata = metadata_texts
+        
+        metadata_embeddings = self.embedder.embed_batch(
+            sanitized_metadata,
+            progress_callback=update_meta_progress
+        )
+        
+        # Update description to show completion details
+        self.progress.update(
+            self._commit_meta_task,
+            description=self._make_complete_desc(self._TASK_DESC_COMMIT_META, f"{len(metadata_texts)} items")
+        )
+        self.progress.stop_task(self._commit_meta_task)
+
+        # Task 2: Diff embeddings (conditional)
+        diff_embeddings: list[list[float]] = []
+        if diff_chunk_texts:
+            self.progress.start_task(self._commit_diff_task)
+            self.progress.update(
+                self._commit_diff_task,
+                description=self._make_active_desc(self._TASK_DESC_COMMIT_DIFF, f"{len(diff_chunk_texts)} chunks"),
+                total=len(diff_chunk_texts),
+                completed=0
+            )
             
-            # Sanitize metadata before embedding to reduce high-entropy noise (if enabled)
+            def update_diff_progress(current: int, total: int) -> None:
+                self.progress.update(self._commit_diff_task, completed=current)
+            
+            # Sanitize diff chunks before embedding to reduce high-entropy noise (if enabled)
             if self.settings.enable_sanitization:
-                sanitized_metadata = [self.sanitizer.sanitize(text) for text in metadata_texts]
+                sanitized_diffs = [self.sanitizer.sanitize(text) for text in diff_chunk_texts]
             else:
-                sanitized_metadata = metadata_texts
-            metadata_embeddings = self.embedder.embed_batch(sanitized_metadata)
+                sanitized_diffs = diff_chunk_texts
+            
+            diff_embeddings = self.embedder.embed_batch(
+                sanitized_diffs,
+                progress_callback=update_diff_progress
+            )
+            
+            # Update description to show completion details
+            self.progress.update(
+                self._commit_diff_task,
+                description=self._make_complete_desc(self._TASK_DESC_COMMIT_DIFF, f"{len(diff_chunk_texts)} chunks")
+            )
+            self.progress.stop_task(self._commit_diff_task)
 
-            # Batch 2: diff embeddings (tqdm-only, may be empty)
-            diff_embeddings: list[list[float]] = []
-            if diff_chunk_texts:
-                console.print(f"[blue]Embedding {len(diff_chunk_texts)} diff chunks...")
-                
-                # Sanitize diff chunks before embedding to reduce high-entropy noise (if enabled)
-                if self.settings.enable_sanitization:
-                    sanitized_diffs = [self.sanitizer.sanitize(text) for text in diff_chunk_texts]
-                else:
-                    sanitized_diffs = diff_chunk_texts
-                diff_embeddings = self.embedder.embed_batch(sanitized_diffs)
+        # Build commit_id -> diff vectors mapping
+        from collections import defaultdict
+        commit_diff_vectors: dict[str, list[tuple[str, list[float]]]] = defaultdict(list)
+        for (commit_id, chunk_idx), emb in zip(diff_chunk_keys, diff_embeddings):
+            vector_id = f"{commit_id}_chunk_{chunk_idx}"
+            commit_diff_vectors[commit_id].append((vector_id, emb))
 
-            # Build commit_id -> diff vectors mapping
-            from collections import defaultdict
-            commit_diff_vectors: dict[str, list[tuple[str, list[float]]]] = defaultdict(list)
-            for (commit_id, chunk_idx), emb in zip(diff_chunk_keys, diff_embeddings):
-                vector_id = f"{commit_id}_chunk_{chunk_idx}"
-                commit_diff_vectors[commit_id].append((vector_id, emb))
+        # Task 3: Storage
+        self.progress.start_task(self._commit_store_task)
+        self.progress.update(
+            self._commit_store_task,
+            description=self._make_active_desc(self._TASK_DESC_COMMIT_STORE, f"{len(batch)} commits"),
+            total=len(batch),
+            completed=0
+        )
 
-            # Optional rich progress for commit persistence (shared self.progress)
-            commit_task_id = None
-            if self.progress:
-                # Fresh bar for commit DB work only; embeddings are already done.
-                if self.progress.finished:
-                    self.progress.start()
-                commit_task_id = self.progress.add_task(
-                    "[blue]Processing commits (metadata + diffs)",
-                    total=len(batch),
-                )
+        # Store all metadata + diff vectors, updating progress per commit
+        for idx, commit in enumerate(batch):
+            metadata_emb = metadata_embeddings[idx]
 
-            # Store all metadata + diff vectors, updating progress per commit
-            for idx, commit in enumerate(batch):
-                metadata_emb = metadata_embeddings[idx]
+            # Store metadata
+            self.metadata_db.insert_changelists([commit])
+            self.vector_db.insert_metadata([(commit.id, metadata_emb)])
 
-                # Store metadata
-                self.metadata_db.insert_changelists([commit])
-                self.vector_db.insert_metadata([(commit.id, metadata_emb)])
+            # Store diffs for this commit, if any
+            diff_vectors = commit_diff_vectors.get(commit.id)
+            if diff_vectors:
+                self.vector_db.insert_diffs(diff_vectors)
 
-                # Store diffs for this commit, if any
-                diff_vectors = commit_diff_vectors.get(commit.id)
-                if diff_vectors:
-                    self.vector_db.insert_diffs(diff_vectors)
+            self.progress.update(self._commit_store_task, advance=1)
 
-                if self.progress and commit_task_id is not None:
-                    self.progress.update(commit_task_id, advance=1)
-
-            if self.progress and commit_task_id is not None:
-                self.progress.remove_task(commit_task_id)
-                # Stop after commit processing so tqdm has uncontested control before any subsequent embedding phases.
-                self.progress.stop()
-
-        finally:
-            # No additional lifecycle changes here.
-            pass
+        # Update description to show completion details
+        self.progress.update(
+            self._commit_store_task,
+            description=self._make_complete_desc(self._TASK_DESC_COMMIT_STORE, f"{len(batch)} commits")
+        )
+        self.progress.stop_task(self._commit_store_task)
