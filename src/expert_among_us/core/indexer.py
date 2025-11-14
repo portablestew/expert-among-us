@@ -9,7 +9,7 @@ from expert_among_us.utils.chunking import chunk_text_with_lines
 from expert_among_us.utils.truncate import is_binary_file
 from expert_among_us.utils.sanitization import TextSanitizer
 from expert_among_us.utils.progress import console, log_info
-from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, MofNCompleteColumn, TaskID, TimeElapsedColumn, TimeRemainingColumn
+from rich.progress import Progress, BarColumn, TextColumn, MofNCompleteColumn, TaskID, TimeElapsedColumn, TimeRemainingColumn
 
 
 class Indexer:
@@ -49,12 +49,12 @@ class Indexer:
         # so search results show original content while embeddings are clean
         self.sanitizer = TextSanitizer()
 
-        # Description constants for progress tasks
-        self._TASK_DESC_FILE_READ = "[cyan]  ├─ Reading from VCS"
+        # Static description constants for progress tasks
+        self._TASK_DESC_FILE_READ = "[cyan]  ├─ Reading files from VCS"
         self._TASK_DESC_FILE_EMBED = "[cyan]  ├─ Embedding file chunks"
         self._TASK_DESC_FILE_STORE = "[cyan]  ├─ Storing file data"
         self._TASK_DESC_COMMIT_META = "[cyan]  ├─ Embedding commit metadata"
-        self._TASK_DESC_COMMIT_DIFF = "[cyan]  ├─ Embedding commit diffs"
+        self._TASK_DESC_COMMIT_DIFF = "[cyan]  ├─ Embedding diff chunks"
         self._TASK_DESC_COMMIT_STORE = "[cyan]  └─ Storing commit data"
 
         # Progress task IDs for persistent multi-level display
@@ -81,14 +81,9 @@ class Indexer:
             console=console,
         )
 
-    def _make_active_desc(self, base: str, detail: str) -> str:
-        """Add ➤ arrow and detail to base description"""
-        active = base.replace('  ├─', '➤ ├─').replace('  └─', '➤ └─')
-        return f"{active} ({detail})"
-
-    def _make_complete_desc(self, base: str, detail: str) -> str:
-        """Add detail to base description without arrow"""
-        return f"{base} ({detail})"
+    def _add_arrow(self, desc: str) -> str:
+        """Add ➤ arrow to indicate active task"""
+        return desc.replace('  ├─', '➤ ├─').replace('  └─', '➤ └─')
 
     def index_unified(self, batch_size: int = 100, start_after: Optional[str] = None):
         """Index both files and commits in a single pass.
@@ -101,6 +96,7 @@ class Indexer:
             batch_size: Maximum commits per batch
             start_after: Optional commit hash to start indexing from (for testing specific commits)
         """
+        workspace_path=self.expert_config["workspace_path"]
         
         # Get starting point
         # Override with start_after if provided (for testing specific commits)
@@ -118,7 +114,7 @@ class Indexer:
         # Total available commits according to VCS; clamp max_commits to this so we don't
         # overrun or show misleading progress when there are fewer commits than the cap.
         total_available = self.vcs.get_total_commit_count(
-            workspace_path=self.expert_config["workspace_path"],
+            workspace_path=workspace_path,
             subdirs=self.expert_config.get("subdirs"),
         )
 
@@ -144,7 +140,7 @@ class Indexer:
         with self.progress:
             # Create persistent progress tasks
             self._overall_task = self.progress.add_task(
-                "[green]Overall: 0/0 commits",
+                f"[green]Indexing commits: {workspace_path}",
                 total=max_commits,
                 completed=already_indexed
             )
@@ -203,7 +199,7 @@ class Indexer:
             while total_commits < max_commits:
                 # Fetch next batch of commits
                 batch = self.vcs.get_commits_after(
-                    workspace_path=self.expert_config['workspace_path'],
+                    workspace_path=workspace_path,
                     after_hash=last_processed_id,
                     batch_size=batch_size,
                     subdirs=self.expert_config.get('subdirs')
@@ -288,8 +284,7 @@ class Indexer:
                 # Update overall progress
                 self.progress.update(
                     self._overall_task,
-                    completed=total_commits,
-                    description=f"[green]Overall: {total_commits}/{max_commits} commits (batch {batch_num})"
+                    completed=total_commits
                 )
 
         # If loop exited because total_commits hit max_commits, print a clear message.
@@ -346,7 +341,7 @@ class Indexer:
         self.progress.start_task(self._file_read_task)
         self.progress.update(
             self._file_read_task,
-            description=self._make_active_desc(self._TASK_DESC_FILE_READ, f"{len(file_paths)} files"),
+            description=self._add_arrow(self._TASK_DESC_FILE_READ),
             total=len(file_paths),
             completed=0
         )
@@ -364,12 +359,8 @@ class Indexer:
             progress_callback=update_file_progress,
         )
 
-        # Update description to show completion details
-        files_to_read = len(file_paths)
-        self.progress.update(
-            self._file_read_task,
-            description=self._make_complete_desc(self._TASK_DESC_FILE_READ, f"{files_to_read} files")
-        )
+        # Remove arrow on completion
+        self.progress.update(self._file_read_task, description=self._TASK_DESC_FILE_READ)
         self.progress.stop_task(self._file_read_task)
 
         file_chunks_map: dict[str, list[tuple[str, int, int]]] = {}
@@ -418,7 +409,7 @@ class Indexer:
         self.progress.start_task(self._file_embed_task)
         self.progress.update(
             self._file_embed_task,
-            description=self._make_active_desc(self._TASK_DESC_FILE_EMBED, f"{total_chunks} chunks"),
+            description=self._add_arrow(self._TASK_DESC_FILE_EMBED),
             total=len(all_chunks),
             completed=0
         )
@@ -437,29 +428,23 @@ class Indexer:
             progress_callback=update_embed_progress
         )
         
-        # Update description to show completion details
-        self.progress.update(
-            self._file_embed_task,
-            description=self._make_complete_desc(self._TASK_DESC_FILE_EMBED, f"{total_chunks} chunks")
-        )
+        # Remove arrow on completion
+        self.progress.update(self._file_embed_task, description=self._TASK_DESC_FILE_EMBED)
         self.progress.stop_task(self._file_embed_task)
 
         # Task 3: Storage with progress
         self.progress.start_task(self._file_store_task)
         self.progress.update(
             self._file_store_task,
-            description=self._make_active_desc(self._TASK_DESC_FILE_STORE, f"{len(file_chunks_map)} files"),
+            description=self._add_arrow(self._TASK_DESC_FILE_STORE),
             total=len(file_chunks_map),
             completed=0
         )
         
         self._store_file_chunks(all_chunks, embeddings, self._file_store_task)
         
-        # Update description to show completion details
-        self.progress.update(
-            self._file_store_task,
-            description=self._make_complete_desc(self._TASK_DESC_FILE_STORE, f"{len(file_chunks_map)} files")
-        )
+        # Remove arrow on completion
+        self.progress.update(self._file_store_task, description=self._TASK_DESC_FILE_STORE)
         self.progress.stop_task(self._file_store_task)
     
     def _store_file_chunks(self, chunks: List[FileChunk], embeddings: List[List[float]], task_id: TaskID):
@@ -538,7 +523,7 @@ class Indexer:
         self.progress.start_task(self._commit_meta_task)
         self.progress.update(
             self._commit_meta_task,
-            description=self._make_active_desc(self._TASK_DESC_COMMIT_META, f"{len(metadata_texts)} items"),
+            description=self._add_arrow(self._TASK_DESC_COMMIT_META),
             total=len(metadata_texts),
             completed=0
         )
@@ -557,11 +542,8 @@ class Indexer:
             progress_callback=update_meta_progress
         )
         
-        # Update description to show completion details
-        self.progress.update(
-            self._commit_meta_task,
-            description=self._make_complete_desc(self._TASK_DESC_COMMIT_META, f"{len(metadata_texts)} items")
-        )
+        # Remove arrow on completion
+        self.progress.update(self._commit_meta_task, description=self._TASK_DESC_COMMIT_META)
         self.progress.stop_task(self._commit_meta_task)
 
         # Task 2: Diff embeddings (conditional)
@@ -570,7 +552,7 @@ class Indexer:
             self.progress.start_task(self._commit_diff_task)
             self.progress.update(
                 self._commit_diff_task,
-                description=self._make_active_desc(self._TASK_DESC_COMMIT_DIFF, f"{len(diff_chunk_texts)} chunks"),
+                description=self._add_arrow(self._TASK_DESC_COMMIT_DIFF),
                 total=len(diff_chunk_texts),
                 completed=0
             )
@@ -589,11 +571,8 @@ class Indexer:
                 progress_callback=update_diff_progress
             )
             
-            # Update description to show completion details
-            self.progress.update(
-                self._commit_diff_task,
-                description=self._make_complete_desc(self._TASK_DESC_COMMIT_DIFF, f"{len(diff_chunk_texts)} chunks")
-            )
+            # Remove arrow on completion
+            self.progress.update(self._commit_diff_task, description=self._TASK_DESC_COMMIT_DIFF)
             self.progress.stop_task(self._commit_diff_task)
 
         # Build commit_id -> diff vectors mapping
@@ -607,7 +586,7 @@ class Indexer:
         self.progress.start_task(self._commit_store_task)
         self.progress.update(
             self._commit_store_task,
-            description=self._make_active_desc(self._TASK_DESC_COMMIT_STORE, f"{len(batch)} commits"),
+            description=self._add_arrow(self._TASK_DESC_COMMIT_STORE),
             total=len(batch),
             completed=0
         )
@@ -627,9 +606,6 @@ class Indexer:
 
             self.progress.update(self._commit_store_task, advance=1)
 
-        # Update description to show completion details
-        self.progress.update(
-            self._commit_store_task,
-            description=self._make_complete_desc(self._TASK_DESC_COMMIT_STORE, f"{len(batch)} commits")
-        )
+        # Remove arrow on completion
+        self.progress.update(self._commit_store_task, description=self._TASK_DESC_COMMIT_STORE)
         self.progress.stop_task(self._commit_store_task)
