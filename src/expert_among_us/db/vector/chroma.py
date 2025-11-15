@@ -4,6 +4,9 @@ from pathlib import Path
 from typing import Optional
 from expert_among_us.db.vector.base import VectorDB, VectorSearchResult
 
+# Safe batch size for ChromaDB operations (below internal limit of ~5461)
+CHROMA_MAX_BATCH_SIZE = 5000
+
 class ChromaVectorDB(VectorDB):
     def __init__(self, expert_name: str, data_dir: Optional[Path] = None):
         base_dir = data_dir or Path.home() / ".expert-among-us"
@@ -59,44 +62,51 @@ class ChromaVectorDB(VectorDB):
             metadata={"dimension": dimension, "hnsw:space": "cosine"}
         )
     
+    def _batch_upsert(self, collection, vectors: list[tuple[str, list[float]]]) -> None:
+        """Helper to batch large upserts into safe chunks.
+        
+        ChromaDB has an internal maximum batch size (~5461) to prevent memory overload.
+        This method splits large batches into smaller sub-batches to avoid exceeding that limit.
+        
+        Args:
+            collection: ChromaDB collection to insert into
+            vectors: List of (id, embedding) tuples to insert
+        """
+        if not vectors:
+            return
+            
+        for i in range(0, len(vectors), CHROMA_MAX_BATCH_SIZE):
+            batch = vectors[i:i + CHROMA_MAX_BATCH_SIZE]
+            ids = [v[0] for v in batch]
+            embeddings = [v[1] for v in batch]
+            collection.upsert(embeddings=embeddings, ids=ids)
+    
     def insert_vectors(self, vectors: list[tuple[str, list[float]]]) -> None:
         """Insert or update vectors in a batch operation (idempotent)."""
         self._ensure_client()
         if not self.metadata_collection:
             raise RuntimeError("Collection not initialized. Call initialize() first.")
         
-        ids = [v[0] for v in vectors]
-        embeddings = [v[1] for v in vectors]
-        # Use upsert instead of add to make re-indexing idempotent
-        # This will update existing embeddings or insert new ones
-        self.metadata_collection.upsert(
-            embeddings=embeddings,
-            ids=ids
-        )
+        # Use batching to handle large inserts without exceeding ChromaDB limits
+        self._batch_upsert(self.metadata_collection, vectors)
     
     def insert_metadata(self, vectors: list[tuple[str, list[float]]]) -> None:
         """Insert commit metadata vectors."""
         if not self.metadata_collection:
             raise RuntimeError("Collection not initialized. Call initialize() first.")
-        ids = [v[0] for v in vectors]
-        embeddings = [v[1] for v in vectors]
-        self.metadata_collection.upsert(embeddings=embeddings, ids=ids)
+        self._batch_upsert(self.metadata_collection, vectors)
 
     def insert_diffs(self, vectors: list[tuple[str, list[float]]]) -> None:
         """Insert diff chunk vectors."""
         if not self.diff_collection:
             raise RuntimeError("Collection not initialized. Call initialize() first.")
-        ids = [v[0] for v in vectors]
-        embeddings = [v[1] for v in vectors]
-        self.diff_collection.upsert(embeddings=embeddings, ids=ids)
+        self._batch_upsert(self.diff_collection, vectors)
 
     def insert_files(self, vectors: list[tuple[str, list[float]]]) -> None:
         """Insert file content chunk vectors."""
         if not self.file_collection:
             raise RuntimeError("Collection not initialized. Call initialize() first.")
-        ids = [v[0] for v in vectors]
-        embeddings = [v[1] for v in vectors]
-        self.file_collection.upsert(embeddings=embeddings, ids=ids)
+        self._batch_upsert(self.file_collection, vectors)
         
     def search(self, query_vector: list[float], top_k: int) -> list[VectorSearchResult]:
         """Search for similar vectors and return results sorted by similarity."""

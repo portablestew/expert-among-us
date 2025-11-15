@@ -382,7 +382,7 @@ class Indexer:
                 # If binary detection fails, skip conservatively.
                 continue
 
-            chunks = chunk_text_with_lines(content, chunk_size=8192)
+            chunks = chunk_text_with_lines(content, chunk_size=self.settings.file_chunk_size_bytes)
             if chunks:
                 file_chunks_map[file_path] = chunks
                 total_chunks += len(chunks)
@@ -514,7 +514,7 @@ class Indexer:
             metadata_texts.append(commit.get_metadata_text())
 
             # Diff chunks (0..N per commit)
-            diff_chunks = chunk_text_with_lines(commit.diff, chunk_size=8192)
+            diff_chunks = chunk_text_with_lines(commit.diff, chunk_size=self.settings.diff_chunk_size_bytes)
             for idx, (chunk_text, _, _) in enumerate(diff_chunks):
                 diff_chunk_texts.append(chunk_text)
                 diff_chunk_keys.append((commit.id, idx))

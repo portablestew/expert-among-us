@@ -152,7 +152,8 @@ class Settings(BaseSettings):
     max_commits: int = 50000
     max_metadata_embedding_size_bytes: int = 20000  # Maximum bytes for metadata embeddings (20KB)
     max_embedding_text_size_bytes: int = 100000  # Maximum bytes for diff before chunking (100KB)
-    diff_chunk_size_bytes: int = 8192  # Chunk size for diff embeddings (8KB)
+    file_chunk_size_bytes: int = 4096  # File content chunk size in characters (4KB)
+    diff_chunk_size_bytes: int = 4096  # Diff chunk size in characters (4KB)
     max_tokens_impostor: int = 8000
     max_tokens_prompt_gen: int = 1000
     max_diff_chars_for_llm: int = 80000  # Maximum diff characters to send to LLM (80KB)
@@ -171,8 +172,8 @@ class Settings(BaseSettings):
     cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-12-v2"  # Changed to L-12 for better quality
 
     # GPU tuning
-    embedding_batch_per_gb: int = 1.0  # GPU batch size for embeddings
-    reranking_batch_per_gb: int = 1.0  # GPU batch size for reranking
+    embedding_tokens_per_gb: int = 12288 # Max tokens per batch per GB of GPU memory
+    reranking_tokens_per_gb: int = 6144  # Cross-encoders need even more headroom
     
     # Multiprocessing settings
     enable_multiprocessing: bool = True  # Enable multiprocessing for embeddings (set to False in MCP context)

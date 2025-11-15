@@ -66,8 +66,11 @@ class ExpertConfig(BaseModel):
     max_embedding_text_size: int = Field(
         default=100000, ge=1, description="Max bytes for diff before chunking (100KB)"
     )
+    file_chunk_size_bytes: int = Field(
+        default=4096, ge=1, description="File content chunk size (4KB)"
+    )
     diff_chunk_size_bytes: int = Field(
-        default=8192, ge=1, description="Chunk size for diff embeddings (8KB)"
+        default=4096, ge=1, description="Chunk size for diff embeddings (4KB)"
     )
     embed_diffs: bool = Field(
         default=True, description="Whether to create diff embeddings"

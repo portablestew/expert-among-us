@@ -20,9 +20,10 @@ from expert_among_us.utils.debug import DebugLogger
 # Automated users to exclude from changelist queries
 # These patterns use Perforce wildcard syntax (* for multiple chars)
 EXCLUDED_AUTOMATED_USERS = (
-    "*jenkins*",
-    "*builder*",
-    "lumbery@*",
+    # !!! Removed -- sometimes build jobs deliver useful commits, e.g. "preflight and commit" jobs
+    #"*jenkins*",
+    #"*builder*",
+    #"lumbery@*",
 )
 
 
@@ -249,11 +250,13 @@ class Perforce(VCSProvider):
             return self._cl_cache
         
         # Cache miss - fetch from Perforce
-        cmd = ["p4", "changes", "-E", "-s", "submitted"]
+        cmd = ["p4", "changes", "-s", "submitted"]
         
         # Add automated user exclusions
-        for user_pattern in EXCLUDED_AUTOMATED_USERS:
-            cmd.append(f"-u-{user_pattern}")
+        if EXCLUDED_AUTOMATED_USERS:
+            cmd.append("-E")
+            for user_pattern in EXCLUDED_AUTOMATED_USERS:
+                cmd.append(f"-u-{user_pattern}")
         
         if subdirs:
             # Convert local paths to depot paths
