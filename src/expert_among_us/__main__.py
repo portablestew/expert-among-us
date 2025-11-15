@@ -269,10 +269,8 @@ def populate(
             
         except Exception as e:
             log_error(f"Unified indexing failed: {str(e)}")
-            if debug:
-                raise
-            else:
-                log_info("Indexing may have been interrupted - try again to resume")
+            log_info("Indexing may have been interrupted - try again to resume")
+            raise  # Always show full stack trace
         
         # Update expert index time
         metadata_db.update_expert_index_time(expert_config.name, datetime.now(timezone.utc))
@@ -737,9 +735,7 @@ def prompt(
         sys.exit(0)
     except Exception as e:
         log_error(f"Failed to generate recommendations: {str(e)}")
-        if debug:
-            raise
-        sys.exit(1)
+        raise  # Always show full stack trace
 
 
 @main.command()
