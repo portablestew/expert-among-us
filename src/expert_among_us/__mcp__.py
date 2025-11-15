@@ -29,6 +29,9 @@ from typing import Any, Optional, List
 # Global variable to store LLM provider choice
 _llm_provider = "auto"
 
+# Global variable to store data directory
+_data_dir: Optional[Path] = None
+
 from mcp.server import Server
 from mcp.server.lowlevel import NotificationOptions
 from mcp.server.models import InitializationOptions
@@ -63,7 +66,7 @@ async def list_tools() -> list[Tool]:
     
     # Generate dynamic expert list for tool descriptions
     try:
-        experts = list_experts(data_dir=None)
+        experts = list_experts(data_dir=_data_dir)
         
         if not experts:
             expert_list = "\n\n**Currently Available Experts:** None yet. Create one using the CLI 'populate' command."
@@ -265,7 +268,7 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
 async def handle_list() -> list[TextContent]:
     """Handle list tool - list all experts."""
     try:
-        experts = list_experts(data_dir=None)
+        experts = list_experts(data_dir=_data_dir)
         
         if not experts:
             return [TextContent(
@@ -308,7 +311,7 @@ async def handle_import(source_path: str) -> list[TextContent]:
     try:
         expert_name = import_expert(
             source_path=Path(source_path),
-            data_dir=None
+            data_dir=_data_dir
         )
         
         return [TextContent(
@@ -353,7 +356,7 @@ async def handle_query(
             users=users,
             files=files,
             search_scope=search_scope,
-            data_dir=None,
+            data_dir=_data_dir,
             embedding_provider="local",
             llm_provider=_llm_provider,
             enable_multiprocessing=False,
@@ -459,7 +462,7 @@ async def handle_prompt(
             amogus=amogus,
             impostor=impostor,
             temperature=temperature,
-            data_dir=None,
+            data_dir=_data_dir,
             embedding_provider="local",
             llm_provider=_llm_provider,
             enable_multiprocessing=False,
@@ -541,6 +544,10 @@ async def main():
     
     # Store LLM provider choice in global variable
     _llm_provider = args.llm_provider
+    
+    # Store data_dir in global variable
+    global _data_dir
+    _data_dir = args.data_dir
     
     # Get PID for log file name
     pid = os.getpid()
