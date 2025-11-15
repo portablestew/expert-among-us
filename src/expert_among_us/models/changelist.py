@@ -126,7 +126,7 @@ class Changelist(BaseModel):
         """
         return cls.model_validate(data)
 
-    def get_metadata_text(self, max_files: int = 100, max_message_bytes: int = 16384) -> str:
+    def get_metadata_text(self, max_files: int = 100, max_message_bytes: int = 4096, max_files_bytes: int = 4096) -> str:
         """Combine message + files + comments for embedding with size limits.
         
         This creates the text that will be used for metadata embeddings,
@@ -136,7 +136,8 @@ class Changelist(BaseModel):
         
         Args:
             max_files: Maximum number of files to include (default: 100)
-            max_message_bytes: Maximum commit message size in bytes (default: 16KB)
+            max_message_bytes: Maximum commit message size in bytes (default: 4KB)
+            max_files_bytes: Maximum file list size in bytes (default: 4KB)
         
         Returns:
             Combined text string for metadata embedding
@@ -150,9 +151,35 @@ class Changelist(BaseModel):
             message = encoded.decode('utf-8', errors='ignore')
             message += f"\n[...{bytes_truncated} bytes truncated]"
         
-        # Limit file list
-        files_text = ', '.join(self.files[:max_files])
-        if len(self.files) > max_files:
+        # Build file list with byte-aware truncation at file boundaries
+        files_list = self.files[:max_files]
+        files_text = ', '.join(files_list)
+        files_bytes = len(files_text.encode('utf-8'))
+        
+        if files_bytes > max_files_bytes:
+            # Truncate at file boundaries to avoid incomplete paths
+            included_count = 0
+            current_size = 0
+            
+            for file_path in files_list:
+                # Calculate size of this file entry (with comma separator if not first)
+                file_entry = file_path if included_count == 0 else f', {file_path}'
+                entry_size = len(file_entry.encode('utf-8'))
+                
+                # Stop if adding this file would exceed the limit
+                if current_size + entry_size > max_files_bytes:
+                    break
+                
+                current_size += entry_size
+                included_count += 1
+            
+            # Rebuild with only files that fit
+            files_text = ', '.join(files_list[:included_count])
+            omitted = len(self.files) - included_count
+            if omitted > 0:
+                files_text += f"\n[...{omitted} files omitted]"
+        elif len(self.files) > max_files:
+            # File count exceeded but byte limit not reached
             omitted = len(self.files) - max_files
             files_text += f"\n[...{omitted} files omitted]"
         

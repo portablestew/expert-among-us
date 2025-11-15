@@ -150,7 +150,7 @@ class Settings(BaseSettings):
     
     # Limits
     max_commits: int = 50000
-    max_metadata_embedding_size_bytes: int = 20000  # Maximum bytes for metadata embeddings (20KB)
+    max_metadata_embedding_size_bytes: int = 8192  # Maximum bytes for metadata embeddings (8KB)
     max_embedding_text_size_bytes: int = 100000  # Maximum bytes for diff before chunking (100KB)
     file_chunk_size_bytes: int = 4096  # File content chunk size in characters (4KB)
     diff_chunk_size_bytes: int = 4096  # Diff chunk size in characters (4KB)
