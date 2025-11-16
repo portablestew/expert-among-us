@@ -1,7 +1,7 @@
 """AWS Bedrock LLM provider implementation using Converse API."""
 
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, NoCredentialsError
 from typing import AsyncIterator, List, Optional, Dict, Any
 
 from .base import (
@@ -27,20 +27,28 @@ class BedrockLLM(LLMProvider):
     def __init__(
         self,
         region_name: str = "us-west-2",
-        profile_name: Optional[str] = None,
         enable_caching: bool = True,
     ):
-        """Initialize Bedrock client.
+        """Initialize Bedrock client with credential validation.
         
         Args:
             region_name: AWS region (default: us-west-2)
-            profile_name: AWS profile name (optional)
             enable_caching: Enable prompt caching for system and conversation history (default: True)
+            
+        Raises:
+            LLMError: If AWS credentials are not found or invalid
         """
-        session = boto3.Session(
-            region_name=region_name,
-            profile_name=profile_name
-        )
+        session = boto3.Session(region_name=region_name)
+        
+        # Validate credentials using STS GetCallerIdentity
+        try:
+            sts = session.client('sts')
+            sts.get_caller_identity()
+        except NoCredentialsError:
+            raise LLMError("AWS credentials not found. Configure AWS CLI or set environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY).")
+        except ClientError as e:
+            raise LLMError(f"Invalid AWS credentials: {e}")
+        
         self.client = session.client("bedrock-runtime")
         self.enable_caching = enable_caching
     

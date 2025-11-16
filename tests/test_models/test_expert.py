@@ -19,13 +19,11 @@ def test_expert_config_creation():
             name="TestExpert",
             workspace_path=workspace,
             vcs_type="git",
-            max_commits=5000,
         )
         
         assert config.name == "TestExpert"
         assert config.workspace_path == workspace
         assert config.vcs_type == "git"
-        assert config.max_commits == 5000
 
 
 def test_expert_config_validation_invalid_name():
@@ -85,7 +83,6 @@ def test_expert_config_defaults():
         config = ExpertConfig(name="TestExpert", workspace_path=workspace)
         
         assert config.vcs_type == "git"
-        assert config.max_commits == 10000
         assert config.max_embedding_text_size == 100000
         assert config.embed_diffs is True
         assert config.embed_metadata is True

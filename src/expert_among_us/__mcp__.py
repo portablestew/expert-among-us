@@ -32,6 +32,10 @@ _llm_provider = "auto"
 # Global variable to store data directory
 _data_dir: Optional[Path] = None
 
+# Global variables to store impostor and amogus modes
+_impostor_mode = False
+_amogus_mode = False
+
 from mcp.server import Server
 from mcp.server.lowlevel import NotificationOptions
 from mcp.server.models import InitializationOptions
@@ -82,7 +86,7 @@ async def list_tools() -> list[Tool]:
     
     return [
         Tool(
-            name="list",
+            name="experts-list",
             description=(
                 "List all indexed experts with their metadata (commit counts, time ranges, workspace paths). "
                 "Use this to discover available experts or check when they were last updated.\n\n"
@@ -101,12 +105,11 @@ async def list_tools() -> list[Tool]:
             }
         ),
         Tool(
-            name="import",
+            name="experts-import",
             description=(
                 "Import an expert from an external directory by creating a symlink. "
                 "Useful for accessing team-shared experts or experts stored on external/network drives. "
-                "The source directory must contain a valid expert (metadata.db file).\n\n"
-                "**Team collaboration:** Import experts created by colleagues to leverage their project knowledge without re-indexing the same repository."
+                "The source directory must contain a valid expert (metadata.db file)."
                 f"{expert_list}"
             ),
             inputSchema={
@@ -121,17 +124,13 @@ async def list_tools() -> list[Tool]:
             }
         ),
         Tool(
-            name="query",
+            name="expert-query",
             description=(
-                "The 'query' command searches an expert's commit history using semantic similarity. "
+                "The 'expert-query' tool searches an expert's commit history using semantic similarity. "
                 "It returns COMPLETE raw commit details (messages, diffs, files, authors) for your own analysis.\n\n"
                 "TRADEOFF: This returns full commit content which can consume significant context window tokens. "
-                "Prefer using 'prompt' instead for AI-synthesized insights at lower cost.\n\n"
-                "**When to use this over 'prompt':**\n"
-                "- You need complete commit details for custom analysis\n"
-                "- Detailed code review or pattern extraction\n"
-                "- The LLM's synthesis isn't sufficient for your needs\n\n"
-                "Best for: Custom analysis, detailed code review, pattern extraction, when you need complete commit details rather than AI summaries."
+                "Prefer using 'expert-prompt' instead for AI-synthesized insights at lower cost. "
+                "Use this tool to bypass AI summarization for: detailed code review, custom analysis, or manual pattern extraction."
                 f"{expert_list}"
             ),
             inputSchema={
@@ -143,67 +142,14 @@ async def list_tools() -> list[Tool]:
                     },
                     "prompt": {
                         "type": "string",
-                        "description": "Natural language description of what to search for. Semantic search works best with descriptive phrases rather than bare keywords (e.g., 'how authentication was implemented', 'bug fixes for memory leaks', 'performance optimization in caching layer')"
+                        "description":
+                            "Natural language question or task description. "
+                            "Prompt semantics should be in the form of a task or commit message."
+                            "Generally, it is best to pass the user's core prompt verbatim, stripping references to this tool and future instructions."
                     },
                     "max_changes": {
                         "type": "integer",
-                        "description": "Maximum number of commits to return (default: 20)",
-                        "default": 20
-                    },
-                    "users": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Optional: Filter by commit authors (e.g., ['alice', 'bob'])"
-                    },
-                    "files": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Optional: Filter by file paths (e.g., ['src/auth/', 'tests/'])"
-                    },
-                    "search_scope": {
-                        "type": "string",
-                        "enum": ["metadata", "diffs", "files", "all"],
-                        "description": "Search scope: 'all' (default), 'metadata' only, 'diffs' only, or 'files' only",
-                        "default": "all"
-                    }
-                },
-                "required": ["expert_name", "prompt"]
-            }
-        ),
-        Tool(
-            name="prompt",
-            description=(
-                "Get AI-powered recommendations that impersonate an expert based on their historical commit patterns.\n"
-                "**Always use expert-among-us 'prompt'** when asked questions about code potentially matching these repositories:\n"
-                f"{expert_list}"
-                "\n\n"
-                "Call 'prompt' to answer natural language questions and discover insights about the code base. "
-                "ALWAYS consult the expert FIRST using the 'prompt' tool to discover relevant context BEFORE reading code. "
-                "Topics include: established implementation patterns; evolutionary history; abandoned approaches; known bugs and regressions; "
-                "performance lessons; design decisions; test plans; and architectural rationale. "
-                "Sample questions: 'How does [feature] work?'; 'What is the best practice for [chore]?'; 'How was [bug] fixed?'; 'Explain the design of [module]'."
-                "\n\n"
-                "**Multi-Pass Exploration Encouraged:** Feel free to iterate. Start broad, then drill into specific areas: "
-                "1. 'How does authentication work?'; "
-                "2. 'Tell me more about [session management keywords]'; "
-                "3. 'What error handling was used for invalid tokens?' \n"
-                "**Prefer defaults:** Parameters like max_changes, users, files are tuned for optimal results. "
-                "Only override when you have a specific reason to narrow results."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "expert_name": {
-                        "type": "string",
-                        "description": "Name of the expert to query"
-                    },
-                    "prompt": {
-                        "type": "string",
-                        "description": "Natural language question or task description. Semantic search works best with full sentences rather than bare keywords (e.g., 'How should I implement caching?', 'What's the best way to handle authentication?', 'How did you approach error handling in the API layer?')"
-                    },
-                    "max_changes": {
-                        "type": "integer",
-                        "description": "Maximum context changes to use (default: 20)",
+                        "description": "Optional: Maximum context changes to use (default=20)",
                         "default": 20
                     },
                     "users": {
@@ -216,19 +162,60 @@ async def list_tools() -> list[Tool]:
                         "items": {"type": "string"},
                         "description": "Optional: Filter by file paths"
                     },
-                    "impostor": {
-                        "type": "boolean",
-                        "description": "Enable impostor mode: generates prompts from commits and presents them as conversation (enhances lackluster commit messages)",
-                        "default": False
+                    "search_scope": {
+                        "type": "string",
+                        "enum": ["metadata", "diffs", "files", "all"],
+                        "description": "Optional search scope: 'all' (default), 'metadata' only, 'diffs' only, or 'files' only",
+                        "default": "all"
+                    }
+                },
+                "required": ["expert_name", "prompt"]
+            }
+        ),
+        Tool(
+            name="expert-prompt",
+            description=(
+                "Get AI-powered recommendations that impersonate an expert based on their historical commit patterns. "
+                "**Always use 'expert-prompt'** when asked questions about the content of these repositories:\n"
+                f"{expert_list}"
+                "\n\n"
+                "Call 'expert-prompt' to answer natural language questions about the code base: locate matching files and find new insights. "
+                "ALWAYS consult the expert FIRST by using this tool. Results are based on historical context and contain deep high-level insights."
+                "Validate results: historical context may not be up-to-date. Use the information returned to guide narrower file searches.\n\n"
+                "**Prefer defaults:** Parameters like max_changes, users, files are already tuned for optimal results. "
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "expert_name": {
+                        "type": "string",
+                        "description": "Name of the expert to query"
                     },
-                    "amogus": {
-                        "type": "boolean",
-                        "description": "⚠️ DO NOT USE",
-                        "default": False
+                    "prompt": {
+                        "type": "string",
+                        "description":
+                            "Natural language question or task description. "
+                            "Prompt semantics should be in the form of a task or commit message."
+                            "Generally, it is best to pass the user's core prompt verbatim, stripping references to this tool and future instructions."
+                    },
+                    "max_changes": {
+                        "type": "integer",
+                        "description": "Optional: Maximum context changes to use (default=20)",
+                        "default": 20
+                    },
+                    "users": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional: Filter by commit authors"
+                    },
+                    "files": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional: Filter by file paths"
                     },
                     "temperature": {
                         "type": "number",
-                        "description": "LLM temperature for generation (0.0-1.0, default: 0.7)",
+                        "description": "Optional: LLM temperature for generation (0.0-1.0, default: 0.7)",
                         "default": 0.7,
                         "minimum": 0.0,
                         "maximum": 1.0
@@ -244,13 +231,13 @@ async def list_tools() -> list[Tool]:
 async def call_tool(name: str, arguments: Any) -> list[TextContent]:
     """Handle tool calls."""
     try:
-        if name == "list":
+        if name == "experts-list":
             return await handle_list()
-        elif name == "import":
+        elif name == "experts-import":
             return await handle_import(**arguments)
-        elif name == "query":
+        elif name == "expert-query":
             return await handle_query(**arguments)
-        elif name == "prompt":
+        elif name == "expert-prompt":
             return await handle_prompt(**arguments)
         else:
             return [TextContent(
@@ -431,8 +418,6 @@ async def handle_prompt(
     max_changes: int = 20,
     users: Optional[List[str]] = None,
     files: Optional[List[str]] = None,
-    impostor: bool = False,
-    amogus: bool = False,
     temperature: float = 0.7
 ) -> list[TextContent]:
     """Handle prompt tool - get AI recommendations."""
@@ -442,7 +427,7 @@ async def handle_prompt(
     try:
         logger.info(f"[PROMPT] Starting prompt request for expert '{expert_name}'")
         logger.debug(f"[PROMPT] Prompt: {prompt[:100]}{'...' if len(prompt) > 100 else ''}")
-        logger.debug(f"[PROMPT] Params: max_changes={max_changes}, impostor={impostor}, temperature={temperature}")
+        logger.debug(f"[PROMPT] Params: max_changes={max_changes}, impostor={_impostor_mode}, temperature={temperature}")
         
         # Accumulate streaming response
         full_response = ""
@@ -459,8 +444,8 @@ async def handle_prompt(
             max_file_chunks=math.floor(max_changes / 2),
             users=users,
             files=files,
-            amogus=amogus,
-            impostor=impostor,
+            amogus=_amogus_mode,
+            impostor=_impostor_mode,
             temperature=temperature,
             data_dir=_data_dir,
             embedding_provider="local",
@@ -540,6 +525,16 @@ async def main():
         type=Path,
         help='Base directory for expert data storage (default: ~/.expert-among-us)',
     )
+    parser.add_argument(
+        '--impostor',
+        action='store_true',
+        help='Enable impostor mode: generates prompts from commits (enhances lackluster commit messages)',
+    )
+    parser.add_argument(
+        '--amogus',
+        action='store_true',
+        help='⚠️ DO NOT USE',
+    )
     args = parser.parse_args()
     
     # Store LLM provider choice in global variable
@@ -548,6 +543,11 @@ async def main():
     # Store data_dir in global variable
     global _data_dir
     _data_dir = args.data_dir
+    
+    # Store impostor and amogus modes in global variables
+    global _impostor_mode, _amogus_mode
+    _impostor_mode = args.impostor
+    _amogus_mode = args.amogus
     
     # Get PID for log file name
     pid = os.getpid()
@@ -607,6 +607,17 @@ async def main():
         logger.info(f"Local transformer models ready (took {warmup_time:.1f}s)")
     except Exception as e:
         logger.warning(f"Failed to warm up local embedder: {e}")
+    
+    # Pre-warm LLM provider to avoid first-call delays
+    logger.info(f"Pre-warming {settings.llm_provider} LLM provider...")
+    llm_warmup_start = time.time()
+    try:
+        from expert_among_us.llm.factory import create_llm_provider
+        create_llm_provider(settings)
+        llm_warmup_time = time.time() - llm_warmup_start
+        logger.info(f"LLM provider ready (took {llm_warmup_time:.1f}s)")
+    except Exception as e:
+        logger.warning(f"Failed to pre-warm LLM provider: {e}")
     
     # Run the server
     async with stdio_server() as (read_stream, write_stream):

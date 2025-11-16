@@ -27,6 +27,7 @@ class Indexer:
         vector_db: VectorDB,
         embedder: Embedder,
         settings,
+        max_commits: int = 10000,
     ):
         """Create a new Indexer.
 
@@ -36,6 +37,8 @@ class Indexer:
             metadata_db: Metadata database instance.
             vector_db: Vector database instance.
             embedder: Embedding provider instance.
+            settings: Settings instance.
+            max_commits: Maximum commits to index (default: 10000).
         """
         self.expert_config = expert_config
         self.vcs: VCSProvider = vcs
@@ -43,6 +46,7 @@ class Indexer:
         self.vector_db: VectorDB = vector_db
         self.embedder = embedder
         self.settings = settings
+        self.max_commits = max_commits
         
         # Initialize text sanitizer for removing high-entropy patterns
         # Sanitization happens before embedding but after SQLite storage,
@@ -50,6 +54,7 @@ class Indexer:
         self.sanitizer = TextSanitizer()
 
         # Static description constants for progress tasks
+        self._TASK_DESC_CL_FETCH = "[cyan]  ├─ Fetching changelist details"
         self._TASK_DESC_FILE_READ = "[cyan]  ├─ Reading files from VCS"
         self._TASK_DESC_FILE_EMBED = "[cyan]  ├─ Embedding file chunks"
         self._TASK_DESC_FILE_STORE = "[cyan]  ├─ Storing file data"
@@ -59,6 +64,8 @@ class Indexer:
 
         # Progress task IDs for persistent multi-level display
         self._overall_task: Optional[TaskID] = None
+        # Changelist fetching task
+        self._changelist_fetch_task: Optional[TaskID] = None
         # File operation tasks
         self._file_read_task: Optional[TaskID] = None
         self._file_embed_task: Optional[TaskID] = None
@@ -85,7 +92,7 @@ class Indexer:
         """Add ➤ arrow to indicate active task"""
         return desc.replace('  ├─', '➤ ├─').replace('  └─', '➤ └─')
 
-    def index_unified(self, batch_size: int = 100, start_after: Optional[str] = None):
+    def index_unified(self, batch_size: int = 100, start_after: Optional[str] = None, max_batches: Optional[int] = None) -> bool:
         """Index both files and commits in a single pass.
 
         Respects the max_commits limit from expert_config by tracking the total
@@ -95,6 +102,10 @@ class Indexer:
         Args:
             batch_size: Maximum commits per batch
             start_after: Optional commit hash to start indexing from (for testing specific commits)
+            max_batches: Maximum number of batches to process (returns True if more remain)
+        
+        Returns:
+            True if more commits remain to be indexed (hit batch limit), False otherwise
         """
         workspace_path=self.expert_config["workspace_path"]
         
@@ -108,7 +119,7 @@ class Indexer:
             )
 
         # Respect global max_commits across runs: treat already indexed commits as part of the total.
-        max_commits = int(self.expert_config.get("max_commits", 10000))
+        max_commits = self.max_commits
         already_indexed = self.metadata_db.get_commit_count(self.expert_config["name"])
 
         # Total available commits according to VCS; clamp max_commits to this so we don't
@@ -144,6 +155,15 @@ class Indexer:
                 total=max_commits,
                 completed=already_indexed
             )
+            # Changelist fetching task (total=1 prevents scrolling, start=True+stop prevents pulse and stops timer)
+            self._changelist_fetch_task = self.progress.add_task(
+                self._TASK_DESC_CL_FETCH,
+                total=1,
+                visible=True,
+                start=True
+            )
+            self.progress.stop_task(self._changelist_fetch_task)
+            
             # File operation tasks (total=1 prevents scrolling, start=True+stop prevents pulse and stops timer)
             self._file_read_task = self.progress.add_task(
                 self._TASK_DESC_FILE_READ,
@@ -197,17 +217,42 @@ class Indexer:
             batch_num = 0
             
             while total_commits < max_commits:
-                # Fetch next batch of commits
+                # Check if we've hit the batch limit
+                if max_batches is not None and batch_num >= max_batches:
+                    console.print(f"[yellow]Reached max_batches={max_batches}")
+                    return True  # More commits remain
+                
+                # Activate changelist fetch progress
+                batch_cl_count = min(batch_size, max_commits - total_commits)
+                self.progress.start_task(self._changelist_fetch_task)
+                self.progress.update(
+                    self._changelist_fetch_task,
+                    description=self._add_arrow(self._TASK_DESC_CL_FETCH),
+                    total=batch_cl_count,
+                    completed=0
+                )
+                
+                # Define progress callback for VCS provider
+                def update_cl_progress(current: int, total: int) -> None:
+                    """Called after each sub-batch of changelists is fetched."""
+                    self.progress.update(self._changelist_fetch_task, completed=current)
+                
+                # Fetch next batch of commits with progress
                 batch = self.vcs.get_commits_after(
                     workspace_path=workspace_path,
                     after_hash=last_processed_id,
                     batch_size=batch_size,
-                    subdirs=self.expert_config.get('subdirs')
+                    subdirs=self.expert_config.get('subdirs'),
+                    progress_callback=update_cl_progress,
                 )
+                
+                # Deactivate changelist fetch progress
+                self.progress.update(self._changelist_fetch_task, description=self._TASK_DESC_CL_FETCH)
+                self.progress.stop_task(self._changelist_fetch_task)
                 
                 if not batch:
                     console.print(f"[green]All commits processed: {total_commits}/{max_commits}")
-                    break
+                    return False  # No more commits available
                 
                 # Print starting point on first batch only
                 if batch_num == 0:
@@ -221,6 +266,9 @@ class Indexer:
                 
                 # Reset all subtasks to inactive state for the new batch
                 # total=1 prevents scrolling, start=True+stop prevents pulse and stops timer
+                # Note: changelist_fetch_task is NOT reset here because it will be activated
+                # at the start of the next loop iteration with proper values
+                
                 self.progress.update(self._file_read_task, description=self._TASK_DESC_FILE_READ, completed=0, total=1, start=True)
                 self.progress.stop_task(self._file_read_task)
                 
@@ -293,6 +341,10 @@ class Indexer:
                 f"[green]Reached max_commits={max_commits} "
                 f"({total_commits}/{max_commits} commits indexed)"
             )
+            return False  # Hit max_commits limit, no more to process
+        
+        # If we exited naturally (shouldn't reach here with current logic)
+        return False
     
     def _check_file_existence(self, file_paths: set[str], revision_id: str) -> tuple[set[str], set[str]]:
         """Check which files exist at the specified revision."""

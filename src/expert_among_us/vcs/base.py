@@ -40,6 +40,7 @@ class VCSProvider(ABC):
         after_hash: str | None,
         batch_size: int,
         subdirs: Optional[list[str]] = None,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> list[Changelist]:
         """Get commits after a specific hash in chronological order (oldest → newest).
 
@@ -48,6 +49,9 @@ class VCSProvider(ABC):
             after_hash: Get commits after this hash (None = from beginning)
             batch_size: Maximum number of commits to return
             subdirs: Optional list of subdirectories to filter commits by
+            progress_callback: Optional callback(current, total) called during fetch.
+                              For batched operations, called after each sub-batch.
+                              For fast operations, called once at completion.
 
         Returns:
             List of Changelist objects in chronological order (oldest → newest)

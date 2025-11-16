@@ -78,8 +78,8 @@ def main(ctx, debug: bool, data_dir: Optional[Path], llm_provider: str, base_url
 @click.argument("expert_name", type=str)
 @click.argument("workspace_and_subdirs", nargs=-1, type=str)
 @click.option("--max-commits", default=60000, type=int, help="Maximum commits to index")
-@click.option("--vcs-type", type=click.Choice(["git", "p4"]), default="git", help="Version control system type")
-@click.option("--batch-size", default=500, type=int, help="Maximum commits per embedding batch")
+@click.option("--max-batches", type=int, help="Maximum batches to run (returns exit code 2 if more remain)")
+@click.option("--batch-size", default=1000, type=int, help="Maximum commits per embedding batch")
 @click.option("--start-at", type=str, help="Start indexing from this specific commit hash (use with --max-commits to test specific commits)")
 @click.pass_context
 def populate(
@@ -87,11 +87,13 @@ def populate(
     expert_name: str,
     workspace_and_subdirs: tuple[str, ...],
     max_commits: int,
-    vcs_type: str,
+    max_batches: Optional[int],
     batch_size: int,
     start_at: Optional[str],
 ) -> None:
     """Build or update an expert index from a repository.
+    
+    The VCS type (Git, Perforce, etc.) is automatically detected from the workspace.
     
     EXPERT_NAME: Unique name for this expert
     
@@ -100,7 +102,7 @@ def populate(
     Examples:
     
         \b
-        # Create new expert - workspace required
+        # Create new expert - workspace required (VCS auto-detected)
         $ expert-among-us populate MyExpert /path/to/repo
         
         \b
@@ -196,6 +198,28 @@ def populate(
         if data_dir:
             log_info(f"Using data directory: {data_dir}")
         
+        # Step 2: Detect and initialize VCS provider (moved earlier)
+        log_info(f"Detecting version control system in {workspace}...")
+ 
+        # Detect VCS directly; Git will consult DebugLogger.is_enabled() for its own debug output.
+        vcs_provider = detect_vcs(str(workspace))
+        
+        if vcs_provider is None:
+            log_error(f"No supported VCS detected in {workspace}")
+            log_error("Supported VCS: Git, Perforce")
+            sys.exit(1)
+        
+        log_success(f"Detected VCS: {vcs_provider.__class__.__name__}")
+        
+        # Auto-detect VCS type from provider class name
+        # Map class names to expected vcs_type values
+        vcs_class_name = vcs_provider.__class__.__name__
+        vcs_type_map = {
+            "Git": "git",
+            "Perforce": "p4"
+        }
+        vcs_type = vcs_type_map.get(vcs_class_name, vcs_class_name.lower())
+        
         # Initialize embedder using settings (provider/model come from Settings)
         embedder = create_embedder(settings)
         
@@ -205,7 +229,6 @@ def populate(
             workspace_path=workspace,
             subdirs=subdirs_list,
             vcs_type=vcs_type,
-            max_commits=max_commits,
             data_dir=data_dir or Path.home() / ".expert-among-us"
         )
         
@@ -218,19 +241,6 @@ def populate(
         vector_db = ChromaVectorDB(expert_name, data_dir=data_dir)
         vector_db.initialize(dimension=embedder.dimension)
         
-        # Step 2: Detect and initialize VCS provider
-        log_info(f"Detecting version control system in {workspace}...")
- 
-        # Detect VCS directly; Git will consult DebugLogger.is_enabled() for its own debug output.
-        vcs_provider = detect_vcs(str(workspace))
-        
-        if vcs_provider is None:
-            log_error(f"No supported VCS detected in {workspace}")
-            log_error("Supported VCS: Git")
-            sys.exit(1)
-        
-        log_success(f"Detected VCS: {vcs_provider.__class__.__name__}")
-        
         # Step 3: Check if expert already exists and get commit boundaries
         existing_expert = metadata_db.get_expert(expert_name)
         
@@ -241,7 +251,7 @@ def populate(
                 log_info(f"Last processed commit: {last_processed[:8]}")
         else:
             log_info(f"Creating new expert '{expert_name}'")
-            metadata_db.create_expert(expert_config.name, str(expert_config.workspace_path), expert_config.subdirs, expert_config.vcs_type)
+            metadata_db.create_expert(expert_config.name, str(expert_config.workspace_path), expert_config.subdirs, vcs_type)
         
         total_processed = 0
         
@@ -258,10 +268,11 @@ def populate(
                 vector_db=vector_db,
                 embedder=embedder,
                 settings=settings,
+                max_commits=max_commits,
             )
 
             # Run unified indexing
-            indexer.index_unified(batch_size=batch_size, start_after=start_at)
+            more_remain = indexer.index_unified(batch_size=batch_size, start_after=start_at, max_batches=max_batches)
             log_success("Unified indexing complete!")
             
             # Get total processed commits for reporting
@@ -285,6 +296,11 @@ def populate(
         # Cleanup
         metadata_db.close()
         vector_db.close()
+        
+        # Exit with code 2 if more commits remain (batch limit reached)
+        if more_remain:
+            log_info("More commits available. Run populate again to continue.")
+            sys.exit(2)
         
     except Exception as e:
         log_error(f"Failed to populate expert: {str(e)}")

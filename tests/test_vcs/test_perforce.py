@@ -16,7 +16,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from expert_among_us.vcs.perforce import Perforce
+from expert_among_us.vcs.perforce import Perforce, MAX_FILES_PER_CL
 from expert_among_us.models.changelist import Changelist
 
 
@@ -186,9 +186,16 @@ Differences ...
         # Should return only 1 changelist
         assert len(changelists) == 1
         
-        # Verify p4 describe was called with only 1 CL
+        # Verify p4 describe was called with -m flag and MAX_FILES_PER_CL value
         describe_call = mock_subprocess_run.call_args_list[1]
-        assert describe_call[0][0][3] == "12345"  # Only first CL (after 'p4', 'describe', '-du')
+        cmd_args = describe_call[0][0]
+        # Command should be: ['p4', 'describe', '-du', '-m', str(MAX_FILES_PER_CL), '12345']
+        assert 'p4' in cmd_args
+        assert 'describe' in cmd_args
+        assert '-du' in cmd_args
+        assert '-m' in cmd_args
+        assert str(MAX_FILES_PER_CL) in cmd_args  # Check against the constant
+        assert '12345' in cmd_args  # The CL number
 
     def test_get_commits_after_returns_changelist_objects(self, mock_subprocess_run, perforce_provider, tmp_path):
         """Verify changelists have required attributes."""

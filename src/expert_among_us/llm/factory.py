@@ -10,6 +10,10 @@ from .openai_compatible import OpenAICompatibleLLM
 from ..config.settings import Settings
 
 
+# Global cache: one provider instance per type
+_llm_cache: Dict[str, LLMProvider] = {}
+
+
 def create_llm_provider(settings: Settings, debug: bool = False) -> LLMProvider:
     """Create an LLM provider based on settings configuration.
     
@@ -52,6 +56,10 @@ def create_llm_provider(settings: Settings, debug: bool = False) -> LLMProvider:
             "  --llm-provider claude-code (requires claude CLI)"
         )
     
+    # Check cache (one instance per provider type)
+    if provider in _llm_cache:
+        return _llm_cache[provider]
+    
     # Handle each provider with validation
     if provider == "openai":
         if not settings.openai_api_key:
@@ -62,12 +70,14 @@ def create_llm_provider(settings: Settings, debug: bool = False) -> LLMProvider:
             )
         # Use base_url_override if provided, otherwise use default (None = OpenAI default)
         base_url = settings.base_url_override if settings.base_url_override else None
-        return OpenAICompatibleLLM(
+        llm = OpenAICompatibleLLM(
             api_key=settings.openai_api_key,
             model="not-used",  # Model specified per-call
             base_url=base_url,
             debug=debug,
         )
+        _llm_cache[provider] = llm
+        return llm
     
     elif provider == "openrouter":
         if not settings.openrouter_api_key:
@@ -78,22 +88,26 @@ def create_llm_provider(settings: Settings, debug: bool = False) -> LLMProvider:
             )
         # Use base_url_override if provided, otherwise use OpenRouter default
         base_url = settings.base_url_override if settings.base_url_override else "https://openrouter.ai/api/v1"
-        return OpenAICompatibleLLM(
+        llm = OpenAICompatibleLLM(
             api_key=settings.openrouter_api_key,
             model="not-used",  # Model specified per-call
             base_url=base_url,
             debug=debug,
         )
+        _llm_cache[provider] = llm
+        return llm
     
     elif provider == "ollama":
         # Use base_url_override if provided, otherwise use Ollama default
         base_url = settings.base_url_override if settings.base_url_override else settings.ollama_base_url
-        return OpenAICompatibleLLM(
+        llm = OpenAICompatibleLLM(
             api_key="ollama",  # Ollama doesn't require real API keys
             model="not-used",  # Model specified per-call
             base_url=base_url,
             debug=debug,
         )
+        _llm_cache[provider] = llm
+        return llm
     
     elif provider == "bedrock":
         if not settings.bedrock_region:
@@ -102,11 +116,12 @@ def create_llm_provider(settings: Settings, debug: bool = False) -> LLMProvider:
                 "Please set the AWS_REGION environment variable or --aws-region flag:\n"
                 "  export AWS_REGION=us-west-2"
             )
-        return BedrockLLM(
+        llm = BedrockLLM(
             region_name=settings.bedrock_region,
-            profile_name=settings.aws_profile,
             enable_caching=settings.bedrock_enable_caching,
         )
+        _llm_cache[provider] = llm
+        return llm
     
     elif provider == "claude-code":
         # Check if claude CLI is available
@@ -116,10 +131,12 @@ def create_llm_provider(settings: Settings, debug: bool = False) -> LLMProvider:
                 "Please install the Claude CLI:\n"
                 "  https://www.anthropic.com/claude/download"
             )
-        return ClaudeCodeLLM(
+        llm = ClaudeCodeLLM(
             cli_path=settings.claude_code_cli_path,
             project_dir=settings.claude_code_session_dir,
         )
+        _llm_cache[provider] = llm
+        return llm
     
     else:
         raise ValueError(

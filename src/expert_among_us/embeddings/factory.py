@@ -29,9 +29,12 @@ def create_embedder(settings: Settings) -> Embedder:
         )
 
     if provider == "bedrock":
-        # Use the configured Bedrock embedding model ID.
+        # Use the configured Bedrock embedding model ID and region.
         # Default comes from DEFAULT_EMBEDDING_MODEL_ID in settings.
-        return BedrockEmbedder(model_id=settings.embedding_model)
+        return BedrockEmbedder(
+            model_id=settings.embedding_model,
+            region_name=settings.aws_region
+        )
 
     raise ValueError(
         f"Unknown embedding provider: {settings.embedding_provider}. "

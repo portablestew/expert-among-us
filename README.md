@@ -730,6 +730,16 @@ The run scripts automatically check for the virtual environment. If `.venv` does
 
 Add Expert Among Us to your MCP client configuration. Use **absolute paths** for the command.
 
+#### MCP Server CLI Arguments
+
+The MCP server supports optional CLI arguments that affect all queries:
+
+- `--data-dir`: Custom data directory location
+- `--impostor`: Enable impostor mode for all queries. Use this for repositories with poor commit message quality.
+- `--debug`: Enable debug logging to troubleshoot issues (writes logs to `~/.expert-among-us/logs/`)
+- `--llm-provider`: Choose LLM provider (auto-detects by default)
+- `--embedding-provider`: Choose embedding provider (default: local)
+
 #### Example: Claude Desktop (Linux/macOS) + OpenAI
 
 Configuration file location: `~/Library/Application Support/Claude/claude_desktop_config.json`
@@ -768,10 +778,29 @@ Configuration file location: `%APPDATA%\Claude\claude_desktop_config.json`
 }
 ```
 
+#### Example: With Impostor Mode Enabled
+
+For repositories with poor commit message quality, enable impostor mode:
+
+```json
+{
+  "mcpServers": {
+    "expert-among-us": {
+      "command": "/absolute/path/to/expert-among-us/run-mcp.sh --impostor",
+      "timeout": 120,
+      "alwaysAllow":["list","prompt","query"],
+      "env": {
+        "OPENAI_API_KEY": "your-key-here"
+      }
+    }
+  }
+}
+```
+
 **Important Notes:**
 - Always use absolute paths in the `command` field
 - Set required environment variables in the `env` section
-- Add `--debug` to the command to troubleshoot a problem (writes logs to data-dir)
+- Add CLI arguments to the command as needed (e.g., `--debug`, `--impostor`)
 - Restart your MCP client after updating the configuration
 
 ## Development

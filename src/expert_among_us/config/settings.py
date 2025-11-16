@@ -60,7 +60,6 @@ class Settings(BaseSettings):
     
     # AWS settings
     aws_region: str = "us-west-2"
-    aws_profile: Optional[str] = None
     
     # Provider settings
     embedding_provider: str = "local"  # "local" or "bedrock"

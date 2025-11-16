@@ -33,11 +33,25 @@ def mock_boto3():
 def bedrock_llm(mock_boto3):
     """Create BedrockLLM instance with mocked boto3."""
     mock_session = MagicMock()
-    mock_client = MagicMock()
+    mock_sts_client = MagicMock()
+    mock_sts_client.get_caller_identity.return_value = {'UserId': 'test-user'}
+    mock_bedrock_client = MagicMock()
+    
     mock_boto3.Session.return_value = mock_session
-    mock_session.client.return_value = mock_client
+    
+    # Configure session.client() to return appropriate clients
+    def client_factory(service_name):
+        if service_name == 'sts':
+            return mock_sts_client
+        elif service_name == 'bedrock-runtime':
+            return mock_bedrock_client
+        return MagicMock()
+    
+    mock_session.client.side_effect = client_factory
     
     llm = BedrockLLM(region_name="us-west-2")
+    # Store reference to bedrock client for test access
+    llm.client = mock_bedrock_client
     return llm
 
 
@@ -47,49 +61,133 @@ class TestBedrockLLMInit:
     def test_init_default_region(self, mock_boto3):
         """Test initialization with default region."""
         mock_session = MagicMock()
+        mock_sts_client = MagicMock()
+        mock_sts_client.get_caller_identity.return_value = {'UserId': 'test-user'}
+        mock_bedrock_client = MagicMock()
+        
         mock_boto3.Session.return_value = mock_session
+        
+        # Configure session.client() to return appropriate clients
+        def client_factory(service_name):
+            if service_name == 'sts':
+                return mock_sts_client
+            elif service_name == 'bedrock-runtime':
+                return mock_bedrock_client
+            return MagicMock()
+        
+        mock_session.client.side_effect = client_factory
         
         llm = BedrockLLM()
         
-        mock_boto3.Session.assert_called_once_with(
-            region_name="us-west-2",
-            profile_name=None
-        )
-        mock_session.client.assert_called_once_with("bedrock-runtime")
+        # Verify Session was called with region_name
+        mock_boto3.Session.assert_called_once_with(region_name="us-west-2")
+        # Verify STS was called for credential validation
+        mock_sts_client.get_caller_identity.assert_called_once()
         assert llm.enable_caching is True
     
     def test_init_custom_region(self, mock_boto3):
         """Test initialization with custom region."""
         mock_session = MagicMock()
+        mock_sts_client = MagicMock()
+        mock_sts_client.get_caller_identity.return_value = {'UserId': 'test-user'}
+        mock_bedrock_client = MagicMock()
+        
         mock_boto3.Session.return_value = mock_session
+        
+        # Configure session.client() to return appropriate clients
+        def client_factory(service_name):
+            if service_name == 'sts':
+                return mock_sts_client
+            elif service_name == 'bedrock-runtime':
+                return mock_bedrock_client
+            return MagicMock()
+        
+        mock_session.client.side_effect = client_factory
         
         llm = BedrockLLM(region_name="us-east-1")
         
-        mock_boto3.Session.assert_called_once_with(
-            region_name="us-east-1",
-            profile_name=None
-        )
-    
-    def test_init_with_profile(self, mock_boto3):
-        """Test initialization with AWS profile."""
-        mock_session = MagicMock()
-        mock_boto3.Session.return_value = mock_session
-        
-        llm = BedrockLLM(profile_name="my-profile")
-        
-        mock_boto3.Session.assert_called_once_with(
-            region_name="us-west-2",
-            profile_name="my-profile"
-        )
+        # Verify Session was called with correct region
+        mock_boto3.Session.assert_called_once_with(region_name="us-east-1")
+        # Verify STS was called for credential validation
+        mock_sts_client.get_caller_identity.assert_called_once()
     
     def test_init_with_caching_disabled(self, mock_boto3):
         """Test initialization with caching disabled."""
         mock_session = MagicMock()
+        mock_sts_client = MagicMock()
+        mock_sts_client.get_caller_identity.return_value = {'UserId': 'test-user'}
+        mock_bedrock_client = MagicMock()
+        
         mock_boto3.Session.return_value = mock_session
+        
+        # Configure session.client() to return appropriate clients
+        def client_factory(service_name):
+            if service_name == 'sts':
+                return mock_sts_client
+            elif service_name == 'bedrock-runtime':
+                return mock_bedrock_client
+            return MagicMock()
+        
+        mock_session.client.side_effect = client_factory
         
         llm = BedrockLLM(enable_caching=False)
         
         assert llm.enable_caching is False
+    
+    
+    def test_init_validates_credentials_missing(self, mock_boto3):
+        """Test initialization validates AWS credentials when missing."""
+        from botocore.exceptions import NoCredentialsError
+        
+        mock_session = MagicMock()
+        mock_sts_client = MagicMock()
+        # Simulate missing credentials
+        mock_sts_client.get_caller_identity.side_effect = NoCredentialsError()
+        
+        mock_boto3.Session.return_value = mock_session
+        
+        def client_factory(service_name):
+            if service_name == 'sts':
+                return mock_sts_client
+            return MagicMock()
+        
+        mock_session.client.side_effect = client_factory
+        
+        # Should raise LLMError for missing credentials
+        with pytest.raises(LLMError) as exc_info:
+            BedrockLLM(region_name="us-west-2")
+        
+        assert "credentials not found" in str(exc_info.value).lower()
+    
+    def test_init_validates_credentials_invalid(self, mock_boto3):
+        """Test initialization validates invalid AWS credentials."""
+        mock_session = MagicMock()
+        mock_sts_client = MagicMock()
+        # Simulate invalid credentials
+        mock_sts_client.get_caller_identity.side_effect = ClientError(
+            {
+                "Error": {
+                    "Code": "InvalidClientTokenId",
+                    "Message": "The security token included in the request is invalid"
+                }
+            },
+            "GetCallerIdentity"
+        )
+        
+        mock_boto3.Session.return_value = mock_session
+        
+        def client_factory(service_name):
+            if service_name == 'sts':
+                return mock_sts_client
+            return MagicMock()
+        
+        mock_session.client.side_effect = client_factory
+        
+        # Should raise LLMError for invalid credentials
+        with pytest.raises(LLMError) as exc_info:
+            BedrockLLM(region_name="us-west-2")
+        
+        assert "invalid" in str(exc_info.value).lower()
     
     def test_model_constants(self):
         """Test model identifier constants are available from settings."""

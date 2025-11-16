@@ -24,7 +24,6 @@ class ExpertConfig(BaseModel):
         last_indexed_at: Last successful index time
         last_processed_commit_hash: Most recent commit hash indexed (unified tracking)
         first_processed_commit_hash: Oldest commit hash indexed (for display)
-        max_commits: Maximum commits to index
         max_metadata_embedding_size: Maximum bytes for metadata embeddings (20KB default)
         max_embedding_text_size: Maximum bytes for diff before chunking (100KB default)
         diff_chunk_size_bytes: Chunk size for diff embeddings (8KB default)
@@ -57,9 +56,6 @@ class ExpertConfig(BaseModel):
     first_processed_commit_hash: Optional[str] = Field(
         None, description="Oldest commit hash indexed (for display)"
     )
-    max_commits: int = Field(
-        default=10000, ge=1, description="Max commits to index"
-    )
     max_metadata_embedding_size: int = Field(
         default=20000, ge=1, description="Max bytes for metadata embeddings (20KB)"
     )
@@ -85,8 +81,7 @@ class ExpertConfig(BaseModel):
                 "name": "MyExpert",
                 "workspace_path": "/home/user/projects/myrepo",
                 "subdirs": ["src/main/", "src/resources/"],
-                "vcs_type": "git",
-                "max_commits": 10000,
+                "vcs_type": "git"
             }
         }
     )

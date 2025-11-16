@@ -41,13 +41,20 @@ def mock_vcs():
             """Return total commits for progress estimation (used by Indexer.index_unified)."""
             return len(self._commits)
 
-        def get_commits_after(self, workspace_path, after_hash, batch_size, subdirs=None):
+        def get_commits_after(self, workspace_path, after_hash, batch_size, subdirs=None, progress_callback=None):
             if after_hash is None:
                 start_idx = 0
             else:
                 ids = [c.id for c in self._commits]
                 start_idx = ids.index(after_hash) + 1 if after_hash in ids else 0
-            return self._commits[start_idx : start_idx + batch_size]
+            
+            batch = self._commits[start_idx : start_idx + batch_size]
+            
+            # Call progress callback if provided (simulate Git behavior - report once at completion)
+            if progress_callback and batch:
+                progress_callback(len(batch), len(batch))
+            
+            return batch
 
         def get_tracked_files_at_commit(self, workspace_path, revision_id, subdirs=None):
             # All files reported by the matching commit exist

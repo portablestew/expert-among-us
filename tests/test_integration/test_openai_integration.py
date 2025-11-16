@@ -9,7 +9,7 @@ from unittest.mock import Mock, MagicMock, patch, AsyncMock
 from pathlib import Path
 
 from expert_among_us.config.settings import Settings
-from expert_among_us.llm.factory import create_llm_provider
+from expert_among_us.llm.factory import create_llm_provider, _llm_cache
 from expert_among_us.llm.openai_compatible import OpenAICompatibleLLM
 from expert_among_us.llm.base import (
     Message,
@@ -21,6 +21,14 @@ from expert_among_us.llm.base import (
     LLMInvalidRequestError,
 )
 from openai import APIError, RateLimitError, AuthenticationError
+
+
+@pytest.fixture(autouse=True)
+def clear_llm_cache():
+    """Clear the LLM provider cache before each test."""
+    _llm_cache.clear()
+    yield
+    _llm_cache.clear()
 
 
 @pytest.fixture

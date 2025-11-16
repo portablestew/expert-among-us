@@ -3,15 +3,31 @@ from unittest.mock import patch, Mock
 from expert_among_us.embeddings.bedrock import BedrockEmbedder
 
 class TestBedrockEmbedder(unittest.TestCase):
-    @patch('src.expert_among_us.embeddings.bedrock.boto3.client')
-    def test_embed(self, mock_boto3_client):
-        mock_client = Mock()
-        mock_boto3_client.return_value = mock_client
+    @patch('src.expert_among_us.embeddings.bedrock.boto3.Session')
+    def test_embed(self, mock_boto3_session):
+        # Mock session and clients
+        mock_session = Mock()
+        mock_boto3_session.return_value = mock_session
+        
+        mock_sts_client = Mock()
+        mock_sts_client.get_caller_identity.return_value = {'UserId': 'test-user'}
+        
+        mock_bedrock_client = Mock()
+        
+        # Configure session.client() to return appropriate clients
+        def client_factory(service_name):
+            if service_name == 'sts':
+                return mock_sts_client
+            elif service_name == 'bedrock-runtime':
+                return mock_bedrock_client
+            return Mock()
+        
+        mock_session.client.side_effect = client_factory
         
         # Mock response body with read() method
         mock_body = Mock()
         mock_body.read.return_value = '{"embedding": ' + str([0.1] * 1024) + '}'
-        mock_client.invoke_model.return_value = {
+        mock_bedrock_client.invoke_model.return_value = {
             'body': mock_body
         }
         
@@ -22,12 +38,29 @@ class TestBedrockEmbedder(unittest.TestCase):
         embedding = embedder.embed(text)
         
         self.assertEqual(len(embedding), 1024)
-        self.assertTrue(mock_client.invoke_model.called)
+        self.assertTrue(mock_bedrock_client.invoke_model.called)
+        self.assertTrue(mock_sts_client.get_caller_identity.called)
         
-    @patch('src.expert_among_us.embeddings.bedrock.boto3.client')
-    def test_embed_batch(self, mock_boto3_client):
-        mock_client = Mock()
-        mock_boto3_client.return_value = mock_client
+    @patch('src.expert_among_us.embeddings.bedrock.boto3.Session')
+    def test_embed_batch(self, mock_boto3_session):
+        # Mock session and clients
+        mock_session = Mock()
+        mock_boto3_session.return_value = mock_session
+        
+        mock_sts_client = Mock()
+        mock_sts_client.get_caller_identity.return_value = {'UserId': 'test-user'}
+        
+        mock_bedrock_client = Mock()
+        
+        # Configure session.client() to return appropriate clients
+        def client_factory(service_name):
+            if service_name == 'sts':
+                return mock_sts_client
+            elif service_name == 'bedrock-runtime':
+                return mock_bedrock_client
+            return Mock()
+        
+        mock_session.client.side_effect = client_factory
         
         # Mock response bodies with read() method
         mock_body1 = Mock()
@@ -35,7 +68,7 @@ class TestBedrockEmbedder(unittest.TestCase):
         mock_body2 = Mock()
         mock_body2.read.return_value = '{"embedding": ' + str([0.2] * 1024) + '}'
         
-        mock_client.invoke_model.side_effect = [
+        mock_bedrock_client.invoke_model.side_effect = [
             {'body': mock_body1},
             {'body': mock_body2}
         ]
@@ -50,10 +83,26 @@ class TestBedrockEmbedder(unittest.TestCase):
         self.assertEqual(len(embeddings[0]), 1024)
         self.assertEqual(len(embeddings[1]), 1024)
         
-    @patch('src.expert_among_us.embeddings.bedrock.boto3.client')
-    def test_dimension(self, mock_boto3_client):
-        mock_client = Mock()
-        mock_boto3_client.return_value = mock_client
+    @patch('src.expert_among_us.embeddings.bedrock.boto3.Session')
+    def test_dimension(self, mock_boto3_session):
+        # Mock session and clients
+        mock_session = Mock()
+        mock_boto3_session.return_value = mock_session
+        
+        mock_sts_client = Mock()
+        mock_sts_client.get_caller_identity.return_value = {'UserId': 'test-user'}
+        
+        mock_bedrock_client = Mock()
+        
+        # Configure session.client() to return appropriate clients
+        def client_factory(service_name):
+            if service_name == 'sts':
+                return mock_sts_client
+            elif service_name == 'bedrock-runtime':
+                return mock_bedrock_client
+            return Mock()
+        
+        mock_session.client.side_effect = client_factory
         
         model_id = "amazon.titan-embed-text-v2:0"
         embedder = BedrockEmbedder(model_id)

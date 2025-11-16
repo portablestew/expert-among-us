@@ -1,12 +1,38 @@
 import boto3
 import json
+from botocore.exceptions import ClientError, NoCredentialsError
 from .base import Embedder
 from typing import List, Optional, Callable
 from ..utils.debug import DebugLogger
 
+
+class EmbedderError(Exception):
+    """Base exception for embedder errors."""
+    pass
+
 class BedrockEmbedder(Embedder):
-    def __init__(self, model_id: str):
-        self.client = boto3.client('bedrock-runtime')
+    def __init__(self, model_id: str, region_name: str = "us-west-2"):
+        """Initialize Bedrock embedder with credential validation.
+        
+        Args:
+            model_id: Bedrock model ID for embeddings (e.g., amazon.titan-embed-text-v2:0)
+            region_name: AWS region (default: us-west-2)
+            
+        Raises:
+            EmbedderError: If AWS credentials are not found or invalid
+        """
+        session = boto3.Session(region_name=region_name)
+        
+        # Validate credentials using STS GetCallerIdentity
+        try:
+            sts = session.client('sts')
+            sts.get_caller_identity()
+        except NoCredentialsError:
+            raise EmbedderError("AWS credentials not found. Configure AWS CLI or set environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY).")
+        except ClientError as e:
+            raise EmbedderError(f"Invalid AWS credentials: {e}")
+        
+        self.client = session.client('bedrock-runtime')
         self.model_id = model_id
         
     def embed(self, text: str) -> List[float]:

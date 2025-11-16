@@ -7,6 +7,9 @@ from expert_among_us.vcs.base import VCSProvider
 from expert_among_us.models.changelist import Changelist
 from expert_among_us.utils.truncate import filter_binary_from_diff, is_binary_file
 from expert_among_us.utils.debug import DebugLogger
+
+# Maximum commits to fetch details for in a single git operation
+MAX_COMMITS_PER_BATCH = 50
  
 class Git(VCSProvider):
     """Git VCS provider implementation."""
@@ -44,6 +47,7 @@ class Git(VCSProvider):
         after_hash: str | None,
         batch_size: int,
         subdirs: Optional[list[str]] = None,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> list[Changelist]:
         """Get commits after a specific hash in chronological order (oldest → newest).
 
@@ -126,10 +130,12 @@ class Git(VCSProvider):
             return []
 
         # Fetch full commit details for this batch only
+        # Progress callback is handled inside _fetch_commits_by_hashes via sub-batching
         changelists = self._fetch_commits_by_hashes(
             workspace_path=workspace_path,
             hashes=batch_hashes,
             subdirs=subdirs,
+            progress_callback=progress_callback,
         )
 
         return changelists
@@ -199,8 +205,65 @@ class Git(VCSProvider):
         workspace_path: str,
         hashes: list[str],
         subdirs: Optional[list[str]] = None,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> list[Changelist]:
-        """Fetch full commit details for the given hashes using batched git calls.
+        """Fetch full commit details using sub-batching for stability.
+        
+        Processes commits in batches of MAX_COMMITS_PER_BATCH to prevent
+        timeouts and memory issues with large commit sets.
+        
+        Args:
+            workspace_path: Path to git repository
+            hashes: List of commit hashes to fetch
+            subdirs: Optional subdirectories to filter by
+            progress_callback: Optional callback(current, total) for progress updates
+            
+        Returns:
+            List of Changelist objects for the requested commits
+        """
+        if not hashes:
+            return []
+        
+        all_changelists: list[Changelist] = []
+        total_hashes = len(hashes)
+        
+        # Process in sub-batches for stability and progress tracking
+        for batch_start in range(0, len(hashes), MAX_COMMITS_PER_BATCH):
+            batch_end = min(batch_start + MAX_COMMITS_PER_BATCH, len(hashes))
+            batch_hashes = hashes[batch_start:batch_end]
+            
+            try:
+                batch_changelists = self._fetch_single_commit_batch(
+                    workspace_path=workspace_path,
+                    hashes=batch_hashes,
+                    subdirs=subdirs,
+                )
+                all_changelists.extend(batch_changelists)
+            except Exception as e:
+                if DebugLogger.is_enabled():
+                    from expert_among_us.utils.progress import console as progress_console
+                    progress_console.print(
+                        f"[dim red]Git._fetch_commits_by_hashes: "
+                        f"error in batch {batch_start}-{batch_end}: {e}[/dim red]"
+                    )
+                # Continue with next batch despite error
+            
+            # Report progress after each sub-batch
+            if progress_callback:
+                try:
+                    progress_callback(batch_end, total_hashes)
+                except Exception:
+                    pass  # Don't let callback errors disrupt processing
+        
+        return all_changelists
+    
+    def _fetch_single_commit_batch(
+        self,
+        workspace_path: str,
+        hashes: list[str],
+        subdirs: Optional[list[str]] = None,
+    ) -> list[Changelist]:
+        """Fetch full commit details for a single batch of commits.
 
         Strategy:
         - One `git log` to get metadata lines for the requested hashes.

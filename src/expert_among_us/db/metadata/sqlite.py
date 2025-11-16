@@ -55,8 +55,7 @@ class SQLiteMetadataDB(MetadataDB):
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_indexed_at TIMESTAMP,
                 last_processed_commit_hash TEXT,
-                first_processed_commit_hash TEXT,
-                max_commits INTEGER DEFAULT 10000
+                first_processed_commit_hash TEXT
             );
         """)
         cursor.execute("""
@@ -168,7 +167,7 @@ class SQLiteMetadataDB(MetadataDB):
         cursor = self.conn.cursor()
         cursor.execute("""
             SELECT name, workspace_path, subdirs, vcs_type, created_at,
-                   last_indexed_at, last_processed_commit_hash, first_processed_commit_hash, max_commits
+                   last_indexed_at, last_processed_commit_hash, first_processed_commit_hash
             FROM experts
             ORDER BY name ASC
         """)
@@ -199,8 +198,7 @@ class SQLiteMetadataDB(MetadataDB):
                 'created_at': created_at,
                 'last_indexed_at': last_indexed_at,
                 'last_processed_commit_hash': row['last_processed_commit_hash'],
-                'first_processed_commit_hash': row['first_processed_commit_hash'],
-                'max_commits': row['max_commits']
+                'first_processed_commit_hash': row['first_processed_commit_hash']
             })
         
         return experts

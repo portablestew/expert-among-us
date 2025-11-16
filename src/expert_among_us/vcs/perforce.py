@@ -26,6 +26,11 @@ EXCLUDED_AUTOMATED_USERS = (
     #"lumbery@*",
 )
 
+# Maximum number of files to fetch diffs for per changelist
+# Prevents timeouts from huge merges/refactors/codegen commits
+# CLs with more files will have diffs for only the first MAX_FILES_PER_CL files (alphabetically)
+MAX_FILES_PER_CL = 200
+
 
 class Perforce(VCSProvider):
     """Perforce VCS provider implementation.
@@ -86,7 +91,7 @@ class Perforce(VCSProvider):
                 ["p4", "info"],
                 cwd=workspace_path,
                 capture_output=True,
-                timeout=10,
+                timeout=15,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
@@ -127,6 +132,7 @@ class Perforce(VCSProvider):
         after_hash: str | None,
         batch_size: int,
         subdirs: Optional[list[str]] = None,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> list[Changelist]:
         """Get changelists after a specific CL number in chronological order (oldest → newest).
         
@@ -143,6 +149,7 @@ class Perforce(VCSProvider):
             after_hash: Get changelists after this CL number (None = from beginning)
             batch_size: Maximum number of changelists to return
             subdirs: Optional list of subdirectories to filter changelists by
+            progress_callback: Optional callback(current, total) called after each sub-batch
             
         Returns:
             List of Changelist objects in chronological order (oldest → newest)
@@ -212,6 +219,7 @@ class Perforce(VCSProvider):
             workspace_path=workspace_path,
             cl_numbers=batch_cl_numbers,
             subdirs=subdirs,
+            progress_callback=progress_callback,
         )
         
         return changelists
@@ -279,7 +287,7 @@ class Perforce(VCSProvider):
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=60,  # Longer timeout than detect() since this can legitimately take time
+            timeout=120,  # Longer timeout than detect() since this can legitimately take time
         )
         
         if result.returncode != 0:
@@ -324,16 +332,18 @@ class Perforce(VCSProvider):
         workspace_path: str,
         cl_numbers: list[str],
         subdirs: Optional[list[str]] = None,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> list[Changelist]:
-        """Fetch full details for specific CLs (batched).
+        """Fetch full details for specific CLs (batched with sub-batching).
         
-        Uses `p4 describe -du <cl1> <cl2> ...` to get metadata + diffs for
-        multiple changelists in a single command.
+        Uses `p4 describe -du` to get metadata + diffs for changelists.
+        Processes in sub-batches to avoid timeouts with large changelist sets.
         
         Args:
             workspace_path: Path to the workspace
             cl_numbers: List of CL numbers to fetch
             subdirs: Optional subdirectories (for filtering files, if needed)
+            progress_callback: Optional callback(current, total) called after each sub-batch
             
         Returns:
             List of Changelist objects with full details
@@ -341,7 +351,7 @@ class Perforce(VCSProvider):
         if not cl_numbers:
             return []
         
-        # Convert subdirs to depot path prefixes for filtering
+        # Convert subdirs to depot path prefixes once for all sub-batches
         depot_prefixes = None
         if subdirs:
             depot_prefixes = []
@@ -351,15 +361,69 @@ class Perforce(VCSProvider):
                 prefix = depot_path.rstrip("/...")
                 depot_prefixes.append(prefix)
         
-        # Batch describe command for all CLs
-        cmd = ["p4", "describe", "-du"]
+        # Process in sub-batches to avoid timeouts
+        SUB_BATCH_SIZE = 50
+        SUB_BATCH_TIMEOUT = 60
+        all_changelists = []
+        
+        for batch_start in range(0, len(cl_numbers), SUB_BATCH_SIZE):
+            batch_end = min(batch_start + SUB_BATCH_SIZE, len(cl_numbers))
+            sub_batch = cl_numbers[batch_start:batch_end]
+            
+            # Fetch this sub-batch
+            sub_changelists = self._fetch_single_describe_batch(
+                workspace_path=workspace_path,
+                cl_numbers=sub_batch,
+                depot_prefixes=depot_prefixes,
+                timeout=SUB_BATCH_TIMEOUT,
+            )
+            
+            all_changelists.extend(sub_changelists)
+            
+            # Report progress after processing each sub-batch
+            if progress_callback:
+                try:
+                    progress_callback(batch_end, len(cl_numbers))
+                except Exception:
+                    # Ignore callback errors to prevent disrupting processing
+                    pass
+        
+        return all_changelists
+    
+    def _fetch_single_describe_batch(
+        self,
+        workspace_path: str,
+        cl_numbers: list[str],
+        depot_prefixes: Optional[list[str]],
+        timeout: int,
+    ) -> list[Changelist]:
+        """Fetch full details for a single batch of CLs.
+        
+        This is a helper method for _fetch_changelists_by_numbers that handles
+        a single sub-batch of changelists.
+        
+        Limits diffs to first MAX_FILES_PER_CL files per CL to prevent timeouts
+        from huge merges, refactors, or codegen commits.
+        
+        Args:
+            workspace_path: Path to the workspace
+            cl_numbers: List of CL numbers to fetch (sub-batch)
+            depot_prefixes: Optional depot path prefixes for filtering
+            timeout: Timeout in seconds for the p4 describe command
+            
+        Returns:
+            List of Changelist objects for this batch
+        """
+        # Limit to first MAX_FILES_PER_CL files per CL to prevent timeouts
+        cmd = ["p4", "describe", "-du", "-m", str(MAX_FILES_PER_CL)]
         cmd.extend(cl_numbers)
         
         if DebugLogger.is_enabled():
             from expert_among_us.utils.progress import console as progress_console
             cmd_str = " ".join(str(part) for part in cmd)
             progress_console.print(
-                f"[dim]Perforce._fetch_changelists_by_numbers: {len(cl_numbers)} CLs via {cmd_str}[/dim]"
+                f"[dim]Perforce._fetch_single_describe_batch: {len(cl_numbers)} CLs "
+                f"(timeout={timeout}s) via {cmd_str}[/dim]"
             )
         
         result = subprocess.run(
@@ -369,7 +433,7 @@ class Perforce(VCSProvider):
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=180,
+            timeout=timeout,
         )
         
         if result.returncode != 0:
@@ -652,7 +716,7 @@ class Perforce(VCSProvider):
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=10,
+                timeout=15,
             )
             
             if result.returncode == 0:

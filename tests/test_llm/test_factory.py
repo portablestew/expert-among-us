@@ -4,12 +4,20 @@ import pytest
 from unittest.mock import MagicMock, patch
 from pathlib import Path
 
-from expert_among_us.llm.factory import create_llm_provider
+from expert_among_us.llm.factory import create_llm_provider, _llm_cache
 from expert_among_us.llm.base import LLMProvider
 from expert_among_us.llm.openai_compatible import OpenAICompatibleLLM
 from expert_among_us.llm.bedrock import BedrockLLM
 from expert_among_us.llm.claude_code import ClaudeCodeLLM
 from expert_among_us.config.settings import Settings
+
+
+@pytest.fixture(autouse=True)
+def clear_llm_cache():
+    """Clear the LLM provider cache before each test."""
+    _llm_cache.clear()
+    yield
+    _llm_cache.clear()
 
 
 @pytest.fixture
@@ -20,7 +28,6 @@ def base_settings():
         openai_api_key=None,
         openrouter_api_key=None,
         local_llm_base_url=None,
-        aws_profile=None,
         llm_provider="auto"  # Changed to auto (new default)
     )
     return settings
@@ -135,7 +142,6 @@ class TestBedrockConfiguration:
         # Verify BedrockLLM was called with correct parameters
         mock_bedrock_class.assert_called_once_with(
             region_name="us-west-2",
-            profile_name=None,
             enable_caching=True
         )
         assert provider == mock_bedrock_class.return_value
@@ -151,22 +157,6 @@ class TestBedrockConfiguration:
         
         mock_bedrock_class.assert_called_once_with(
             region_name="us-east-1",
-            profile_name=None,
-            enable_caching=True
-        )
-    
-    @patch("expert_among_us.llm.factory.BedrockLLM")
-    def test_factory_with_bedrock_profile(self, mock_bedrock_class, base_settings):
-        """Test factory with Bedrock profile."""
-        base_settings.llm_provider = "bedrock"
-        base_settings.aws_region = "us-west-2"
-        base_settings.aws_profile = "my-profile"
-        
-        provider = create_llm_provider(base_settings)
-        
-        mock_bedrock_class.assert_called_once_with(
-            region_name="us-west-2",
-            profile_name="my-profile",
             enable_caching=True
         )
     
@@ -181,7 +171,6 @@ class TestBedrockConfiguration:
         
         mock_bedrock_class.assert_called_once_with(
             region_name="us-west-2",
-            profile_name=None,
             enable_caching=False
         )
     
