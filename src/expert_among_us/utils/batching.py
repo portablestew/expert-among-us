@@ -6,10 +6,10 @@ from typing import List, TypeVar, Callable, Tuple, Any
 T = TypeVar('T')
 
 # Fixed overhead cost per text (prevents batching too many small items)
-BASE_BATCH_COST = 1.0
+BASE_BATCH_COST = 2.0
 
 # Reference size for O(n²) scaling (typical chunk size)
-CANONICAL_TOKEN_SIZE = 384
+CANONICAL_TOKEN_SIZE = 768
 
 
 def estimate_tokens(text: str) -> int:
@@ -34,13 +34,13 @@ def build_token_batches(
 ) -> List[List[int]]:
     """Build batches accounting for O(n²) memory scaling of transformer attention.
     
-    Cost model: cost = 1.0 + (tokens/384) + (tokens/384)²
+    Cost model: cost = 2.0 + (tokens/768) + (tokens/768)²
     
     This polynomial cost function ensures:
-    - Fixed base overhead (1.0) prevents excessive small text batching
+    - Fixed base overhead (2.0) prevents excessive small text batching
     - Linear term adds graduated cost scaling
     - Quadratic term models O(n²) attention memory growth
-    - Larger reference size (384) reduces cost for typical code chunks
+    - Larger reference size (768) reduces cost for typical code chunks
     
     Args:
         items: List of items to batch (texts, tuples, etc.)
@@ -52,21 +52,21 @@ def build_token_batches(
         
     Examples:
         # For max_batch_tokens = 16384:
-        # - Max capacity = 16384 / 384 ≈ 42.67 canonical units
+        # - Max capacity = 16384 / 768 ≈ 21.3 canonical units
         
-        # Small texts (100 tokens each, cost ≈ 1.33):
-        >>> texts = ["short"] * 32
+        # Small texts (100 tokens each, cost ≈ 2.15):
+        >>> texts = ["short"] * 9
         >>> batches = build_token_batches(texts, 16384, estimate_tokens)
-        >>> len(batches)  # 1 batch (32 items × 1.33 ≈ 42.5)
+        >>> len(batches)  # 1 batch (9 items × 2.15 ≈ 19.4)
         1
         
-        # Medium texts (800 tokens each, cost ≈ 8.09):
-        >>> texts = ["x" * 800] * 5
+        # Medium texts (1024 tokens each, cost ≈ 4.12):
+        >>> texts = ["x" * 1024] * 5
         >>> batches = build_token_batches(texts, 16384, estimate_tokens)
-        >>> len(batches)  # 1 batch (5 items × 8.09 ≈ 40.5)
+        >>> len(batches)  # 1 batch (5 items × 4.12 ≈ 20.6)
         1
         
-        # Large texts (2048 tokens each, cost ≈ 34.78):
+        # Large texts (2048 tokens each, cost ≈ 11.8):
         >>> texts = ["x" * 2048] * 2
         >>> batches = build_token_batches(texts, 16384, estimate_tokens)
         >>> len(batches)  # 2 batches (each exceeds capacity)
@@ -76,7 +76,7 @@ def build_token_batches(
         return []
     
     # Calculate batch capacity in canonical units
-    # Reference: 384 tokens = 1 canonical unit
+    # Reference: 768 tokens = 1 canonical unit
     max_batch_items = max_batch_tokens / CANONICAL_TOKEN_SIZE
     
     batches = []
