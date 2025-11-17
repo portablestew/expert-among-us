@@ -28,6 +28,13 @@ def mock_subprocess_run():
 
 
 @pytest.fixture
+def mock_subprocess_popen():
+    """Fixture for mocking subprocess.Popen calls (used by p4 describe)."""
+    with patch('subprocess.Popen') as mock:
+        yield mock
+
+
+@pytest.fixture
 def mock_which():
     """Fixture for mocking shutil.which to simulate p4 availability."""
     with patch('shutil.which') as mock:
@@ -39,6 +46,32 @@ def mock_which():
 def perforce_provider():
     """Fixture providing a Perforce provider instance."""
     return Perforce()
+
+
+def create_mock_popen_process(output: str, returncode: int = 0):
+    """Helper to create a mock Popen process with streaming output.
+    
+    Args:
+        output: The output that the process should return
+        returncode: The return code of the process
+        
+    Returns:
+        Mock process object configured for streaming reads
+    """
+    mock_process = Mock()
+    
+    # Simulate streaming read: return chunks, then empty string for EOF
+    chunks = [output[i:i+8192] for i in range(0, len(output), 8192)]
+    mock_process.stdout.read = Mock(side_effect=chunks + [""])
+    
+    mock_process.returncode = returncode
+    mock_process.poll = Mock(return_value=returncode)
+    mock_process.wait = Mock(return_value=None)
+    mock_process.kill = Mock()
+    mock_process.stderr = Mock()
+    mock_process.stderr.read = Mock(return_value="")
+    
+    return mock_process
 
 
 class TestPerforceDetection:
@@ -87,7 +120,7 @@ class TestPerforceDetection:
 class TestChangelistRetrieval:
     """Tests for changelist retrieval with pagination."""
 
-    def test_get_commits_after_basic(self, mock_subprocess_run, perforce_provider, tmp_path):
+    def test_get_commits_after_basic(self, mock_subprocess_run, mock_subprocess_popen, perforce_provider, tmp_path):
         """Verify basic changelist retrieval returns Changelist objects."""
         # Mock p4 changes output (newest first)
         changes_output = """Change 12347 on 2024/01/15 14:45:00 by user@client 'Third commit'
@@ -128,11 +161,14 @@ Differences ...
         # Mock p4 where for workspace mapping
         where_output = f"//depot //client {tmp_path}"
         
+        # Mock subprocess.run for p4 changes and p4 where
         mock_subprocess_run.side_effect = [
             Mock(returncode=0, stdout=changes_output),  # p4 changes
-            Mock(returncode=0, stdout=describe_output),  # p4 describe
             Mock(returncode=0, stdout=where_output),  # p4 where (for depot_to_local_path)
         ]
+        
+        # Mock subprocess.Popen for p4 describe (now uses streaming)
+        mock_subprocess_popen.return_value = create_mock_popen_process(describe_output)
         
         changelists = perforce_provider.get_commits_after(
             workspace_path=str(tmp_path),
@@ -141,14 +177,11 @@ Differences ...
             subdirs=None
         )
         
-        # Should have called p4 changes, p4 describe, and p4 where (for workspace mapping)
-        assert mock_subprocess_run.call_count == 3
-        
         # Verify results
         assert len(changelists) == 2
         assert all(isinstance(cl, Changelist) for cl in changelists)
 
-    def test_get_commits_after_respects_batch_size(self, mock_subprocess_run, perforce_provider, tmp_path):
+    def test_get_commits_after_respects_batch_size(self, mock_subprocess_run, mock_subprocess_popen, perforce_provider, tmp_path):
         """Verify batch_size parameter limits results."""
         changes_output = """Change 12347 on 2024/01/15 14:45:00 by user@client
 Change 12346 on 2024/01/15 14:30:00 by user@client
@@ -172,9 +205,11 @@ Differences ...
         
         mock_subprocess_run.side_effect = [
             Mock(returncode=0, stdout=changes_output),
-            Mock(returncode=0, stdout=describe_output),
             Mock(returncode=0, stdout=where_output),  # p4 where
         ]
+        
+        # Mock Popen for p4 describe
+        mock_subprocess_popen.return_value = create_mock_popen_process(describe_output)
         
         changelists = perforce_provider.get_commits_after(
             workspace_path=str(tmp_path),
@@ -187,7 +222,7 @@ Differences ...
         assert len(changelists) == 1
         
         # Verify p4 describe was called with -m flag and MAX_FILES_PER_CL value
-        describe_call = mock_subprocess_run.call_args_list[1]
+        describe_call = mock_subprocess_popen.call_args
         cmd_args = describe_call[0][0]
         # Command should be: ['p4', 'describe', '-du', '-m', str(MAX_FILES_PER_CL), '12345']
         assert 'p4' in cmd_args
@@ -197,7 +232,7 @@ Differences ...
         assert str(MAX_FILES_PER_CL) in cmd_args  # Check against the constant
         assert '12345' in cmd_args  # The CL number
 
-    def test_get_commits_after_returns_changelist_objects(self, mock_subprocess_run, perforce_provider, tmp_path):
+    def test_get_commits_after_returns_changelist_objects(self, mock_subprocess_run, mock_subprocess_popen, perforce_provider, tmp_path):
         """Verify changelists have required attributes."""
         changes_output = "Change 12345 on 2024/01/15 14:00:00 by user@client"
         describe_output = """Change 12345 by jsmith@test-client on 2024/01/15 14:00:00
@@ -218,9 +253,10 @@ Differences ...
         
         mock_subprocess_run.side_effect = [
             Mock(returncode=0, stdout=changes_output),
-            Mock(returncode=0, stdout=describe_output),
             Mock(returncode=0, stdout=where_output),  # p4 where
         ]
+        
+        mock_subprocess_popen.return_value = create_mock_popen_process(describe_output)
         
         changelists = perforce_provider.get_commits_after(
             workspace_path=str(tmp_path),
@@ -245,7 +281,7 @@ Differences ...
         assert "main()" in cl.diff
         assert len(cl.files) > 0
 
-    def test_get_commits_after_with_after_hash_filter(self, mock_subprocess_run, perforce_provider, tmp_path):
+    def test_get_commits_after_with_after_hash_filter(self, mock_subprocess_run, mock_subprocess_popen, perforce_provider, tmp_path):
         """Verify after_hash filter works for cursor-based pagination."""
         changes_output = """Change 12347 on 2024/01/15 14:45:00 by user@client
 Change 12346 on 2024/01/15 14:30:00 by user@client
@@ -283,9 +319,10 @@ Differences ...
         
         mock_subprocess_run.side_effect = [
             Mock(returncode=0, stdout=changes_output),
-            Mock(returncode=0, stdout=describe_output),
             Mock(returncode=0, stdout=where_output),  # p4 where
         ]
+        
+        mock_subprocess_popen.return_value = create_mock_popen_process(describe_output)
         
         # Get CLs after 12345
         changelists = perforce_provider.get_commits_after(
@@ -397,7 +434,7 @@ Change 12345 on 2024/01/15 14:00:00 by user@client"""
 class TestChangelistDetails:
     """Tests for changelist details parsing."""
 
-    def test_fetch_changelists_by_numbers_parsing(self, mock_subprocess_run, perforce_provider, tmp_path):
+    def test_fetch_changelists_by_numbers_parsing(self, mock_subprocess_run, mock_subprocess_popen, perforce_provider, tmp_path):
         """Verify p4 describe output parsing extracts all fields."""
         describe_output = """Change 12345 by jsmith@test-client on 2024/01/15 14:30:00
 
@@ -421,10 +458,9 @@ Differences ...
         
         # Mock workspace mapping for depot-to-local path conversion
         where_output = f"//depot //client {tmp_path}"
-        mock_subprocess_run.side_effect = [
-            Mock(returncode=0, stdout=describe_output),  # p4 describe (called first)
-            Mock(returncode=0, stdout=where_output),  # p4 where for workspace mapping (called during parsing)
-        ]
+        mock_subprocess_run.return_value = Mock(returncode=0, stdout=where_output)  # p4 where
+        
+        mock_subprocess_popen.return_value = create_mock_popen_process(describe_output)
         
         changelists = perforce_provider._fetch_changelists_by_numbers(
             workspace_path=str(tmp_path),
@@ -1020,3 +1056,310 @@ Change 12346 on incomplete
         assert "12345" in cl_numbers
         assert "12346" in cl_numbers
         assert len(cl_numbers) == 2
+
+
+class TestSizeLimitingAndTruncation:
+    """Tests for size-limiting functionality in p4 describe."""
+    
+    def test_run_describe_with_size_limit_normal_output(self, mock_subprocess_popen, perforce_provider, tmp_path):
+        """Verify normal output (under limit) works correctly."""
+        small_output = """Change 12345 by user@client on 2024/01/15 14:00:00
+
+\tSmall commit
+
+Affected files ...
+
+... //depot/src/file.cpp#1 add
+
+Differences ...
+
+==== //depot/src/file.cpp#1 (text) ====
+
++small content"""
+        
+        mock_subprocess_popen.return_value = create_mock_popen_process(small_output)
+        
+        output, truncated = perforce_provider._run_describe_with_size_limit(
+            workspace_path=str(tmp_path),
+            cl_numbers=["12345"],
+            timeout=60,
+            max_bytes=10 * 1024 * 1024  # 10 MB
+        )
+        
+        assert not truncated
+        assert "small content" in output
+        assert "[TRUNCATED" not in output
+    
+    def test_run_describe_with_size_limit_exceeds_limit(self, mock_subprocess_popen, perforce_provider, tmp_path):
+        """Verify output is truncated when exceeding size limit."""
+        # Create output that exceeds 1 KB limit
+        large_content = "x" * 2000  # 2 KB of content
+        large_output = f"""Change 12345 by user@client on 2024/01/15 14:00:00
+
+\tLarge commit
+
+Affected files ...
+
+... //depot/src/file.cpp#1 add
+
+Differences ...
+
+==== //depot/src/file.cpp#1 (text) ====
+
++{large_content}"""
+        
+        mock_process = create_mock_popen_process(large_output)
+        mock_subprocess_popen.return_value = mock_process
+        
+        output, truncated = perforce_provider._run_describe_with_size_limit(
+            workspace_path=str(tmp_path),
+            cl_numbers=["12345"],
+            timeout=60,
+            max_bytes=1024  # 1 KB limit
+        )
+        
+        assert truncated
+        assert "[TRUNCATED - exceeded size limit]" in output
+        assert len(output.encode('utf-8')) <= 1024 + 100  # Allow some margin for marker
+        # Verify process was killed
+        mock_process.kill.assert_called_once()
+    
+    def test_fetch_single_describe_batch_with_truncation_single_cl(self, mock_subprocess_run, mock_subprocess_popen, perforce_provider, tmp_path):
+        """Verify single huge CL is truncated with marker."""
+        large_content = "x" * 2000
+        large_output = f"""Change 12345 by user@client on 2024/01/15 14:00:00
+
+\tHuge commit
+
+Affected files ...
+
+... //depot/src/file.cpp#1 add
+
+Differences ...
+
+==== //depot/src/file.cpp#1 (text) ====
+
++{large_content}"""
+        
+        where_output = f"//depot //client {tmp_path}"
+        mock_subprocess_run.return_value = Mock(returncode=0, stdout=where_output)
+        
+        mock_subprocess_popen.return_value = create_mock_popen_process(large_output)
+        
+        changelists = perforce_provider._fetch_single_describe_batch(
+            workspace_path=str(tmp_path),
+            cl_numbers=["12345"],
+            depot_prefixes=None,
+            timeout=60,
+            max_output_bytes=1024  # 1 KB limit
+        )
+        
+        # Should return 1 CL with truncated diff
+        assert len(changelists) == 1
+        assert "[TRUNCATED - exceeded size limit]" in changelists[0].diff
+    
+    def test_fetch_single_describe_batch_with_truncation_multiple_cls(self, mock_subprocess_run, mock_subprocess_popen, perforce_provider, tmp_path):
+        """Verify multiple CLs trigger binary search when batch exceeds limit."""
+        # First call: large batch (truncated)
+        large_content = "x" * 2000
+        large_batch_output = f"""Change 12345 by user@client on 2024/01/15 14:00:00
+
+\tCommit 1
+
+Affected files ...
+
+... //depot/src/file1.cpp#1 add
+
+Differences ...
+
+==== //depot/src/file1.cpp#1 (text) ====
+
++{large_content}
+
+Change 12346 by user@client on 2024/01/15 14:30:00
+
+\tCommit 2
+
+Affected files ...
+
+... //depot/src/file2.cpp#1 add
+
+Differences ...
+
+==== //depot/src/file2.cpp#1 (text) ====
+
++{large_content}"""
+        
+        # Binary search will split into two calls with smaller outputs
+        small_output_1 = """Change 12345 by user@client on 2024/01/15 14:00:00
+
+\tCommit 1
+
+Affected files ...
+
+... //depot/src/file1.cpp#1 add
+
+Differences ...
+
+==== //depot/src/file1.cpp#1 (text) ====
+
++small content 1"""
+        
+        small_output_2 = """Change 12346 by user@client on 2024/01/15 14:30:00
+
+\tCommit 2
+
+Affected files ...
+
+... //depot/src/file2.cpp#1 add
+
+Differences ...
+
+==== //depot/src/file2.cpp#1 (text) ====
+
++small content 2"""
+        
+        where_output = f"//depot //client {tmp_path}"
+        mock_subprocess_run.return_value = Mock(returncode=0, stdout=where_output)
+        
+        # Mock Popen calls: first truncated, then two successful splits
+        mock_subprocess_popen.side_effect = [
+            create_mock_popen_process(large_batch_output),  # Initial batch (truncated)
+            create_mock_popen_process(small_output_1),      # First half
+            create_mock_popen_process(small_output_2),      # Second half
+        ]
+        
+        changelists = perforce_provider._fetch_single_describe_batch(
+            workspace_path=str(tmp_path),
+            cl_numbers=["12345", "12346"],
+            depot_prefixes=None,
+            timeout=60,
+            max_output_bytes=1024  # 1 KB limit
+        )
+        
+        # Should successfully return both CLs after binary search
+        assert len(changelists) == 2
+        assert changelists[0].id == "12345"
+        assert changelists[1].id == "12346"
+        assert "small content 1" in changelists[0].diff
+        assert "small content 2" in changelists[1].diff
+        # Verify no truncation markers (splits were successful)
+        assert "[TRUNCATED" not in changelists[0].diff
+        assert "[TRUNCATED" not in changelists[1].diff
+    
+    def test_fetch_with_binary_search_recursive_splitting(self, mock_subprocess_run, mock_subprocess_popen, perforce_provider, tmp_path):
+        """Verify binary search splits batch and processes each half."""
+        # Binary search splits [12345, 12346, 12347, 12348] into two batches:
+        # First batch: [12345, 12346]
+        # Second batch: [12347, 12348]
+        
+        first_batch_output = """Change 12345 by user@client on 2024/01/15 14:00:00
+
+\tCommit 1
+
+Affected files ...
+
+... //depot/src/file1.cpp#1 add
+
+Differences ...
+
+==== //depot/src/file1.cpp#1 (text) ====
+
++content1
+
+Change 12346 by user@client on 2024/01/15 14:30:00
+
+\tCommit 2
+
+Affected files ...
+
+... //depot/src/file2.cpp#1 add
+
+Differences ...
+
+==== //depot/src/file2.cpp#1 (text) ====
+
++content2"""
+        
+        second_batch_output = """Change 12347 by user@client on 2024/01/15 15:00:00
+
+\tCommit 3
+
+Affected files ...
+
+... //depot/src/file3.cpp#1 add
+
+Differences ...
+
+==== //depot/src/file3.cpp#1 (text) ====
+
++content3
+
+Change 12348 by user@client on 2024/01/15 15:30:00
+
+\tCommit 4
+
+Affected files ...
+
+... //depot/src/file4.cpp#1 add
+
+Differences ...
+
+==== //depot/src/file4.cpp#1 (text) ====
+
++content4"""
+        
+        where_output = f"//depot //client {tmp_path}"
+        mock_subprocess_run.return_value = Mock(returncode=0, stdout=where_output)
+        
+        # Mock Popen: two calls for the two halves
+        mock_subprocess_popen.side_effect = [
+            create_mock_popen_process(first_batch_output),   # First half [12345, 12346]
+            create_mock_popen_process(second_batch_output),  # Second half [12347, 12348]
+        ]
+        
+        changelists = perforce_provider._fetch_with_binary_search(
+            workspace_path=str(tmp_path),
+            cl_numbers=["12345", "12346", "12347", "12348"],
+            depot_prefixes=None,
+            timeout=60,
+            max_output_bytes=10 * 1024 * 1024
+        )
+        
+        # Should return all 4 CLs
+        assert len(changelists) == 4
+        assert [cl.id for cl in changelists] == ["12345", "12346", "12347", "12348"]
+    
+    def test_killed_process_does_not_raise_error(self, mock_subprocess_popen, perforce_provider, tmp_path):
+        """Verify that killed process (negative returncode) doesn't raise error when truncated."""
+        large_content = "x" * 2000
+        large_output = f"""Change 12345 by user@client on 2024/01/15 14:00:00
+
+\tHuge commit
+
+Affected files ...
+
+... //depot/src/file.cpp#1 add
+
+Differences ...
+
+==== //depot/src/file.cpp#1 (text) ====
+
++{large_content}"""
+        
+        # Simulate killed process with negative returncode
+        mock_process = create_mock_popen_process(large_output, returncode=-9)
+        mock_subprocess_popen.return_value = mock_process
+        
+        # Should not raise error despite negative returncode
+        output, truncated = perforce_provider._run_describe_with_size_limit(
+            workspace_path=str(tmp_path),
+            cl_numbers=["12345"],
+            timeout=60,
+            max_bytes=1024
+        )
+        
+        assert truncated
+        assert "[TRUNCATED - exceeded size limit]" in output
+        # Verify process was killed
+        mock_process.kill.assert_called_once()

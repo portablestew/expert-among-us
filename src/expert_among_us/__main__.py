@@ -290,6 +290,15 @@ def populate(
         if total_processed > 0:
             log_success(f"Indexing complete!")
             log_info(f"Successfully processed: {total_processed} commits")
+            
+            # Calculate and report skipped commits
+            total_available = vcs_provider.get_total_commit_count(
+                workspace_path=str(workspace),
+                subdirs=subdirs_list or None
+            )
+            skipped_commit_count = total_available - total_processed if isinstance(total_available, int) else 0
+            if skipped_commit_count > 0:
+                log_info(f"  (skipped {skipped_commit_count} commits with no indexable text content, e.g. binary-only)")
         else:
             log_info("No commits were processed")
         

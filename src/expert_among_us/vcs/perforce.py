@@ -31,6 +31,11 @@ EXCLUDED_AUTOMATED_USERS = (
 # CLs with more files will have diffs for only the first MAX_FILES_PER_CL files (alphabetically)
 MAX_FILES_PER_CL = 200
 
+# Maximum output size from p4 describe command per batch
+# Prevents timeouts and memory issues from huge changelists (e.g., 2.8 GB commits)
+# Batches exceeding this limit will be split via binary search
+MAX_DESCRIBE_OUTPUT_BYTES = 10 * 1024 * 1024  # 10 MB
+
 
 class Perforce(VCSProvider):
     """Perforce VCS provider implementation.
@@ -376,6 +381,7 @@ class Perforce(VCSProvider):
                 cl_numbers=sub_batch,
                 depot_prefixes=depot_prefixes,
                 timeout=SUB_BATCH_TIMEOUT,
+                max_output_bytes=MAX_DESCRIBE_OUTPUT_BYTES,
             )
             
             all_changelists.extend(sub_changelists)
@@ -396,62 +402,211 @@ class Perforce(VCSProvider):
         cl_numbers: list[str],
         depot_prefixes: Optional[list[str]],
         timeout: int,
+        max_output_bytes: int = MAX_DESCRIBE_OUTPUT_BYTES,
     ) -> list[Changelist]:
-        """Fetch full details for a single batch of CLs.
+        """Fetch full details for a single batch of CLs with size limit fallback.
         
-        This is a helper method for _fetch_changelists_by_numbers that handles
-        a single sub-batch of changelists.
-        
-        Limits diffs to first MAX_FILES_PER_CL files per CL to prevent timeouts
-        from huge merges, refactors, or codegen commits.
+        Uses streaming size limits to prevent timeouts from huge changelists.
+        If a batch exceeds the size limit, either accepts truncation (single CL)
+        or uses binary search to split the batch (multiple CLs).
         
         Args:
             workspace_path: Path to the workspace
             cl_numbers: List of CL numbers to fetch (sub-batch)
             depot_prefixes: Optional depot path prefixes for filtering
             timeout: Timeout in seconds for the p4 describe command
+            max_output_bytes: Maximum output size in bytes (default 10 MB)
             
         Returns:
             List of Changelist objects for this batch
         """
-        # Limit to first MAX_FILES_PER_CL files per CL to prevent timeouts
+        if DebugLogger.is_enabled():
+            from expert_among_us.utils.progress import console as progress_console
+            progress_console.print(
+                f"[dim]Perforce._fetch_single_describe_batch: "
+                f"{cl_numbers[0]}..{cl_numbers[-1]} "
+                f"({len(cl_numbers)} CLs, timeout={timeout}s)[/dim]"
+            )
+        
+        # Try batch with size limit
+        output, truncated = self._run_describe_with_size_limit(
+            workspace_path, cl_numbers, timeout, max_output_bytes
+        )
+        
+        if not truncated:
+            # Success - parse normally
+            return self._parse_describe_output(
+                output, workspace_path, depot_prefixes
+            )
+        
+        # Output was truncated due to size limit
+        if DebugLogger.is_enabled():
+            from expert_among_us.utils.progress import console as progress_console
+            progress_console.print(
+                f"[yellow]Batch {cl_numbers[0]}..{cl_numbers[-1]} truncated to "
+                f"{max_output_bytes / (1024*1024):.1f} MB[/yellow]"
+            )
+        
+        if len(cl_numbers) == 1:
+            # Single huge CL - use truncated output (acceptable per requirements)
+            return self._parse_describe_output(
+                output, workspace_path, depot_prefixes
+            )
+        
+        # Multiple CLs - binary search to isolate problem CL(s)
+        return self._fetch_with_binary_search(
+            workspace_path, cl_numbers, depot_prefixes,
+            timeout, max_output_bytes
+        )
+    
+    def _run_describe_with_size_limit(
+        self,
+        workspace_path: str,
+        cl_numbers: list[str],
+        timeout: int,
+        max_bytes: int = MAX_DESCRIBE_OUTPUT_BYTES,
+    ) -> tuple[str, bool]:
+        """Run p4 describe with streaming output size limit.
+        
+        Streams subprocess output and enforces a hard byte limit to prevent
+        memory issues and timeouts from huge changelists. Adds truncation marker
+        when limit is exceeded.
+        
+        Args:
+            workspace_path: Path to workspace
+            cl_numbers: List of CL numbers to describe
+            timeout: Command timeout in seconds
+            max_bytes: Maximum output size in bytes (default 10 MB)
+            
+        Returns:
+            Tuple of (output, was_truncated)
+            
+        Raises:
+            subprocess.CalledProcessError: On p4 command failure
+            subprocess.TimeoutExpired: On timeout (always fatal)
+        """
         cmd = ["p4", "describe", "-du", "-m", str(MAX_FILES_PER_CL)]
         cmd.extend(cl_numbers)
         
-        if DebugLogger.is_enabled():
-            from expert_among_us.utils.progress import console as progress_console
-            cmd_str = " ".join(str(part) for part in cmd)
-            progress_console.print(
-                f"[dim]Perforce._fetch_single_describe_batch: {len(cl_numbers)} CLs "
-                f"(timeout={timeout}s) via {cmd_str}[/dim]"
-            )
-        
-        result = subprocess.run(
+        process = subprocess.Popen(
             cmd,
             cwd=workspace_path,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=timeout,
         )
         
-        if result.returncode != 0:
-            raise subprocess.CalledProcessError(
-                result.returncode,
-                cmd,
-                result.stdout,
-                result.stderr,
+        output_parts = []
+        total_bytes = 0
+        truncated = False
+        
+        try:
+            # Stream output with size checking
+            while True:
+                chunk = process.stdout.read(8192)  # 8 KB chunks
+                if not chunk:
+                    break
+                
+                chunk_bytes = len(chunk.encode('utf-8'))
+                
+                if total_bytes + chunk_bytes > max_bytes:
+                    # Will exceed limit - truncate and stop reading
+                    remaining = max_bytes - total_bytes
+                    if remaining > 0:
+                        # Partial chunk fits
+                        encoded = chunk.encode('utf-8')[:remaining]
+                        output_parts.append(encoded.decode('utf-8', errors='ignore'))
+                    truncated = True
+                    
+                    # Kill process immediately to prevent pipe deadlock
+                    # (process would block when stdout buffer fills)
+                    process.kill()
+                    break
+                
+                output_parts.append(chunk)
+                total_bytes += chunk_bytes
+            
+            # Wait for process to complete (returns immediately if killed)
+            try:
+                process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+                raise  # Always fatal - let caller handle
+            
+            # Add truncation marker if output was cut off
+            if truncated:
+                output_parts.append("\n\n[TRUNCATED - exceeded size limit]")
+            elif process.returncode != 0:
+                # Only raise on real errors, not our intentional kill
+                stderr_output = process.stderr.read()
+                raise subprocess.CalledProcessError(
+                    process.returncode, cmd,
+                    ''.join(output_parts),
+                    stderr_output
+                )
+            
+            return ''.join(output_parts), truncated
+            
+        finally:
+            # Ensure process cleanup
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+    
+    def _fetch_with_binary_search(
+        self,
+        workspace_path: str,
+        cl_numbers: list[str],
+        depot_prefixes: Optional[list[str]],
+        timeout: int,
+        max_output_bytes: int,
+    ) -> list[Changelist]:
+        """Split batch using binary search to isolate problematic CLs.
+        
+        Recursively processes CLs in smaller batches until all succeed.
+        Base case (single CL) is handled by caller which accepts truncation.
+        
+        Args:
+            workspace_path: Path to workspace
+            cl_numbers: List of CL numbers (must be > 1)
+            depot_prefixes: Optional depot path prefixes for filtering
+            timeout: Command timeout in seconds
+            max_output_bytes: Maximum output size per batch
+            
+        Returns:
+            List of Changelist objects from all sub-batches
+        """
+        if len(cl_numbers) <= 1:
+            # Base case - caller handles single CL truncation
+            return self._fetch_single_describe_batch(
+                workspace_path, cl_numbers, depot_prefixes,
+                timeout, max_output_bytes
             )
         
-        # Parse the describe output into individual changelists
-        changelists = self._parse_describe_output(
-            result.stdout,
-            workspace_path,
-            depot_prefixes=depot_prefixes
+        # Split in half
+        mid = len(cl_numbers) // 2
+        first_half = cl_numbers[:mid]
+        second_half = cl_numbers[mid:]
+        
+        # Process each half recursively
+        results = []
+        results.extend(
+            self._fetch_single_describe_batch(
+                workspace_path, first_half, depot_prefixes,
+                timeout, max_output_bytes
+            )
+        )
+        results.extend(
+            self._fetch_single_describe_batch(
+                workspace_path, second_half, depot_prefixes,
+                timeout, max_output_bytes
+            )
         )
         
-        return changelists
+        return results
     
     def _parse_describe_output(
         self,
