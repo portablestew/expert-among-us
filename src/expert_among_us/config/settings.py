@@ -14,7 +14,7 @@ DEFAULT_EMBEDDING_MODEL_ID = "amazon.titan-embed-text-v2:0"
 PROVIDER_MODEL_DEFAULTS = {
     "bedrock": {
         "expert": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
-        "promptgen": "us.amazon.nova-lite-v1:0",
+        "promptgen": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
     },
     "openai": {
         "expert": "gpt-5",

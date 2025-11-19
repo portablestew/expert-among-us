@@ -7,6 +7,7 @@ CLI to interact with Perforce servers.
 """
 
 import shutil
+import socket
 import subprocess
 from pathlib import Path
 from typing import Callable, Optional
@@ -69,16 +70,153 @@ class Perforce(VCSProvider):
         self._cl_index: dict[str, int] | None = None
         self._cl_cache_key: tuple | None = None
         
+        # Cache for all user workspaces (shared between detect() and _get_workspace_mapping())
+        # List of dicts with keys: host, root, client, depot_root
+        self._user_workspaces: list[dict] | None = None
+        
         # Cache for depot root → local root mapping (workspace_path → (depot_root, local_root))
         # This avoids calling p4 where for every file conversion
         self._workspace_mapping_cache: dict[str, tuple[str, str]] = {}
+    
+    def _get_all_user_workspaces(self) -> list[dict]:
+        """Fetch all user workspaces with depot mappings (cached).
+        
+        Uses `p4 clients --me` to get basic workspace info, then `p4 client -o`
+        to get depot root from each client's View field. Results are cached for
+        performance since this is shared between detect() and _get_workspace_mapping().
+        
+        Returns:
+            List of dicts with keys: host, root, client, depot_root
+            Example: [
+                {
+                    "host": "my-machine",
+                    "root": "C:\\Depot\\mainline",
+                    "client": "user_mainline",
+                    "depot_root": "//javelin/mainline"
+                }
+            ]
+        """
+        if self._user_workspaces is not None:
+            return self._user_workspaces
+        
+        try:
+            # Step 1: Get basic workspace info (host, root, client name)
+            result = subprocess.run(
+                ["p4", "-z", "tag", "-F", "%Host% %Root% %client%", "clients", "--me"],
+                capture_output=True,
+                timeout=15,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            
+            if result.returncode != 0:
+                self._user_workspaces = []
+                return []
+            
+            workspaces = []
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                
+                parts = line.split(maxsplit=2)
+                if len(parts) == 3:
+                    host, root, client = parts
+                    
+                    # Step 2: Get depot root from client spec
+                    depot_root = self._get_client_depot_root(client)
+                    
+                    workspaces.append({
+                        "host": host,
+                        "root": root,
+                        "client": client,
+                        "depot_root": depot_root
+                    })
+            
+            self._user_workspaces = workspaces
+            return workspaces
+            
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            self._user_workspaces = []
+            return []
+    
+    def _get_client_depot_root(self, client_name: str) -> str:
+        """Get depot root from client spec View field.
+        
+        Parses the View section of `p4 client -o` output and returns the shortest
+        positive (non-exclusion) depot mapping, which represents the workspace's
+        main depot root.
+        
+        Example View:
+            View:
+                //javelin/mainline/... //client/...
+                -//javelin/mainline/dev/Assets/... //client/dev/Assets/...
+        
+        Returns: "//javelin/mainline" (shortest positive mapping, /... stripped)
+        
+        Args:
+            client_name: Name of the Perforce client
+            
+        Returns:
+            Depot root path (e.g., "//javelin/mainline"), or empty string if not found
+        """
+        try:
+            result = subprocess.run(
+                ["p4", "client", "-o", client_name],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                encoding="utf-8",
+                errors="replace"
+            )
+            
+            if result.returncode != 0:
+                return ""
+            
+            # Collect all positive (non-exclusion) depot paths from View
+            depot_paths = []
+            in_view = False
+            
+            for line in result.stdout.splitlines():
+                if line.startswith("View:"):
+                    in_view = True
+                    continue
+                
+                if in_view:
+                    stripped = line.strip()
+                    
+                    # Check if still in View section (indented lines)
+                    if line.startswith(("\t", " ")) and stripped:
+                        # Skip exclusion rules (start with -)
+                        if stripped.startswith("-"):
+                            continue
+                        
+                        # Parse mapping: "//depot/path/... //client/path/..."
+                        parts = stripped.split()
+                        if len(parts) >= 2:
+                            depot_path = parts[0].rstrip("/...")
+                            depot_paths.append(depot_path)
+                    elif stripped and not line.startswith(("\t", " ")):
+                        # End of View section (reached non-indented line)
+                        break
+            
+            if not depot_paths:
+                return ""
+            
+            # Return shortest path (closest to root, most general mapping)
+            return min(depot_paths, key=len)
+            
+        except (subprocess.TimeoutExpired, OSError):
+            return ""
     
     @staticmethod
     def detect(workspace_path: str) -> bool:
         """Detect if workspace is a Perforce client workspace.
         
-        Uses `p4 info` to verify the workspace is configured for Perforce,
-        and checks that the Client root matches the workspace path.
+        Uses `p4 clients --me` to find all user workspaces and matches by hostname
+        and root path. This approach works regardless of whether P4CLIENT is set,
+        unlike `p4 info` which uses the default client when P4CLIENT is not set.
         
         Args:
             workspace_path: Path to the workspace directory to check
@@ -90,42 +228,36 @@ class Perforce(VCSProvider):
         if not shutil.which("p4"):
             return False
         
-        # Try p4 info to verify client workspace
         try:
-            result = subprocess.run(
-                ["p4", "info"],
-                cwd=workspace_path,
-                capture_output=True,
-                timeout=15,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
+            # Create temporary provider instance to use cached workspace discovery
+            provider = Perforce()
+            workspaces = provider._get_all_user_workspaces()
             
-            if result.returncode != 0:
+            if not workspaces:
                 return False
             
-            # Parse output for "Client root:" field and verify it matches workspace_path
-            for line in result.stdout.splitlines():
-                if line.startswith("Client root:"):
-                    # Extract the client root path from the line
-                    # Format: "Client root: /path/to/workspace" or "Client root: C:\path\to\workspace"
-                    client_root = line.split(":", 1)[1].strip()
-                    
-                    # Normalize paths for comparison (resolve symlinks, normalize separators)
-                    workspace_normalized = str(Path(workspace_path).resolve())
-                    client_root_normalized = str(Path(client_root).resolve())
-                    
-                    # Check if the workspace path is within or equal to the client root
-                    # This allows subdirectories of a client workspace to be detected
-                    try:
-                        Path(workspace_normalized).relative_to(client_root_normalized)
-                        return True
-                    except ValueError:
-                        # workspace_path is not under client_root
-                        return False
+            # Get current hostname for matching
+            current_host = socket.gethostname().lower()
             
-            # No "Client root:" found in output
+            # Normalize workspace_path for comparison
+            workspace_normalized = str(Path(workspace_path).resolve())
+            
+            # Check if workspace_path matches any user workspace
+            for ws in workspaces:
+                # Match by hostname (case-insensitive)
+                if ws["host"].lower() == current_host:
+                    # Normalize root path
+                    try:
+                        root_normalized = str(Path(ws["root"]).resolve())
+                        
+                        # Check if workspace_path is within or equal to root
+                        # This allows subdirectories of a client workspace to be detected
+                        Path(workspace_normalized).relative_to(root_normalized)
+                        return True
+                    except (ValueError, OSError):
+                        # workspace_path is not under root, or invalid path
+                        continue
+            
             return False
             
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
@@ -849,9 +981,9 @@ class Perforce(VCSProvider):
     def _get_workspace_mapping(self, workspace_path: str) -> tuple[str, str]:
         """Get depot root and local root mapping for workspace (cached).
         
-        Uses `p4 where` on the workspace root to determine the mapping between
-        depot paths and local paths. This is called once per workspace and cached
-        for performance.
+        Uses cached workspace data from `_get_all_user_workspaces()` to find the
+        matching workspace by path, providing depot root and local root for path
+        conversion. This avoids calling `p4 where` which fails on workspace roots.
         
         Args:
             workspace_path: Path to workspace
@@ -863,42 +995,55 @@ class Perforce(VCSProvider):
             return self._workspace_mapping_cache[workspace_path]
         
         try:
-            # Use p4 where on workspace root to get the mapping
-            result = subprocess.run(
-                ["p4", "where", workspace_path],
-                cwd=workspace_path,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=15,
-            )
+            # Get all user workspaces with depot mappings
+            workspaces = self._get_all_user_workspaces()
             
-            if result.returncode == 0:
-                lines = result.stdout.strip().split("\n")
-                if lines:
-                    parts = lines[0].split()
-                    if len(parts) >= 3:
-                        # Extract depot and local roots, removing /... suffix
-                        depot_root = parts[0].rstrip("/...")
-                        local_root = parts[2].rstrip("/...").rstrip("\\")
+            if not workspaces:
+                # Fallback: no workspaces found
+                self._workspace_mapping_cache[workspace_path] = ("", workspace_path)
+                return ("", workspace_path)
+            
+            # Get current hostname for matching
+            current_host = socket.gethostname().lower()
+            
+            # Normalize workspace_path for comparison
+            workspace_normalized = str(Path(workspace_path).resolve())
+            
+            # Find matching workspace
+            for ws in workspaces:
+                # Match by hostname (case-insensitive)
+                if ws["host"].lower() == current_host:
+                    try:
+                        # Normalize root path
+                        root_normalized = str(Path(ws["root"]).resolve())
                         
-                        self._workspace_mapping_cache[workspace_path] = (depot_root, local_root)
+                        # Check if workspace_path is within or equal to this workspace root
+                        Path(workspace_normalized).relative_to(root_normalized)
+                        
+                        # Found matching workspace - cache and return
+                        mapping = (ws["depot_root"], ws["root"])
+                        self._workspace_mapping_cache[workspace_path] = mapping
                         
                         if DebugLogger.is_enabled():
                             from expert_among_us.utils.progress import console as progress_console
                             progress_console.print(
                                 f"[dim]Perforce._get_workspace_mapping: cached mapping "
-                                f"depot='{depot_root}' → local='{local_root}'[/dim]"
+                                f"depot='{ws['depot_root']}' → local='{ws['root']}'[/dim]"
                             )
                         
-                        return (depot_root, local_root)
-        except (subprocess.TimeoutExpired, OSError):
-            pass
-        
-        # Fallback: no mapping available
-        self._workspace_mapping_cache[workspace_path] = ("", workspace_path)
-        return ("", workspace_path)
+                        return mapping
+                    except (ValueError, OSError):
+                        # workspace_path is not under this root
+                        continue
+            
+            # No matching workspace found - fallback
+            self._workspace_mapping_cache[workspace_path] = ("", workspace_path)
+            return ("", workspace_path)
+            
+        except Exception:
+            # Fallback on any error
+            self._workspace_mapping_cache[workspace_path] = ("", workspace_path)
+            return ("", workspace_path)
     
     def _depot_to_local_path(self, workspace_path: str, depot_path: str) -> str:
         r"""Convert depot path to local path using cached workspace mapping.
