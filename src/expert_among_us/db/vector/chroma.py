@@ -108,7 +108,7 @@ class ChromaVectorDB(VectorDB):
             raise RuntimeError("Collection not initialized. Call initialize() first.")
         self._batch_upsert(self.file_collection, vectors)
         
-    def search(self, query_vector: list[float], top_k: int) -> list[VectorSearchResult]:
+    def search(self, query_vector: list[float], top_k: int, include_embeddings: bool = False) -> list[VectorSearchResult]:
         """Search for similar vectors and return results sorted by similarity."""
         self._ensure_client(require_exists=True)
         if not self.metadata_collection:
@@ -116,12 +116,53 @@ class ChromaVectorDB(VectorDB):
         
         results = self.metadata_collection.query(
             query_embeddings=[query_vector],
-            n_results=top_k
+            n_results=top_k,
+            include=["distances", "documents", "metadatas"] + (["embeddings"] if include_embeddings else [])
         )
         
-        return self._parse_results(results)
+        return self._parse_results(results, include_embeddings)
     
-    def search_metadata(self, query_vector: list[float], top_k: int) -> list[VectorSearchResult]:
+    def _validate_embeddings(self, results: dict, collection_name: str) -> None:
+        """Validate that ChromaDB returned embeddings correctly.
+        
+        Args:
+            results: ChromaDB query results
+            collection_name: Name of collection for error messages
+            
+        Raises:
+            RuntimeError: If embeddings are missing, incomplete, or contain None values
+        """
+        if not results['ids'] or not results['ids'][0]:
+            return  # No results to validate
+            
+        num_results = len(results['ids'][0])
+        
+        # Check if embeddings array exists
+        if not results.get('embeddings') or not results['embeddings'][0]:
+            raise RuntimeError(
+                f"ChromaDB failed to return embeddings for {collection_name} collection despite include_embeddings=True. "
+                f"Database may be corrupted or using incompatible ChromaDB version. "
+                f"Try re-indexing the expert."
+            )
+        
+        # Check if embedding count matches result count
+        if len(results['embeddings'][0]) != num_results:
+            raise RuntimeError(
+                f"ChromaDB returned {len(results['embeddings'][0])} embeddings but {num_results} results for {collection_name} collection. "
+                f"Database may be corrupted or using incompatible ChromaDB version. "
+                f"Try re-indexing the expert."
+            )
+        
+        # Check if any embeddings are None (database corruption)
+        none_count = sum(1 for emb in results['embeddings'][0] if emb is None)
+        if none_count > 0:
+            raise RuntimeError(
+                f"ChromaDB returned {none_count} None embedding values out of {num_results} results for {collection_name} collection. "
+                f"Database corruption detected - embeddings exist but contain None values. "
+                f"Try re-indexing the expert."
+            )
+    
+    def search_metadata(self, query_vector: list[float], top_k: int, include_embeddings: bool = False) -> list[VectorSearchResult]:
         """Search metadata collection - NO FILTERING NEEDED."""
         self._ensure_client(require_exists=True)
         if not self.metadata_collection:
@@ -129,12 +170,17 @@ class ChromaVectorDB(VectorDB):
         
         results = self.metadata_collection.query(
             query_embeddings=[query_vector],
-            n_results=top_k  # Direct top_k, no multiplier
+            n_results=top_k,  # Direct top_k, no multiplier
+            include=["distances", "documents", "metadatas"] + (["embeddings"] if include_embeddings else [])
         )
         
-        return self._parse_results(results)
+        # Validate embeddings if requested
+        if include_embeddings:
+            self._validate_embeddings(results, "metadata")
+        
+        return self._parse_results(results, include_embeddings)
     
-    def search_diffs(self, query_vector: list[float], top_k: int) -> list[VectorSearchResult]:
+    def search_diffs(self, query_vector: list[float], top_k: int, include_embeddings: bool = False) -> list[VectorSearchResult]:
         """Search diffs collection - NO FILTERING NEEDED."""
         self._ensure_client(require_exists=True)
         if not self.diff_collection:
@@ -142,8 +188,13 @@ class ChromaVectorDB(VectorDB):
         
         results = self.diff_collection.query(
             query_embeddings=[query_vector],
-            n_results=top_k  # Direct top_k, no multiplier
+            n_results=top_k,  # Direct top_k, no multiplier
+            include=["distances", "documents", "metadatas"] + (["embeddings"] if include_embeddings else [])
         )
+        
+        # Validate embeddings if requested
+        if include_embeddings:
+            self._validate_embeddings(results, "diff")
         
         # Extract commit hash from chunk IDs
         vector_results = []
@@ -154,17 +205,20 @@ class ChromaVectorDB(VectorDB):
                 changelist_id = result_id.split('_chunk_')[0] if '_chunk_' in result_id else result_id
                 distance = results['distances'][0][i] if results['distances'] else 0.0
                 similarity = max(0.0, min(1.0, 1.0 - distance))
+                # After validation, we KNOW embeddings exist if requested
+                embedding = results['embeddings'][0][i] if include_embeddings else None
                 
                 vector_results.append(VectorSearchResult(
                     result_id=changelist_id,  # Commit hash for diff results
                     similarity_score=similarity,
                     source="diff",
-                    chroma_id=result_id
+                    chroma_id=result_id,
+                    embedding=embedding
                 ))
         
         return vector_results
     
-    def search_files(self, query_vector: list[float], top_k: int) -> list[VectorSearchResult]:
+    def search_files(self, query_vector: list[float], top_k: int, include_embeddings: bool = False) -> list[VectorSearchResult]:
         """Search files collection - NO FILTERING NEEDED."""
         self._ensure_client(require_exists=True)
         if not self.file_collection:
@@ -172,8 +226,13 @@ class ChromaVectorDB(VectorDB):
         
         results = self.file_collection.query(
             query_embeddings=[query_vector],
-            n_results=top_k  # Direct top_k, no multiplier
+            n_results=top_k,  # Direct top_k, no multiplier
+            include=["distances", "documents", "metadatas"] + (["embeddings"] if include_embeddings else [])
         )
+        
+        # Validate embeddings if requested
+        if include_embeddings:
+            self._validate_embeddings(results, "file")
         
         # Extract file path from chunk IDs
         vector_results = []
@@ -184,27 +243,33 @@ class ChromaVectorDB(VectorDB):
                 file_path = result_id.split(':chunk_')[0] if ':chunk_' in result_id else result_id
                 distance = results['distances'][0][i] if results['distances'] else 0.0
                 similarity = max(0.0, min(1.0, 1.0 - distance))
+                # After validation, we KNOW embeddings exist if requested
+                embedding = results['embeddings'][0][i] if include_embeddings else None
                 
                 vector_results.append(VectorSearchResult(
                     result_id=file_path,  # File path for file results (used as result grouping key)
                     similarity_score=similarity,
                     source="file",
-                    chroma_id=result_id
+                    chroma_id=result_id,
+                    embedding=embedding
                 ))
         
         return vector_results
     
-    def _parse_results(self, results) -> list[VectorSearchResult]:
+    def _parse_results(self, results, include_embeddings: bool = False) -> list[VectorSearchResult]:
         """Helper to convert ChromaDB results to VectorSearchResult."""
         vector_results = []
         if results['ids'] and results['ids'][0]:
             for i in range(len(results['ids'][0])):
                 distance = results['distances'][0][i] if results['distances'] else 0.0
                 similarity = max(0.0, min(1.0, 1.0 - distance))
+                # After validation, we KNOW embeddings exist if requested
+                embedding = results['embeddings'][0][i] if include_embeddings else None
                 vector_results.append(VectorSearchResult(
                     result_id=results['ids'][0][i],  # Can be commit hash or chunk ID depending on collection
                     similarity_score=similarity,
-                    source="metadata"  # Default to metadata for generic search
+                    source="metadata",  # Default to metadata for generic search
+                    embedding=embedding
                 ))
         return vector_results
     

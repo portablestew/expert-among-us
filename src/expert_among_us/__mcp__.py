@@ -149,8 +149,8 @@ async def list_tools() -> list[Tool]:
                     },
                     "max_changes": {
                         "type": "integer",
-                        "description": "Optional: Maximum context changes to use (default=20)",
-                        "default": 20
+                        "description": "Optional: Maximum context changes to use (default=30)",
+                        "default": 30
                     },
                     "users": {
                         "type": "array",
@@ -200,8 +200,8 @@ async def list_tools() -> list[Tool]:
                     },
                     "max_changes": {
                         "type": "integer",
-                        "description": "Optional: Maximum context changes to use (default=20)",
-                        "default": 20
+                        "description": "Optional: Maximum context changes to use (default=30)",
+                        "default": 30
                     },
                     "users": {
                         "type": "array",
@@ -328,7 +328,7 @@ async def handle_import(source_path: str) -> list[TextContent]:
 async def handle_query(
     expert_name: str,
     prompt: str,
-    max_changes: int = 20,
+    max_changes: int = 30,
     users: Optional[List[str]] = None,
     files: Optional[List[str]] = None,
     search_scope: str = "all"
@@ -338,8 +338,8 @@ async def handle_query(
         results = query_expert(
             expert_name=expert_name,
             prompt=prompt,
-            max_changes=math.ceil(max_changes / 2),
-            max_file_chunks=math.floor(max_changes / 2),
+            max_changes=math.floor(max_changes * 2 / 3),
+            max_file_chunks=math.ceil(max_changes / 3),
             users=users,
             files=files,
             search_scope=search_scope,
@@ -415,7 +415,7 @@ async def handle_query(
 async def handle_prompt(
     expert_name: str,
     prompt: str,
-    max_changes: int = 20,
+    max_changes: int = 30,
     users: Optional[List[str]] = None,
     files: Optional[List[str]] = None,
     temperature: float = 0.7
@@ -440,8 +440,8 @@ async def handle_prompt(
         async for chunk in prompt_expert_stream(
             expert_name=expert_name,
             prompt=prompt,
-            max_changes=math.ceil(max_changes / 2),
-            max_file_chunks=math.floor(max_changes / 2),
+            max_changes=math.floor(max_changes * 2 / 3),
+            max_file_chunks=math.ceil(max_changes / 3),
             users=users,
             files=files,
             amogus=_amogus_mode,

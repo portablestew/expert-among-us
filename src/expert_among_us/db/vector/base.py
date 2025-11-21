@@ -103,7 +103,8 @@ class VectorDB(ABC):
     def search(
         self,
         query_vector: list[float],
-        top_k: int
+        top_k: int,
+        include_embeddings: bool = False
     ) -> list[VectorSearchResult]:
         """Search for similar vectors and return results sorted by similarity.
         
@@ -135,6 +136,69 @@ class VectorDB(ABC):
         
         Args:
             chunk_ids: List of file chunk IDs to delete (format: file:{path}:chunk_{n})
+        """
+        pass
+
+    @abstractmethod
+    def search_metadata(
+        self,
+        query_vector: list[float],
+        top_k: int,
+        include_embeddings: bool = False
+    ) -> list[VectorSearchResult]:
+        """Search metadata collection for similar vectors.
+        
+        Searches commit metadata (messages, authors, descriptions) for similar vectors.
+        
+        Args:
+            query_vector: Query embedding vector to search for
+            top_k: Maximum number of results to return
+            include_embeddings: Whether to include embedding vectors in results
+            
+        Returns:
+            List of VectorSearchResult objects sorted by similarity score
+        """
+        pass
+
+    @abstractmethod
+    def search_diffs(
+        self,
+        query_vector: list[float],
+        top_k: int,
+        include_embeddings: bool = False
+    ) -> list[VectorSearchResult]:
+        """Search diff collection for similar vectors.
+        
+        Searches code change diffs for similar vectors.
+        
+        Args:
+            query_vector: Query embedding vector to search for
+            top_k: Maximum number of results to return
+            include_embeddings: Whether to include embedding vectors in results
+            
+        Returns:
+            List of VectorSearchResult objects sorted by similarity score
+        """
+        pass
+
+    @abstractmethod
+    def search_files(
+        self,
+        query_vector: list[float],
+        top_k: int,
+        include_embeddings: bool = False
+    ) -> list[VectorSearchResult]:
+        """Search file collection for similar vectors.
+        
+        Searches file content chunks for similar vectors.
+        
+        Args:
+            query_vector: Query embedding vector to search for
+            top_k: Maximum number of results to return
+            include_embeddings: Whether to include embedding vectors in results
+            
+        Returns:
+            List of VectorSearchResult objects sorted by similarity score
         """
         pass
 

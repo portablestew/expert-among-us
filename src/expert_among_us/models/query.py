@@ -22,10 +22,10 @@ class QueryParams(BaseModel):
 
     prompt: str = Field(..., description="User's query")
     max_changes: int = Field(
-        default=10, ge=1, le=100, description="Max changelist results to return"
+        default=20, ge=0, le=100, description="Max changelist results to return (0 to disable)"
     )
     max_file_chunks: int = Field(
-        default=10, ge=1, le=100, description="Max file chunk results to return"
+        default=10, ge=0, le=100, description="Max file chunk results to return (0 to disable)"
     )
     users: Optional[List[str]] = Field(
         None, description="Filter by authors (AND logic)"
@@ -118,6 +118,10 @@ class VectorSearchResult(BaseModel):
     chroma_id: Optional[str] = Field(
         default=None,
         description="ChromaDB ID for chunk-level identification"
+    )
+    embedding: Optional[List[float]] = Field(
+        default=None,
+        description="Optional embedding vector for query expansion"
     )
 
     # Helper methods for type-safe access

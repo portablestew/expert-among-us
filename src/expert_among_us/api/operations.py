@@ -29,6 +29,8 @@ def query_expert(
     search_scope: str = "all",
     min_score: float = 0.1,
     relative_threshold: float = 0.8,
+    expansion_candidate_multiplier: int = 5,
+    expansion_passes: int = 1,
     data_dir: Optional[Path] = None,
     embedding_provider: str = "local",
     llm_provider: str = "auto",
@@ -55,6 +57,8 @@ def query_expert(
         llm_provider: LLM provider - "auto", "openai", "openrouter", "ollama", "bedrock", "claude-code" (default: "auto")
         enable_multiprocessing: Whether to enable multiprocessing for embeddings (default: True)
         enable_reranking: Whether to enable cross-encoder reranking (default: True)
+        expansion_candidate_multiplier: Multiplier for candidate retrieval during expansion (default: 5)
+        expansion_passes: Number of expansion iterations/passes (default: 1)
         
     Returns:
         List of SearchResult objects ordered by similarity score (highest first).
@@ -71,7 +75,9 @@ def query_expert(
             prompt="How to add a new feature?",
             max_changes=10,
             users=["john", "jane"],
-            min_score=0.3
+            min_score=0.3,
+            expansion_candidate_multiplier=5,
+            expansion_passes=1
         )
         
         for result in results:
@@ -132,7 +138,9 @@ def query_expert(
             enable_file_search=enable_file_search,
             enable_reranking=enable_reranking,  # NEW
             min_similarity_score=min_score,
-            relative_threshold=relative_threshold
+            relative_threshold=relative_threshold,
+            expansion_candidate_multiplier=expansion_candidate_multiplier,
+            expansion_passes=expansion_passes,
         )
         
         # Create query parameters

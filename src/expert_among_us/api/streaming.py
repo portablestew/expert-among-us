@@ -45,6 +45,8 @@ async def prompt_expert_stream(
     llm_provider: str = "auto",
     enable_multiprocessing: bool = True,
     enable_reranking: bool = True,
+    expansion_candidate_multiplier: int = 5,
+    expansion_passes: int = 1,
 ) -> AsyncIterator[StreamChunk]:
     """Stream AI recommendations from expert.
     
@@ -132,7 +134,11 @@ async def prompt_expert_stream(
             metadata_db=ctx.metadata_db,
             vector_db=ctx.vector_db,
             reranker=reranker,
-            enable_reranking=enable_reranking
+            enable_reranking=enable_reranking,
+            min_similarity_score=0.1,
+            relative_threshold=0.8,
+            expansion_candidate_multiplier=expansion_candidate_multiplier,
+            expansion_passes=expansion_passes,
         )
         
         params = QueryParams(

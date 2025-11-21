@@ -43,16 +43,19 @@ def test_query_params_validation_empty_prompt():
 
 def test_query_params_validation_max_changes_range():
     """Test max_changes range validation."""
-    # Valid range
+    # Valid range (0 is now allowed for testing)
+    params = QueryParams(prompt="Test", max_changes=0)
+    assert params.max_changes == 0
+    
     params = QueryParams(prompt="Test", max_changes=1)
     assert params.max_changes == 1
     
     params = QueryParams(prompt="Test", max_changes=100)
     assert params.max_changes == 100
     
-    # Below minimum
+    # Below minimum (negative not allowed)
     with pytest.raises(ValidationError):
-        QueryParams(prompt="Test", max_changes=0)
+        QueryParams(prompt="Test", max_changes=-1)
     
     # Above maximum
     with pytest.raises(ValidationError):

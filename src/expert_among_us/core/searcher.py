@@ -58,6 +58,11 @@ class Searcher:
         enable_diff_search: bool = True,
         enable_file_search: bool = True,
         enable_reranking: bool = True,
+        enable_query_expansion: bool = True,
+        expansion_std_threshold: float = 1.0,
+        expansion_min_anchors: int = 3,
+        expansion_candidate_multiplier: int = 5,
+        expansion_passes: int = 1,
         min_similarity_score: float = 0.1,
         relative_threshold: float = 0.8
     ):
@@ -74,6 +79,11 @@ class Searcher:
             enable_diff_search: Whether to search diff embeddings
             enable_file_search: Whether to search file content embeddings
             enable_reranking: Whether to enable cross-encoder reranking
+            enable_query_expansion: Whether to enable query expansion
+            expansion_std_threshold: Statistical threshold for anchor selection
+            expansion_min_anchors: Minimum anchors for diversity
+            expansion_candidate_multiplier: Multiplier for candidate retrieval during expansion
+            expansion_passes: Number of expansion iterations/passes
             min_similarity_score: Minimum similarity score threshold (0.0-1.0)
             relative_threshold: Relative score threshold as percentage drop from top result (0.0-1.0)
         """
@@ -86,8 +96,16 @@ class Searcher:
         self.enable_diff_search = enable_diff_search
         self.enable_file_search = enable_file_search
         self.enable_reranking = enable_reranking
+        self.enable_query_expansion = enable_query_expansion
+        self.expansion_std_threshold = expansion_std_threshold
+        self.expansion_min_anchors = expansion_min_anchors
+        self.expansion_candidate_multiplier = expansion_candidate_multiplier
+        self.expansion_passes = expansion_passes
         self.min_similarity_score = min_similarity_score
         self.relative_threshold = relative_threshold
+        
+        # Note: Constructor parameters take precedence over settings file
+        # This allows CLI/API to override settings when needed
     
     def search(self, params: QueryParams) -> List[QueryResult]:
         """
@@ -139,20 +157,29 @@ class Searcher:
         # Step 1: Generate query embedding
         query_embedding = self.embedder.embed(params.prompt)
         
-        # Step 2: Retrieve 3x results for reranking (if enabled)
+        # Step 2: Retrieve candidates for reranking (if enabled)
         # Fetch more candidates so reranking can improve final top-K selection
-        retrieval_multiplier = 3 if (self.enable_reranking and self.reranker) else 1
+        retrieval_multiplier = self.expansion_candidate_multiplier if (self.enable_reranking and self.reranker) else 1
         commit_retrieval_limit = params.max_changes * retrieval_multiplier
         file_retrieval_limit = params.max_file_chunks * retrieval_multiplier
+        
+        # Log the multiplier and limits
+        log_info(f"Using candidate multiplier {retrieval_multiplier}")
+        log_info(f"Retrieving {commit_retrieval_limit} candidates for {params.max_changes} final results")
+        log_info(f"Performing {self.expansion_passes} expansion passes")
         
         # Step 3: Search metadata and diff collections
         metadata_results: List[VectorSearchResult] = []
         if self.enable_metadata_search:
-            metadata_results = self._search_metadata(query_embedding, commit_retrieval_limit)
+            # Always include embeddings when expansion is enabled for simplicity
+            include_embeddings = self.enable_query_expansion
+            metadata_results = self._search_metadata(query_embedding, commit_retrieval_limit, include_embeddings)
         
         diff_results: List[VectorSearchResult] = []
         if self.enable_diff_search:
-            raw_diff_results = self._search_diffs(query_embedding, commit_retrieval_limit)
+            # Always include embeddings when expansion is enabled for simplicity
+            include_embeddings = self.enable_query_expansion
+            raw_diff_results = self._search_diffs(query_embedding, commit_retrieval_limit, include_embeddings)
             diff_results = self._aggregate_chunk_scores(raw_diff_results)
             if len(raw_diff_results) > len(diff_results):
                 log_info(f"Aggregated {len(raw_diff_results)} diff chunks into {len(diff_results)} commits")
@@ -170,17 +197,27 @@ class Searcher:
         # Step 6: Rerank commits separately (BEFORE limiting to max_changes)
         if self.enable_reranking and self.reranker and filtered_commits:
             filtered_commits = self._rerank_results(params.prompt, filtered_commits)
-            # Re-apply filters after reranking (scores have changed)
-            # Only apply relative_threshold to logits, skip min_similarity_score
-            filtered_commits = self._apply_relative_threshold_filter(filtered_commits)
+            # Note: No filtering here - let expansion work with full reranked set
+            # Final relative threshold filter will be applied after expansion
         
-        # Step 7: Limit commits to final max_changes AFTER reranking
+        # Step 6b: Progressive query expansion for commits
+        if self.enable_query_expansion and filtered_commits:
+            # _iterative_expansion now handles reranking internally and returns fully reranked pool
+            # expansion_min_anchors controls fallback in _select_expansion_anchors(), not gating here
+            # Use same retrieval limit as initial search (max_changes * multiplier)
+            filtered_commits = self._iterative_expansion(
+                params.prompt, filtered_commits, params.max_changes, is_commit_expansion=True
+            )
+        
+        # Step 7: Apply final limit to commits AFTER expansion and final reranking
         filtered_commits = filtered_commits[:params.max_changes]
         
         # Step 8: Search file collection separately
         file_results: List[VectorSearchResult] = []
         if self.enable_file_search:
-            file_results = self._search_files(query_embedding, file_retrieval_limit)
+            # Always include embeddings when expansion is enabled for simplicity
+            include_embeddings = self.enable_query_expansion
+            file_results = self._search_files(query_embedding, file_retrieval_limit, include_embeddings)
 
         file_scores = self._merge_file_scores(file_results)
         top_files = sorted(file_scores.keys(), key=lambda x: file_scores[x]['score'], reverse=True)
@@ -192,99 +229,34 @@ class Searcher:
         # Step 9: Rerank files separately (BEFORE limiting to max_file_chunks)
         if self.enable_reranking and self.reranker and filtered_files:
             filtered_files = self._rerank_results(params.prompt, filtered_files)
-            # Re-apply filters after reranking (scores have changed)
-            # Only apply relative_threshold to logits, skip min_similarity_score
-            filtered_files = self._apply_relative_threshold_filter(filtered_files)
+            # Note: No filtering here - let expansion work with full reranked set
+            # Final relative threshold filter will be applied after expansion
         
-        # Step 10: Limit files to final max_file_chunks AFTER reranking
+        # Step 9b: Progressive query expansion for files
+        if self.enable_query_expansion and filtered_files:
+            # _iterative_expansion now handles reranking internally and returns fully reranked pool
+            # expansion_min_anchors controls fallback in _select_expansion_anchors(), not gating here
+            # Use same retrieval limit as initial search (max_file_chunks * multiplier)
+            filtered_files = self._iterative_expansion(
+                params.prompt, filtered_files, file_retrieval_limit, is_commit_expansion=False
+            )
+        
+        # Step 10: Apply final limit to files AFTER expansion and final reranking
         filtered_files = filtered_files[:params.max_file_chunks]
         
         # Step 11: Combine final results (already at correct limits)
         final_results = filtered_commits + filtered_files
         final_results.sort(key=lambda x: x.similarity_score, reverse=True)
         
+        # Final logging with updated flow information
+        log_info(f"Applied final limits: {params.max_changes} commits, {params.max_file_chunks} files")
         log_info(f"Found {len(final_results)} results ({len(filtered_commits)} commits, {len(filtered_files)} files)")
+        if final_results:
+            top_score = final_results[0].similarity_score
+            log_info(f"Top result score: {top_score:.3f}")
+        
         return final_results
     
-    def _search_metadata(
-        self,
-        query_embedding: List[float],
-        top_k: int
-    ) -> List[VectorSearchResult]:
-        """
-        Search metadata collection for similar commits.
-        
-        Args:
-            query_embedding: Query vector
-            top_k: Number of results to return
-            
-        Returns:
-            List of vector search results from metadata collection
-        """
-        results = self.vector_db.search_metadata(query_embedding, top_k)
-        log_info(f"Metadata search found {len(results)} results")
-        return results
-    
-    def _search_diffs(
-        self,
-        query_embedding: List[float],
-        top_k: int
-    ) -> List[VectorSearchResult]:
-        """
-        Search diff collection for similar code changes.
-        
-        Args:
-            query_embedding: Query vector
-            top_k: Number of results to return
-            
-        Returns:
-            List of vector search results from diff collection
-        """
-        results = self.vector_db.search_diffs(query_embedding, top_k)
-        log_info(f"Diff search found {len(results)} results")
-        return results
-    
-    def _search_files(
-        self,
-        query_embedding: List[float],
-        top_k: int
-    ) -> List[VectorSearchResult]:
-        """
-        Search file content collection for similar code.
-
-        Args:
-            query_embedding: Query vector
-            top_k: Number of results to return
-
-        Returns:
-            List of vector search results from file content collection
-        """
-        # NOTE:
-        # VectorSearchResult is a concrete Pydantic model in production, but in tests
-        # the vector_db is a Mock without search_files configured, so calling
-        # len(results) on the raw Mock return value raises TypeError.
-        #
-        # To keep behavior robust (and avoid hiding bugs), we normalize the result
-        # to a list and log its size, which works for both real implementations
-        # and mocks.
-        results = self.vector_db.search_files(query_embedding, top_k)
-
-        # Normalize to list defensively; this is effectively a no-op for real
-        # implementations that already return a list[VectorSearchResult].
-        if results is None:
-            results_list: List[VectorSearchResult] = []
-        elif isinstance(results, list):
-            results_list = results
-        else:
-            try:
-                results_list = list(results)
-            except TypeError:
-                # Fall back gracefully for unexpected/mocked types; avoids test failures
-                # while still keeping production behavior unchanged.
-                results_list = []
-
-        log_info(f"File search found {len(results_list)} results")
-        return results_list
     
     def _aggregate_chunk_scores(
         self,
@@ -293,7 +265,7 @@ class Searcher:
         """Aggregate chunk scores using max pooling.
         
         When multiple chunks from the same commit match, take the max score
-        and preserve the chroma_id of the best-matching chunk.
+        and preserve the chroma_id and embedding of the best-matching chunk.
         
         Args:
             chunk_results: Raw results with multiple chunks per commit
@@ -303,25 +275,26 @@ class Searcher:
         """
         from typing import Dict, Tuple
         
-        # Group by result_id, tracking both max score and corresponding chroma_id
-        grouped: Dict[str, Tuple[float, Optional[str]]] = {}
+        # Group by result_id, tracking max score, chroma_id, AND embedding
+        grouped: Dict[str, Tuple[float, Optional[str], Optional[List[float]]]] = {}
         for result in chunk_results:
             if result.result_id not in grouped:
-                grouped[result.result_id] = (result.similarity_score, result.chroma_id)
+                grouped[result.result_id] = (result.similarity_score, result.chroma_id, result.embedding)
             else:
-                # Max pooling: keep the highest score and its chroma_id
-                current_score, current_chroma_id = grouped[result.result_id]
+                # Max pooling: keep the highest score with its chroma_id and embedding
+                current_score, current_chroma_id, current_embedding = grouped[result.result_id]
                 if result.similarity_score > current_score:
-                    grouped[result.result_id] = (result.similarity_score, result.chroma_id)
+                    grouped[result.result_id] = (result.similarity_score, result.chroma_id, result.embedding)
         
-        # Convert back to VectorSearchResult list
+        # Convert back to VectorSearchResult list, preserving embeddings
         return [
             VectorSearchResult(
                 result_id=cid,
                 similarity_score=score,
-                chroma_id=chroma_id
+                chroma_id=chroma_id,
+                embedding=embedding
             )
-            for cid, (score, chroma_id) in grouped.items()
+            for cid, (score, chroma_id, embedding) in grouped.items()
         ]
     
     def _merge_commit_scores(
@@ -358,7 +331,8 @@ class Searcher:
                 'diff_score': None,
                 'file_score': None,
                 'is_file': False,
-                'chroma_id': result.chroma_id
+                'chroma_id': result.chroma_id,
+                'embedding': result.embedding  # NEW: Preserve embedding
             }
         
         # Merge diff results (commits)
@@ -381,6 +355,10 @@ class Searcher:
                     source = 'metadata'
                     chroma_id = merged[result.result_id]['chroma_id']
 
+                # Merge embeddings (use metadata embedding if available, otherwise diff)
+                existing_embedding = merged[result.result_id].get('embedding')
+                embedding = existing_embedding or result.embedding
+
                 merged[result.result_id] = {
                     'score': combined_score,
                     'source': source,
@@ -388,8 +366,10 @@ class Searcher:
                     'diff_score': diff_score,
                     'file_score': None,
                     'is_file': False,
-                    'chroma_id': chroma_id
+                    'chroma_id': chroma_id,
+                    'embedding': embedding  # Preserve embedding
                 }
+                
             else:
                 # Only in diff results
                 merged[result.result_id] = {
@@ -399,8 +379,10 @@ class Searcher:
                     'diff_score': result.similarity_score,
                     'file_score': None,
                     'is_file': False,
-                    'chroma_id': result.chroma_id
+                    'chroma_id': result.chroma_id,
+                    'embedding': result.embedding  # Preserve embedding
                 }
+                
 
         return merged
         
@@ -422,6 +404,7 @@ class Searcher:
                 'file_score': result.similarity_score,
                 'is_file': True,
                 'chroma_id': result.chroma_id,
+                'embedding': result.embedding  # NEW: Preserve embedding
             }
         
         return merged
@@ -467,11 +450,16 @@ class Searcher:
             
             # Passed all filters, add to results
             score_info = scores[changelist.id]
+            
+            # Extract embedding from score_info
+            embedding = score_info.get('embedding')
+            
             results.append(CommitResult(
                 changelist=changelist,
                 similarity_score=score_info['score'],
                 source=score_info['source'],
-                chroma_id=score_info.get('chroma_id')
+                chroma_id=score_info.get('chroma_id'),
+                embedding=embedding  # Preserve embedding from merged scores
             ))
         
         return results
@@ -529,7 +517,8 @@ class Searcher:
                         file_chunk=file_chunk,
                         similarity_score=score_info['score'],
                         source=score_info['source'],
-                        chroma_id=chroma_id
+                        chroma_id=chroma_id,
+                        embedding=score_info.get('embedding')  # Preserve embedding from merged scores
                     ))
         
         return results
@@ -663,9 +652,13 @@ class Searcher:
         for idx, rerank_score in ranked_pairs:
             result = results[idx]
             
-            # Preserve original search score before overwriting
-            result.search_similarity_score = result.similarity_score
+            # Preserve original search score before overwriting (only if not already set)
+            # This prevents overwriting cosine similarity with old reranked scores on subsequent rerankings
+            if result.search_similarity_score is None:
+                result.search_similarity_score = result.similarity_score
             result.similarity_score = float(rerank_score)
+            # IMPORTANT: Preserve embedding for subsequent expansion passes
+            # Embeddings were already preserved in _merge_commit_scores() and _merge_file_scores()
             
             reranked_results.append(result)
         
@@ -673,6 +666,549 @@ class Searcher:
             log_info(f"Reranking complete - score range: {reranked_results[0].similarity_score:.3f} to {reranked_results[-1].similarity_score:.3f}")
         
         return reranked_results
+
+    def _select_expansion_anchors(self, reranked_results: List[QueryResult]) -> List[QueryResult]:
+        """Select expansion anchors using statistical threshold with minimum count fallback.
+        
+        Uses statistical analysis to identify high-quality anchors while ensuring
+        minimum diversity through configurable minimum anchor count.
+        
+        Args:
+            reranked_results: List of reranked results (already sorted by similarity)
+            
+        Returns:
+            List of anchor results with sufficient quality/diversity
+        """
+        if not reranked_results:
+            return []
+        
+        # Extract scores for statistical analysis
+        scores = [result.similarity_score for result in reranked_results]
+        
+        # Calculate statistical measures
+        import statistics
+        max_score = max(scores)
+        std_score = statistics.stdev(scores) if len(scores) > 1 else 0.0
+        
+        # Calculate threshold: max - (std_threshold * std)
+        # This selects high-quality results near the top of the distribution
+        threshold = max_score - (self.expansion_std_threshold * std_score)
+        
+        # Select anchors above threshold
+        anchors = [result for result in reranked_results if result.similarity_score >= threshold]
+        
+        # Ensure minimum diversity with fallback to top results
+        from expert_among_us.utils.debug import DebugLogger
+        if len(anchors) < self.expansion_min_anchors:
+            anchors = reranked_results[:self.expansion_min_anchors]
+            if DebugLogger.is_enabled():
+                log_info(f"Selected {len(anchors)} expansion anchors (stddev filter selected too few, using top {self.expansion_min_anchors})")
+        elif DebugLogger.is_enabled():
+            log_info(f"Selected {len(anchors)} expansion anchors (threshold: {threshold:.3f})")
+        
+        return anchors
+
+    def _progressive_expansion_commits(self, query: str, reranked_commits: List[CommitResult], max_changes: int) -> List[CommitResult]:
+        """Perform progressive centroid expansion for commits with separate metadata/diff centroids.
+          
+        Progressively expands search by building centroids from increasing numbers of anchors:
+        - First search uses centroid of top anchor
+        - Second search uses centroid of top 2 anchors
+        - Third search uses centroid of top 3 anchors, etc.
+        
+        This progressive approach starts specific and gradually broadens to capture related patterns.
+          
+        Args:
+            query: Original search query
+            reranked_commits: List of reranked commit results (sorted by quality)
+            max_changes: Maximum number of new commits to find per search
+            
+        Returns:
+            List of newly found commit results (deduplication handled by caller)
+        """
+        if not reranked_commits:
+            return []
+        
+        # Check if anchors have embeddings - FAIL FAST (but allow some without embeddings)
+        valid_anchors = [anchor for anchor in reranked_commits if hasattr(anchor, 'embedding') and anchor.embedding is not None]
+        
+        if not valid_anchors:
+            raise ValueError("No expansion anchors have embeddings - reranking may have lost all embeddings")
+        
+        # Separate anchors by source for centroid calculation
+        metadata_anchors = [r for r in reranked_commits if r.source in ('metadata', 'combined')]
+        diff_anchors = [r for r in reranked_commits if r.source == 'diff']
+        
+        new_commits = []
+        all_expanded = []
+           
+        # Progressive expansion from metadata anchors (captures "what/why" patterns)
+        if metadata_anchors and self.enable_metadata_search:
+            # Extract embeddings and FAIL FAST if none available
+            metadata_embeddings = []
+            for anchor in metadata_anchors:
+                embedding = self._extract_embedding_vector(anchor)
+                if embedding:
+                    metadata_embeddings.append(embedding)
+            
+            if not metadata_embeddings:
+                raise ValueError("No embeddings available for metadata centroid calculation - expansion cannot proceed")
+            
+            # Verify VectorDB has search_metadata method - FAIL FAST
+            if not hasattr(self.vector_db, 'search_metadata'):
+                raise ValueError("VectorDB is missing required search_metadata method")
+            
+            # Progressive search: centroid[0], centroid[0:2], centroid[0:3], etc.
+            for i in range(len(metadata_embeddings)):
+                # Calculate centroid from first i+1 embeddings
+                progressive_embeddings = metadata_embeddings[:i+1]
+                metadata_centroid = self._calculate_centroid(progressive_embeddings)
+                
+                # FAIL FAST if centroid calculation failed
+                if metadata_centroid is None:
+                    raise ValueError(f"Failed to compute metadata centroid from {len(progressive_embeddings)} embeddings")
+                
+                metadata_expansion = self._search_with_centroid(query, metadata_centroid, max_changes, is_metadata=True)
+                new_commits.extend(metadata_expansion)
+                all_expanded.extend(metadata_expansion)
+                
+                from expert_among_us.utils.debug import DebugLogger
+                if DebugLogger.is_enabled():
+                    log_info(f"[DEBUG] Metadata level {i+1}/{len(metadata_embeddings)}: {len(metadata_expansion)} results")
+          
+        # Progressive expansion from diff anchors (captures "how" patterns)
+        if diff_anchors and self.enable_diff_search:
+            # Extract embeddings and FAIL FAST if none available
+            diff_embeddings = []
+            for anchor in diff_anchors:
+                embedding = self._extract_embedding_vector(anchor)
+                if embedding:
+                    diff_embeddings.append(embedding)
+            
+            if diff_embeddings:
+                # Verify VectorDB has search_diffs method - FAIL FAST
+                if not hasattr(self.vector_db, 'search_diffs'):
+                    raise ValueError("VectorDB is missing required search_diffs method")
+                
+                # Progressive search: centroid[0], centroid[0:2], centroid[0:3], etc.
+                for i in range(len(diff_embeddings)):
+                    # Calculate centroid from first i+1 embeddings
+                    progressive_embeddings = diff_embeddings[:i+1]
+                    diff_centroid = self._calculate_centroid(progressive_embeddings)
+                    
+                    if diff_centroid is not None:
+                        diff_expansion = self._search_with_centroid(query, diff_centroid, max_changes, is_metadata=False)
+                        new_commits.extend(diff_expansion)
+                        all_expanded.extend(diff_expansion)
+                        
+                        from expert_among_us.utils.debug import DebugLogger
+                        if DebugLogger.is_enabled():
+                            log_info(f"[DEBUG] Diff level {i+1}/{len(diff_embeddings)}: {len(diff_expansion)} results")
+          
+        # Aggregate chunk scores for diff results
+        if new_commits:
+            new_commits = self._aggregate_chunk_scores(new_commits)
+          
+        from expert_among_us.utils.debug import DebugLogger
+        if DebugLogger.is_enabled() or not self.enable_reranking:
+            raw_expansion_results = len(all_expanded)
+            unique_added = len(new_commits)
+            log_info(f"DEBUG: Final expansion summary - {len(metadata_anchors)} metadata + {len(diff_anchors)} diff anchors")
+            log_info(f"DEBUG: Expansion found {raw_expansion_results} raw results, added {unique_added} new commits")
+        return new_commits
+
+    def _progressive_expansion_files(self, query: str, reranked_files: List[FileChunkResult], max_file_chunks: int) -> List[FileChunkResult]:
+        """Perform progressive centroid expansion for files.
+          
+        Progressively expands search by building centroids from increasing numbers of anchors:
+        - First search uses centroid of top anchor
+        - Second search uses centroid of top 2 anchors
+        - Third search uses centroid of top 3 anchors, etc.
+        
+        This progressive approach starts specific and gradually broadens to capture related patterns.
+          
+        Args:
+            query: Original search query
+            reranked_files: List of reranked file chunk results (sorted by quality)
+            max_file_chunks: Maximum number of new file chunks to find per search
+            
+        Returns:
+            List of newly found file chunk results (deduplication handled by caller)
+        """
+        if not reranked_files:
+            return []
+        
+        # Check if anchors have embeddings - FAIL FAST (but allow some without embeddings)
+        valid_anchors = [anchor for anchor in reranked_files if hasattr(anchor, 'embedding') and anchor.embedding is not None]
+        
+        if not valid_anchors:
+            raise ValueError("No file expansion anchors have embeddings - reranking may have lost all embeddings")
+        
+        # Extract file embeddings
+        file_embeddings = []
+        for anchor in reranked_files:
+            embedding = self._extract_embedding_vector(anchor)
+            if embedding:
+                file_embeddings.append(embedding)
+        
+        if not file_embeddings:
+            raise ValueError("No embeddings available for file centroid calculation - expansion cannot proceed")
+        
+        # Verify VectorDB has search_files method - FAIL FAST
+        if not hasattr(self.vector_db, 'search_files'):
+            raise ValueError("VectorDB is missing required search_files method")
+        
+        # Progressive search: centroid[0], centroid[0:2], centroid[0:3], etc.
+        all_file_expansion = []
+        for i in range(len(file_embeddings)):
+            # Calculate centroid from first i+1 embeddings
+            progressive_embeddings = file_embeddings[:i+1]
+            file_centroid = self._calculate_centroid(progressive_embeddings)
+            
+            # FAIL FAST if centroid calculation failed
+            if file_centroid is None:
+                raise ValueError(f"Failed to compute file centroid from {len(progressive_embeddings)} embeddings")
+            
+            file_expansion = self._search_with_centroid(query, file_centroid, max_file_chunks, is_metadata=False, is_file=True)
+            all_file_expansion.extend(file_expansion)
+            
+            from expert_among_us.utils.debug import DebugLogger
+            if DebugLogger.is_enabled():
+                log_info(f"[DEBUG] File level {i+1}/{len(file_embeddings)}: {len(file_expansion)} results")
+        
+        from expert_among_us.utils.debug import DebugLogger
+        if DebugLogger.is_enabled() or not self.enable_reranking:
+            raw_expansion_results = len(all_file_expansion)
+            unique_added = len(all_file_expansion)
+            log_info(f"DEBUG: Final file expansion summary - {len(file_embeddings)} file anchors")
+            log_info(f"DEBUG: Expansion found {raw_expansion_results} raw results, added {unique_added} new files")
+        return all_file_expansion
+
+    def _iterative_expansion(
+        self,
+        query: str,
+        initial_results: List[QueryResult],
+        max_results: int,
+        is_commit_expansion: bool = True
+    ) -> List[QueryResult]:
+        """Perform multiple iterations of progressive centroid expansion with per-pass reranking.
+        
+        This method maintains a cumulative pool of results that grows with each pass.
+        After each pass, the pool is reranked to ensure anchor selection uses semantic quality scores.
+        
+        Args:
+            query: Original search query
+            initial_results: Starting results (already reranked once)
+            max_results: Maximum results to retrieve per pass
+            is_commit_expansion: Whether expanding commits (True) or files (False)
+            
+        Returns:
+            Cumulative pool of results, fully reranked and filtered, ready for final top-K cutoff
+        """
+        log_info(f"Starting {self.expansion_passes} expansion passes")
+        
+        # Cumulative pool starts with initial results (already reranked)
+        cumulative_pool = {r.get_id(): r for r in initial_results}
+        
+        for pass_num in range(self.expansion_passes):
+            log_info(f"Expansion pass {pass_num + 1}/{self.expansion_passes}")
+            
+            # Select anchors from reranked cumulative pool using statistical filtering
+            pool_list = list(cumulative_pool.values())
+            anchors = self._select_expansion_anchors(pool_list)
+            
+            if not anchors:
+                log_info(f"Expansion pass {pass_num + 1}: No anchors found, stopping")
+                break
+            
+            # Perform expansion from current anchors
+            if is_commit_expansion:
+                expanded_results = self._progressive_expansion_commits(query, anchors, max_results)
+                if expanded_results:
+                    # Convert VectorSearchResult to CommitResult
+                    expanded_commit_ids = [r.result_id for r in expanded_results if r.result_id]
+                    if expanded_commit_ids:
+                        expanded_changelists = self.metadata_db.get_changelists_by_ids(expanded_commit_ids)
+                        
+                        # Create expanded scores using embeddings from centroid search results
+                        expanded_scores = {}
+                        for r in expanded_results:
+                            if r.result_id:
+                                expanded_scores[r.result_id] = {
+                                    'score': r.similarity_score,
+                                    'source': r.source,
+                                    'chroma_id': r.chroma_id,
+                                    'embedding': r.embedding
+                                }
+                        
+                        # Validate embeddings
+                        missing_embeddings = [
+                            result_id for result_id, score_info in expanded_scores.items()
+                            if score_info.get('embedding') is None
+                        ]
+                        if missing_embeddings:
+                            raise ValueError(f"Centroid search failed to return embeddings for {len(missing_embeddings)} results.")
+
+                        # Apply filters and create CommitResult objects
+                        from expert_among_us.models.query import QueryParams
+                        dummy_params = QueryParams(prompt=query, max_changes=max_results, max_file_chunks=max_results)
+                        new_commits = self._apply_commit_filters(expanded_changelists, expanded_scores, dummy_params)
+                        
+                        # Merge into cumulative pool (deduplicate)
+                        added = 0
+                        for commit in new_commits:
+                            if commit.get_id() not in cumulative_pool:
+                                cumulative_pool[commit.get_id()] = commit
+                                added += 1
+                        
+                        log_info(f"Expansion pass {pass_num + 1}: Found {len(new_commits)} results, added {added} unique")
+                    else:
+                        log_info(f"Expansion pass {pass_num + 1}: No valid commit IDs")
+                        break
+                else:
+                    log_info(f"Expansion pass {pass_num + 1}: No results found, stopping")
+                    break
+            else:
+                expanded_results = self._progressive_expansion_files(query, anchors, max_results)
+                if expanded_results:
+                    # Convert VectorSearchResult to FileChunkResult
+                    expanded_chunk_ids = [r.chroma_id for r in expanded_results if r.chroma_id]
+                    if expanded_chunk_ids:
+                        expanded_file_chunks = self.metadata_db.get_file_chunks_by_ids(expanded_chunk_ids)
+                        chunk_map = {chunk.get_chroma_id(): chunk for chunk in expanded_file_chunks}
+                        
+                        new_files = []
+                        for result in expanded_results:
+                            if result.chroma_id in chunk_map:
+                                new_files.append(FileChunkResult(
+                                    file_chunk=chunk_map[result.chroma_id],
+                                    similarity_score=result.similarity_score,
+                                    source=result.source,
+                                    chroma_id=result.chroma_id,
+                                    embedding=result.embedding
+                                ))
+                        
+                        # Merge into cumulative pool (deduplicate)
+                        added = 0
+                        for file_result in new_files:
+                            if file_result.get_id() not in cumulative_pool:
+                                cumulative_pool[file_result.get_id()] = file_result
+                                added += 1
+                        
+                        log_info(f"Expansion pass {pass_num + 1}: Found {len(new_files)} results, added {added} unique")
+                    else:
+                        log_info(f"Expansion pass {pass_num + 1}: No valid chunk IDs")
+                        break
+                else:
+                    log_info(f"Expansion pass {pass_num + 1}: No results found, stopping")
+                    break
+            
+            # Rerank entire cumulative pool after this pass (if reranking enabled)
+            # NOTE: We do NOT apply relative_threshold_filter here - let pool grow during expansion
+            pool_list = list(cumulative_pool.values())
+            if self.enable_reranking and self.reranker and pool_list:
+                pool_list = self._rerank_results(query, pool_list)
+                
+                # Update cumulative pool with reranked results (no filtering during expansion)
+                cumulative_pool = {r.get_id(): r for r in pool_list}
+                log_info(f"After pass {pass_num + 1}: Pool has {len(cumulative_pool)} results after reranking")
+            else:
+                pool_list.sort(key=lambda x: x.similarity_score, reverse=True)
+        
+        # Apply relative threshold filter ONCE at the end to final pool
+        final_pool = list(cumulative_pool.values())
+        final_pool.sort(key=lambda x: x.similarity_score, reverse=True)
+        
+        # Apply filter to final pool before returning
+        if self.enable_reranking and self.reranker and final_pool:
+            final_pool = self._apply_relative_threshold_filter(final_pool)
+        
+        log_info(f"Expansion complete: Final pool has {len(final_pool)} results")
+        return final_pool
+
+    def _extract_embedding_vector(self, result: QueryResult) -> Optional[List[float]]:
+        """Extract embedding vector from search result if available.
+        
+        Args:
+            result: Query result that may contain embedding
+            
+        Returns:
+            Embedding vector if available, None otherwise
+        """
+        # Check if the result has an embedding field
+        if hasattr(result, 'embedding') and result.embedding is not None:
+            return result.embedding
+        return None
+
+    def _calculate_centroid(self, vectors: List[List[float]]) -> Optional[List[float]]:
+        """Calculate centroid (average) of multiple embedding vectors.
+        
+        Args:
+            vectors: List of embedding vectors
+            
+        Returns:
+            Centroid vector if vectors available, None otherwise
+        """
+        if not vectors:
+            raise ValueError("No vectors provided to _calculate_centroid")
+        
+        # Ensure all vectors have the same dimension before processing
+        dim = len(vectors[0])
+        
+        # Check for dimension consistency - FAIL FAST
+        inconsistent_dims = [i for i, v in enumerate(vectors) if len(v) != dim]
+        if inconsistent_dims:
+            raise ValueError(f"Found {len(inconsistent_dims)} vectors with inconsistent dimensions at indices: {inconsistent_dims[:5]}")
+        
+        try:
+            import numpy as np
+            centroid = np.mean(vectors, axis=0).tolist()
+            return centroid
+        except ImportError:
+            # Fallback for when numpy is not available
+            # Calculate average for each dimension
+            centroid = []
+            for d in range(dim):
+                values = [v[d] for v in vectors]
+                avg = sum(values) / len(values)
+                centroid.append(avg)
+            
+            return centroid
+        except Exception as e:
+            from expert_among_us.utils.debug import DebugLogger
+            if DebugLogger.is_enabled():
+                log_info(f"DEBUG: Centroid calculation failed with error: {e}")
+            return None
+
+    def _search_with_centroid(self, query: str, centroid: List[float], top_k: int, is_metadata: bool = False, is_file: bool = False) -> List[VectorSearchResult]:
+        """Perform search using centroid vector as query.
+        
+        Args:
+            query: Original text query (for logging)
+            centroid: Centroid embedding vector to search with
+            top_k: Number of results to return
+            is_metadata: Whether searching metadata collection
+            is_file: Whether searching file collection
+            
+        Returns:
+            List of vector search results
+        """
+        if not centroid:
+            return []
+        
+        try:
+            if is_file:
+                results = self.vector_db.search_files(centroid, top_k, include_embeddings=True)
+            elif is_metadata:
+                results = self.vector_db.search_metadata(centroid, top_k, include_embeddings=True)
+            else:
+                results = self.vector_db.search_diffs(centroid, top_k, include_embeddings=True)
+            
+            # Handle results normalization (similar to _search_files)
+            if results is None:
+                results_list = []
+            elif isinstance(results, list):
+                results_list = results
+            else:
+                try:
+                    results_list = list(results)
+                except TypeError:
+                    results_list = []
+            
+            return results_list
+        except Exception as e:
+            from expert_among_us.utils.debug import DebugLogger
+            if DebugLogger.is_enabled():
+                import traceback
+                log_info(f"Centroid search failed with error: {e}")
+                log_info(f"Full traceback: {traceback.format_exc()}")
+            return []
+
+    def _search_metadata(
+        self,
+        query_embedding: List[float],
+        top_k: int,
+        include_embeddings: bool = False
+    ) -> List[VectorSearchResult]:
+        """
+        Search metadata collection for similar commits.
+        
+        Args:
+            query_embedding: Query vector
+            top_k: Number of results to return
+            include_embeddings: Whether to include embedding vectors in results
+            
+        Returns:
+            List of vector search results from metadata collection
+        """
+        results = self.vector_db.search_metadata(query_embedding, top_k, include_embeddings)
+        log_info(f"Metadata search found {len(results)} results")
+        return results
+    
+    def _search_diffs(
+        self,
+        query_embedding: List[float],
+        top_k: int,
+        include_embeddings: bool = False
+    ) -> List[VectorSearchResult]:
+        """
+        Search diff collection for similar code changes.
+        
+        Args:
+            query_embedding: Query vector
+            top_k: Number of results to return
+            include_embeddings: Whether to include embedding vectors in results
+            
+        Returns:
+            List of vector search results from diff collection
+        """
+        results = self.vector_db.search_diffs(query_embedding, top_k, include_embeddings)
+        log_info(f"Diff search found {len(results)} results")
+        return results
+    
+    def _search_files(
+        self,
+        query_embedding: List[float],
+        top_k: int,
+        include_embeddings: bool = False
+    ) -> List[VectorSearchResult]:
+        """
+        Search file content collection for similar code.
+
+        Args:
+            query_embedding: Query vector
+            top_k: Number of results to return
+            include_embeddings: Whether to include embedding vectors in results
+
+        Returns:
+            List of vector search results from file content collection
+        """
+        # NOTE:
+        # VectorSearchResult is a concrete Pydantic model in production, but in tests
+        # the vector_db is a Mock without search_files configured, so calling
+        # len(results) on the raw Mock return value raises TypeError.
+        #
+        # To keep behavior robust (and avoid hiding bugs), we normalize the result
+        # to a list and log its size, which works for both real implementations
+        # and mocks.
+        results = self.vector_db.search_files(query_embedding, top_k, include_embeddings)
+
+        # Normalize to list defensively; this is effectively a no-op for real
+        # implementations that already return a list[VectorSearchResult].
+        if results is None:
+            results_list: List[VectorSearchResult] = []
+        elif isinstance(results, list):
+            results_list = results
+        else:
+            try:
+                results_list = list(results)
+            except TypeError:
+                # Fall back gracefully for unexpected/mocked types; avoids test failures
+                # while still keeping production behavior unchanged.
+                results_list = []
+
+        log_info(f"File search found {len(results_list)} results")
+        return results_list
 
     def close(self):
         """Clean up resources."""

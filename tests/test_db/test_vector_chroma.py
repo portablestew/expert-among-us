@@ -559,3 +559,96 @@ class TestEdgeCases:
         query_vec = [0.1] * 1024
         results = temp_vector_db.search(query_vec, top_k=1)
         assert len(results) == 1
+
+
+class TestEmbeddingExtraction:
+    """Tests for proper embedding extraction with include_embeddings parameter."""
+
+    def test_search_returns_embeddings_when_requested(self, temp_vector_db, sample_vectors):
+        """Verify that search returns embeddings when include_embeddings=True."""
+        # Insert vectors
+        vectors_to_insert = [
+            (f"vec_id_{i}", sample_vectors[i])
+            for i in range(3)
+        ]
+        temp_vector_db.insert_vectors(vectors_to_insert)
+        
+        # Search with include_embeddings=True
+        results = temp_vector_db.search(sample_vectors[0], top_k=2, include_embeddings=True)
+        
+        assert len(results) > 0
+        # Verify embeddings are returned
+        for result in results:
+            assert result.embedding is not None
+            assert isinstance(result.embedding, list)
+            assert len(result.embedding) == 1024  # Expected dimension
+
+    def test_search_returns_no_embeddings_when_not_requested(self, temp_vector_db, sample_vectors):
+        """Verify that search returns None for embeddings when include_embeddings=False."""
+        # Insert vectors
+        temp_vector_db.insert_vectors([("vec_id_1", sample_vectors[0])])
+        
+        # Search with include_embeddings=False (default)
+        results = temp_vector_db.search(sample_vectors[0], top_k=1, include_embeddings=False)
+        
+        assert len(results) == 1
+        assert results[0].embedding is None
+
+    def test_search_metadata_returns_embeddings(self, temp_vector_db, sample_vectors):
+        """Verify that search_metadata returns embeddings when requested."""
+        # Insert metadata vectors
+        temp_vector_db.insert_metadata([("commit_1", sample_vectors[0])])
+        
+        # Search metadata with include_embeddings=True
+        results = temp_vector_db.search_metadata(sample_vectors[0], top_k=1, include_embeddings=True)
+        
+        assert len(results) == 1
+        assert results[0].embedding is not None
+        assert isinstance(results[0].embedding, list)
+        assert len(results[0].embedding) == 1024
+
+    def test_search_diffs_returns_embeddings(self, temp_vector_db, sample_vectors):
+        """Verify that search_diffs returns embeddings when requested."""
+        # Insert diff vectors
+        temp_vector_db.insert_diffs([("commit_1_chunk_0", sample_vectors[0])])
+        
+        # Search diffs with include_embeddings=True
+        results = temp_vector_db.search_diffs(sample_vectors[0], top_k=1, include_embeddings=True)
+        
+        assert len(results) == 1
+        assert results[0].embedding is not None
+        assert isinstance(results[0].embedding, list)
+        assert len(results[0].embedding) == 1024
+
+    def test_search_files_returns_embeddings(self, temp_vector_db, sample_vectors):
+        """Verify that search_files returns embeddings when requested."""
+        # Insert file vectors
+        temp_vector_db.insert_files([("path/to/file.py:chunk_0", sample_vectors[0])])
+        
+        # Search files with include_embeddings=True
+        results = temp_vector_db.search_files(sample_vectors[0], top_k=1, include_embeddings=True)
+        
+        assert len(results) == 1
+        assert results[0].embedding is not None
+        assert isinstance(results[0].embedding, list)
+        assert len(results[0].embedding) == 1024
+
+    def test_search_with_empty_results_and_embeddings(self, temp_vector_db, sample_vectors):
+        """Verify that search handles empty results gracefully when include_embeddings=True."""
+        # Search empty collection with include_embeddings=True
+        results = temp_vector_db.search(sample_vectors[0], top_k=5, include_embeddings=True)
+        
+        assert results == []
+
+    def test_search_with_partial_results_and_embeddings(self, temp_vector_db, sample_vectors):
+        """Verify that search handles partial results correctly with embeddings."""
+        # Insert only one vector
+        temp_vector_db.insert_vectors([("vec_id_1", sample_vectors[0])])
+        
+        # Search for more results than exist
+        results = temp_vector_db.search(sample_vectors[0], top_k=5, include_embeddings=True)
+        
+        assert len(results) == 1
+        assert results[0].embedding is not None
+        assert isinstance(results[0].embedding, list)
+        assert len(results[0].embedding) == 1024

@@ -76,7 +76,8 @@ class TestSearcher:
             embedder=mock_embedder,
             metadata_db=mock_metadata_db,
             vector_db=mock_vector_db,
-            enable_diff_search=True
+            enable_diff_search=True,
+            enable_query_expansion=False  # Disable expansion for existing tests to maintain compatibility
         )
     
     def test_search_basic(self, searcher, mock_embedder, mock_vector_db, mock_metadata_db):

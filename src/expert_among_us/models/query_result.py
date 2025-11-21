@@ -69,6 +69,7 @@ class CommitResult(QueryResultBase):
     source: ResultSource
     chroma_id: Optional[str] = None
     search_similarity_score: Optional[float] = None
+    embedding: Optional[List[float]] = None  # NEW: For query expansion
     
     def get_id(self) -> str:
         return self.changelist.id
@@ -108,6 +109,7 @@ class FileChunkResult(QueryResultBase):
     source: ResultSource
     chroma_id: Optional[str] = None
     search_similarity_score: Optional[float] = None
+    embedding: Optional[List[float]] = None  # NEW: For query expansion
     
     def get_id(self) -> str:
         # Use ChromaDB ID for uniqueness across file+revision+location

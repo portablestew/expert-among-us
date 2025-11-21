@@ -320,7 +320,7 @@ def populate(
 @main.command()
 @click.argument("expert_name", type=str)
 @click.argument("prompt", type=str)
-@click.option("--max-changes", default=10, type=int, help="Maximum changelist results to return")
+@click.option("--max-changes", default=20, type=int, help="Maximum changelist results to return")
 @click.option("--max-file-chunks", default=10, type=int, help="Maximum file chunk results to return")
 @click.option("--users", type=str, help="Filter by authors (comma-separated)")
 @click.option("--files", type=str, help="Filter by files (comma-separated)")
@@ -337,6 +337,18 @@ def populate(
               type=float,
               default=0.8,
               help="Relative score threshold as percentage drop from top result (0.0-1.0, default: 0.3)")
+@click.option(
+    '--expansion-candidate-multiplier',
+    type=int,
+    default=5,
+    help='Multiplier for candidate retrieval during expansion (default: 5)'
+)
+@click.option(
+    '--expansion-passes',
+    type=int,
+    default=1,
+    help='Number of expansion iterations/passes (default: 1)'
+)
 @click.pass_context
 def query(
     ctx,
@@ -350,6 +362,8 @@ def query(
     search_scope: str,
     min_score: float,
     relative_threshold: float,
+    expansion_candidate_multiplier: int,
+    expansion_passes: int,
 ) -> None:
     """Search for similar changes in the expert's history.
     
@@ -468,6 +482,8 @@ def query(
             search_scope=search_scope,
             min_score=min_score,
             relative_threshold=relative_threshold,
+            expansion_candidate_multiplier=expansion_candidate_multiplier,
+            expansion_passes=expansion_passes,
             data_dir=data_dir,
             embedding_provider=embedding_provider,
             llm_provider="auto",
@@ -526,7 +542,7 @@ def query(
                     chroma_id_display = result.chroma_id if result.chroma_id else "N/A"
                     row_data.append(chroma_id_display)
                 
-                row_data.append(result.get_preview_text(max_len=60));
+                row_data.append(result.get_preview_text(max_len=100));
 
                 # Score display: dual scores in debug, single score otherwise
                 if debug:
@@ -605,7 +621,7 @@ def query(
 @main.command()
 @click.argument("expert_name", type=str)
 @click.argument("prompt", type=str)
-@click.option("--max-changes", default=10, type=int, help="Maximum changelist results to use as context")
+@click.option("--max-changes", default=20, type=int, help="Maximum changelist results to use as context")
 @click.option("--max-file-chunks", default=10, type=int, help="Maximum file chunk results to use as context")
 @click.option("--users", type=str, help="Filter by authors (comma-separated)")
 @click.option("--files", type=str, help="Filter by files (comma-separated)")
@@ -613,6 +629,18 @@ def query(
 @click.option("--impostor", is_flag=True, default=False,
               help="Generate prompts and use user-assistant pairs (old behavior)")
 @click.option("--temperature", default=0.7, type=float, help="LLM temperature (0.0-1.0)")
+@click.option(
+    '--expansion-candidate-multiplier',
+    type=int,
+    default=5,
+    help='Multiplier for candidate retrieval during expansion (default: 5)'
+)
+@click.option(
+    '--expansion-passes',
+    type=int,
+    default=1,
+    help='Number of expansion iterations/passes (default: 1)'
+)
 @click.pass_context
 def prompt(
     ctx,
@@ -625,6 +653,8 @@ def prompt(
     amogus: bool,
     impostor: bool,
     temperature: float,
+    expansion_candidate_multiplier: int,
+    expansion_passes: int,
 ) -> None:
     """Get AI recommendations based on expert's historical patterns.
     
@@ -726,6 +756,8 @@ def prompt(
                 llm_provider=llm_provider,
                 enable_multiprocessing=True,
                 enable_reranking=enable_reranking,
+                expansion_candidate_multiplier=expansion_candidate_multiplier,
+                expansion_passes=expansion_passes,
             ):
                 if chunk.delta:
                     # Print "Expert Response:" header on first chunk with content

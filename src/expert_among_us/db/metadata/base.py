@@ -7,9 +7,10 @@ cached generated prompts.
 
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 from expert_among_us.models.changelist import Changelist
+from expert_among_us.models.file_chunk import FileChunk
 
 
 class MetadataDB(ABC):
@@ -172,6 +173,21 @@ class MetadataDB(ABC):
         Args:
             query_id: Identifier for the cached prompt (typically changelist_id)
             prompt: Generated prompt text to cache
+        """
+        pass
+
+    @abstractmethod
+    def get_file_chunks_by_ids(
+        self,
+        chunk_ids: List[str]
+    ) -> List[FileChunk]:
+        """Retrieve multiple file chunks by IDs.
+        
+        Args:
+            chunk_ids: List of file chunk IDs to retrieve (format: file:{path}:chunk_{n})
+            
+        Returns:
+            List of FileChunk objects (may be shorter than chunk_ids if some not found)
         """
         pass
 

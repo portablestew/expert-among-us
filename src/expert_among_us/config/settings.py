@@ -170,6 +170,11 @@ class Settings(BaseSettings):
     reranking_provider: str = "local"  # Only "local" supported initially
     cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-12-v2"  # Changed to L-12 for better quality
 
+    # Query expansion settings
+    enable_query_expansion: bool = True
+    expansion_std_threshold: float = 1.0  # Statistical threshold for anchor selection
+    expansion_min_anchors: int = 3  # Minimum anchors for diversity
+
     # GPU tuning
     embedding_tokens_per_gb: int = 12288 # Max tokens per batch per GB of GPU memory
     reranking_tokens_per_gb: int = 6144  # Cross-encoders need even more headroom
