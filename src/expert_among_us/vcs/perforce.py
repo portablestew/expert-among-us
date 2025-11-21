@@ -6,9 +6,11 @@ enabling Expert Among Us to work with Perforce repositories. It uses the p4
 CLI to interact with Perforce servers.
 """
 
+import gc
 import shutil
 import socket
 import subprocess
+import time
 from pathlib import Path
 from typing import Callable, Optional
 from datetime import datetime, timezone
@@ -210,6 +212,95 @@ class Perforce(VCSProvider):
         except (subprocess.TimeoutExpired, OSError):
             return ""
     
+    def _run_subprocess_with_retry(
+        self,
+        cmd: list[str],
+        workspace_path: str,
+        max_retries: int = 5,
+        operation_name: str = "subprocess",
+        timeout: Optional[int] = None,
+        **subprocess_kwargs
+    ) -> subprocess.CompletedProcess:
+        """Run subprocess with exponential backoff retry and cleanup.
+        
+        Designed for memory-intensive operations (large file reads, diffs) that may
+        fail due to resource exhaustion or transient errors. Includes explicit
+        cleanup to prevent memory accumulation.
+        
+        Args:
+            cmd: Command and arguments to execute
+            workspace_path: Working directory for the command
+            max_retries: Maximum number of retry attempts (default: 5)
+            operation_name: Description of operation for error messages
+            timeout: Optional timeout in seconds
+            **subprocess_kwargs: Additional arguments passed to subprocess.run
+            
+        Returns:
+            subprocess.CompletedProcess on success
+            
+        Raises:
+            RuntimeError: After all retries exhausted with details of last error
+        """
+        last_error = None
+        result = None
+        
+        for attempt in range(max_retries):
+            try:
+                result = subprocess.run(
+                    cmd,
+                    cwd=workspace_path,
+                    capture_output=True,
+                    timeout=timeout,
+                    **subprocess_kwargs
+                )
+                
+                if result.returncode != 0:
+                    # Non-zero exit code - retry
+                    last_error = f"Command returned exit code {result.returncode}"
+                    if attempt < max_retries - 1:
+                        if DebugLogger.is_enabled():
+                            from expert_among_us.utils.progress import console as progress_console
+                            progress_console.print(
+                                f"[yellow]Retry {attempt + 1}/{max_retries} for {operation_name}: {last_error}[/yellow]"
+                            )
+                        time.sleep(2 ** attempt)  # 1s, 2s, 4s, 8s, 16s backoff
+                        continue
+                else:
+                    # Success - return result
+                    return result
+                    
+            except (OSError, subprocess.TimeoutExpired) as e:
+                last_error = f"{type(e).__name__}: {str(e)}"
+                if attempt < max_retries - 1:
+                    if DebugLogger.is_enabled():
+                        from expert_among_us.utils.progress import console as progress_console
+                        progress_console.print(
+                            f"[yellow]Retry {attempt + 1}/{max_retries} for {operation_name}: {last_error}[/yellow]"
+                        )
+                    time.sleep(2 ** attempt)  # 1s, 2s, 4s, 8s, 16s backoff
+                    continue
+                # Final attempt failed - will raise below
+            finally:
+                # Explicit cleanup after each attempt
+                if result is not None:
+                    del result
+                    result = None
+                gc.collect()
+            
+            # If we reach here on the final attempt, raise error
+            if attempt == max_retries - 1:
+                cmd_str = " ".join(str(part) for part in cmd[:5])  # Show first 5 args
+                if len(cmd) > 5:
+                    cmd_str += f" ... ({len(cmd)} total args)"
+                raise RuntimeError(
+                    f"Failed to execute {operation_name} after {max_retries} attempts. "
+                    f"Command: {cmd_str}. "
+                    f"Last error: {last_error}"
+                )
+        
+        # Should never reach here, but satisfy type checker
+        raise RuntimeError(f"Unexpected state in _run_subprocess_with_retry for {operation_name}")
+    
     @staticmethod
     def detect(workspace_path: str) -> bool:
         """Detect if workspace is a Perforce client workspace.
@@ -410,7 +501,8 @@ class Perforce(VCSProvider):
                 cmd.append(depot_path)
         else:
             # Query all submitted changelists
-            cmd.append("//...")
+            depot_path = self._local_to_depot_path(workspace_path, None)
+            cmd.append(depot_path)
         
         if DebugLogger.is_enabled():
             cmd_str = " ".join(str(part) for part in cmd)
@@ -567,9 +659,13 @@ class Perforce(VCSProvider):
         
         if not truncated:
             # Success - parse normally
-            return self._parse_describe_output(
+            result = self._parse_describe_output(
                 output, workspace_path, depot_prefixes
             )
+            # Explicit cleanup after large describe operation
+            del output
+            gc.collect()
+            return result
         
         # Output was truncated due to size limit
         if DebugLogger.is_enabled():
@@ -581,11 +677,18 @@ class Perforce(VCSProvider):
         
         if len(cl_numbers) == 1:
             # Single huge CL - use truncated output (acceptable per requirements)
-            return self._parse_describe_output(
+            result = self._parse_describe_output(
                 output, workspace_path, depot_prefixes
             )
+            # Explicit cleanup after large describe operation
+            del output
+            gc.collect()
+            return result
         
         # Multiple CLs - binary search to isolate problem CL(s)
+        # Cleanup will happen in recursive calls
+        del output
+        gc.collect()
         return self._fetch_with_binary_search(
             workspace_path, cl_numbers, depot_prefixes,
             timeout, max_output_bytes
@@ -957,7 +1060,7 @@ class Perforce(VCSProvider):
         
         if depot_root and local_root:
             # Build full local path
-            local_path = Path(workspace_path) / local_subdir
+            local_path = Path(workspace_path) / local_subdir if local_subdir else Path(workspace_path)
             local_path_normalized = str(local_path.resolve())
             
             # Try to get relative path from local_root
@@ -1097,24 +1200,25 @@ class Perforce(VCSProvider):
                 cmd.append(f"{depot_path}/...@{commit_hash}")
         else:
             # Query all files
-            cmd.append(f"//...@{commit_hash}")
+            depot_path = self._local_to_depot_path(workspace_path, None)
+            cmd.append(depot_path)
+            cmd.append(f"{depot_path}@{commit_hash}")
         
         if DebugLogger.is_enabled():
             from expert_among_us.utils.progress import console as progress_console
             cmd_str = " ".join(str(part) for part in cmd)
             progress_console.print(f"[dim]Perforce.get_tracked_files_at_commit: {cmd_str}[/dim]")
         
-        result = subprocess.run(
-            cmd,
-            cwd=workspace_path,
-            capture_output=True,
+        # Use helper function for retry logic with cleanup
+        # Re-raise on failure - returning empty list would cause indexer to delete all file chunks
+        result = self._run_subprocess_with_retry(
+            cmd=cmd,
+            workspace_path=workspace_path,
+            operation_name=f"p4 files at commit {commit_hash}",
             text=True,
             encoding="utf-8",
             errors="replace",
         )
-        
-        if result.returncode != 0:
-            return []
         
         # Parse output: "//depot/src/file.cpp#42 - edit change 12345 (text)"
         files = []
@@ -1216,41 +1320,32 @@ class Perforce(VCSProvider):
                     f"[dim]Perforce.get_files_content_at_commit: {len(batch_paths)} files via {cmd_str}[/dim]"
                 )
             
+            # Use helper function for retry logic with cleanup
             try:
-                result = subprocess.run(
-                    cmd,
-                    cwd=workspace_path,
-                    capture_output=True,
+                result = self._run_subprocess_with_retry(
+                    cmd=cmd,
+                    workspace_path=workspace_path,
+                    operation_name=f"p4 print batch ({len(batch_paths)} files)",
                     encoding="utf-8",
                     errors="replace",
                 )
                 
-                if result.returncode != 0:
-                    # Failed to fetch this batch, leave as None
-                    continue
-                
-                # Parse output which has format:
-                # //depot/path/file.cpp#42 - edit change 12345 (text)
-                # 
-                # <file content>
-                # 
-                # //depot/path/file2.cpp#15 - edit change 12345 (text)
-                # 
-                # <file content>
-                
+                # Parse output
                 self._parse_print_output(result.stdout, batch_paths, results, workspace_path)
                 
-                # Report progress after processing each batch
-                if progress_callback:
-                    try:
-                        progress_callback(batch_end, len(unique_paths))
-                    except Exception:
-                        # Ignore callback errors to prevent disrupting file reading
-                        pass
-                
-            except (OSError, subprocess.TimeoutExpired):
-                # Skip this batch on error
-                continue
+            except RuntimeError as e:
+                # Re-raise with more context about which files failed
+                raise RuntimeError(
+                    f"{str(e)} Batch files: {batch_paths[0]}...{batch_paths[-1]}"
+                ) from e
+            
+            # Report progress after processing each batch
+            if progress_callback:
+                try:
+                    progress_callback(batch_end, len(unique_paths))
+                except Exception:
+                    # Ignore callback errors to prevent disrupting file reading
+                    pass
         
         return results
     
@@ -1354,7 +1449,8 @@ class Perforce(VCSProvider):
                 depot_path = self._local_to_depot_path(workspace_path, subdir)
                 cmd.append(depot_path)
         else:
-            cmd.append("//...")
+            depot_path = self._local_to_depot_path(workspace_path, None)
+            cmd.append(depot_path)
         
         result = subprocess.run(
             cmd,

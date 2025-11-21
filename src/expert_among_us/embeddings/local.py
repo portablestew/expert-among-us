@@ -221,6 +221,22 @@ class JinaCodeEmbedder(Embedder):
             for batch_indices in batches:
                 batch_texts = [prefixed_texts[i] for i in batch_indices]
                 
+                # Validate batch to catch corruption before tokenization
+                # Memory corruption can cause strings to become lists, None, etc.
+                for i, text in enumerate(batch_texts):
+                    if not isinstance(text, str):
+                        raise ValueError(
+                            f"Batch corruption detected at index {i}/{len(batch_texts)}: "
+                            f"Expected str, got {type(text).__name__}. "
+                            f"Value: {repr(text)[:200]}. "
+                            f"This likely indicates memory corruption from subprocess operations."
+                        )
+                    if not text:
+                        raise ValueError(
+                            f"Empty text detected at index {i}/{len(batch_texts)}. "
+                            f"This may indicate data corruption or invalid file content."
+                        )
+                
                 # Encode batch
                 batch_embeddings = self.model.encode(
                     batch_texts,

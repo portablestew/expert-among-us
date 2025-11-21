@@ -159,19 +159,6 @@ async def prompt_expert_stream(
         if not search_results:
             raise NoResultsError("No relevant examples found for this query")
         
-        # Separate commit results from file results
-        commit_results = []
-        file_chunks = []
-        
-        for result in search_results:
-            if isinstance(result, FileChunkResult):
-                file_chunks.append(result.file_chunk)
-            elif isinstance(result, CommitResult):
-                commit_results.append(result)
-        
-        # Use commit results for changelists (existing behavior)
-        changelists = [r.changelist for r in commit_results]
-        
         if impostor:
             logger.debug(f"[STREAM] Generating prompts (impostor mode) at +{time.time() - start_time:.3f}s")
             promptgen_start = time.time()
@@ -182,25 +169,28 @@ async def prompt_expert_stream(
                 model=ctx.settings.promptgen_model,
                 max_diff_chars=ctx.settings.max_diff_chars_for_promptgen
             )
+            # Extract changelists for prompt generation
+            changelists = [r.changelist for r in search_results if isinstance(r, CommitResult)]
             prompt_gen.generate_prompts(changelists)
             promptgen_time = time.time() - promptgen_start
             logger.info(f"[STREAM] Prompt generation completed in {promptgen_time:.3f}s")
         else:
             prompt_gen = None
         
-        # Build conversation
+        # Build conversation with context size enforcement
         logger.debug(f"[STREAM] Building conversation at +{time.time() - start_time:.3f}s")
         conv_start = time.time()
         conv_builder = ConversationBuilder(
             prompt_generator=prompt_gen,
-            max_diff_chars=ctx.settings.max_diff_chars_for_llm
+            max_diff_chars=ctx.settings.max_diff_chars_for_llm,
+            max_context_tokens=ctx.settings.max_expert_context_tokens,
+            max_response_tokens=ctx.settings.max_expert_response_tokens
         )
         system_prompt, messages = conv_builder.build_conversation(
-            changelists=changelists,
+            results=search_results,
             user_prompt=prompt,
             amogus=amogus,
-            impostor=impostor,
-            file_chunks=file_chunks
+            impostor=impostor
         )
         conv_time = time.time() - conv_start
         logger.info(f"[STREAM] Conversation built in {conv_time:.3f}s - {len(messages)} messages")
@@ -215,7 +205,7 @@ async def prompt_expert_stream(
             messages=messages,
             model=ctx.settings.expert_model,
             system=system_prompt,
-            max_tokens=4096,
+            max_tokens=ctx.settings.max_expert_response_tokens,
             temperature=temperature,
         ):
             if chunk_count == 0:

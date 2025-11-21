@@ -158,6 +158,10 @@ class Settings(BaseSettings):
     max_diff_chars_for_llm: int = 80000  # Maximum diff characters to send to LLM (80KB)
     max_diff_chars_for_promptgen: int = 8000  # Maximum diff characters for prompt generation (8KB) - much smaller to fit in small model context
     
+    # Context limits for expert LLM
+    max_expert_context_tokens: int = 150000  # Total context window (150k tokens to allow headroom for Claude Sonnet)
+    max_expert_response_tokens: int = 4096   # Reserve for LLM response (must match streaming.py max_tokens)
+    
     # Indexing
     embed_diffs: bool = True
     embed_metadata: bool = True

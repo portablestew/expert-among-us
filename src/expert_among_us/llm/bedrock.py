@@ -44,8 +44,8 @@ class BedrockLLM(LLMProvider):
         try:
             sts = session.client('sts')
             sts.get_caller_identity()
-        except NoCredentialsError:
-            raise LLMError("AWS credentials not found. Configure AWS CLI or set environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY).")
+        except NoCredentialsError as e:
+            raise LLMError(f"AWS credentials not found. Configure AWS CLI or set environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY).\n{e}")
         except ClientError as e:
             raise LLMError(f"Invalid AWS credentials: {e}")
         
