@@ -139,8 +139,8 @@ class TestConversationBuilder:
             max_response_tokens=4096
         )
         
-        # Create changelist with 12 files
-        files = [f"file{i}.py" for i in range(12)]
+        # Create changelist with 22 files (more than the 20-file limit)
+        files = [f"file{i}.py" for i in range(22)]
         changelist = Changelist(
             id="abc123",
             expert_name="TestExpert",
@@ -153,9 +153,9 @@ class TestConversationBuilder:
         
         formatted = builder._format_changelist_as_assistant(changelist)
         
-        # Should show first 10 files plus "(and 2 more)"
+        # Should show first 20 files plus "(and 2 more)"
         assert "file0.py" in formatted
-        assert "file9.py" in formatted
+        assert "file19.py" in formatted
         assert "(and 2 more)" in formatted
     
     def test_format_changelist_truncates_large_diff(self, mock_prompt_generator):

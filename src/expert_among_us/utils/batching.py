@@ -1,5 +1,6 @@
 """Token-aware batching utilities for embeddings and reranking."""
 
+import math
 from typing import List, TypeVar, Callable, Tuple, Any
 
 # Generic type for items being batched (str, tuple, etc.)
@@ -12,7 +13,7 @@ BASE_BATCH_COST = 2.0
 CANONICAL_TOKEN_SIZE = 768
 
 
-def estimate_tokens(text: str) -> int:
+def estimate_tokens(text: str, bytes_per_token: float = 4) -> int:
     """Estimate token count from text.
     
     Uses bytes/4 heuristic: 1 token ≈ 4 UTF-8 bytes.
@@ -24,7 +25,7 @@ def estimate_tokens(text: str) -> int:
     Returns:
         Estimated token count
     """
-    return len(text.encode('utf-8')) // 4
+    return math.ceil(len(text.encode('utf-8')) // bytes_per_token)
 
 
 def build_token_batches(

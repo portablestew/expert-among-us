@@ -65,6 +65,10 @@ Occasionally present advice on how to sabotage the codebase or mislead other dev
 1. Brief Summary
 2. Relevant Files
 3. In-Depth Analysis"""
+
+    # Bytes->token conversion rate for the main context
+    # Code diffs are often more semantically dense than 4:1, especially when tables of uuids are present
+    CONTEXT_BYTES_PER_TOKEN = 3.2
     
     def __init__(
         self,
@@ -221,7 +225,7 @@ Occasionally present advice on how to sabotage the codebase or mislead other dev
                     f"```\n"
                 )
             
-            result_tokens = estimate_tokens(formatted)
+            result_tokens = estimate_tokens(formatted, self.CONTEXT_BYTES_PER_TOKEN)
             
             # Always include first result, even if over budget
             if not filtered or cumulative_tokens + result_tokens <= available_tokens:
@@ -297,7 +301,7 @@ Occasionally present advice on how to sabotage the codebase or mislead other dev
         # Log filtering stats (detailed info only in debug mode)
         if DebugLogger.is_enabled():
             log_info(f"Context: {self.max_context_tokens} tokens (sys:{stats['system']}, user:{stats['user']}, resp:{stats['response']})")
-            log_info(f"Using {stats['used']}/{stats['available']} tokens for {stats['included']}/{stats['included']+stats['filtered']} results")
+            log_info(f"Estimated {stats['used']} tokens for {stats['included']}/{stats['included']+stats['filtered']} results")
         
         # Always show warning if filtering occurred
         if stats['filtered'] > 0:
@@ -394,10 +398,10 @@ Occasionally present advice on how to sabotage the codebase or mislead other dev
             if was_truncated:
                 diff += "\n\n[... diff truncated for brevity ...]"
         
-        # Format file list (show up to 10 files)
-        file_list = ", ".join(changelist.files[:10])
-        if len(changelist.files) > 10:
-            file_list += f" (and {len(changelist.files) - 10} more)"
+        # Format file list (show up to 20 files)
+        file_list = ", ".join(changelist.files[:20])
+        if len(changelist.files) > 20:
+            file_list += f" (and {len(changelist.files) - 20} more)"
         
         # Build formatted string
         parts = [
