@@ -14,6 +14,7 @@ def create_test_changelist(id: str, message: str, diff_size: int = 1000) -> Chan
     diff = "+" + ("x" * diff_size)  # Simple diff content
     return Changelist(
         id=id,
+        expert_name="TestExpert",
         message=message,
         author="test@example.com",
         timestamp=datetime.now(timezone.utc),
@@ -30,7 +31,8 @@ def create_test_file_chunk(file_path: str, content_size: int = 1000) -> FileChun
         content=content,
         line_start=1,
         line_end=10,
-        revision_id="abc123"
+        revision_id="abc123",
+        chunk_index=0
     )
 
 
@@ -240,7 +242,8 @@ class TestConversationContextLimits:
         assert len(messages) > 0
         # Last message should be user prompt
         assert messages[-1].role == "user"
-        assert messages[-1].content == "How to implement feature X?"
+        assert "How to implement feature X?" in messages[-1].content
+        assert "Remember to structure your response" in messages[-1].content
     
     def test_build_conversation_raises_on_empty(self):
         """Test that build_conversation raises ValueError with empty results."""
@@ -260,7 +263,7 @@ class TestConversationContextLimits:
             )
     
     def test_build_conversation_raises_when_none_fit(self):
-        """Test that build_conversation raises ValueError when no results fit."""
+        """Test that build_conversation always includes at least one result."""
         # Create results with huge user prompt that leaves no room
         results = [
             CommitResult(
@@ -280,10 +283,13 @@ class TestConversationContextLimits:
         # Create a huge user prompt that consumes most of budget
         huge_prompt = "x" * 10000
         
-        with pytest.raises(ValueError, match="No results fit within context limit"):
-            builder.build_conversation(
-                results=results,
-                user_prompt=huge_prompt,
-                amogus=False,
-                impostor=False
-            )
+        # Since at least one result is always included, this should succeed
+        system_prompt, messages = builder.build_conversation(
+            results=results,
+            user_prompt=huge_prompt,
+            amogus=False,
+            impostor=False
+        )
+        
+        # Verify at least one result was included (commit message + final prompt)
+        assert len(messages) >= 2

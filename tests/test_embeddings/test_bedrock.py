@@ -3,16 +3,21 @@ from unittest.mock import patch, Mock
 from expert_among_us.embeddings.bedrock import BedrockEmbedder
 
 class TestBedrockEmbedder(unittest.TestCase):
-    @patch('src.expert_among_us.embeddings.bedrock.boto3.Session')
-    def test_embed(self, mock_boto3_session):
+    @patch('expert_among_us.utils.aws.boto3')
+    def test_embed(self, mock_boto3):
         # Mock session and clients
         mock_session = Mock()
-        mock_boto3_session.return_value = mock_session
+        mock_boto3.Session.return_value = mock_session
         
         mock_sts_client = Mock()
         mock_sts_client.get_caller_identity.return_value = {'UserId': 'test-user'}
         
         mock_bedrock_client = Mock()
+        
+        # Mock credentials to have no expiry (static credentials)
+        mock_credentials = Mock()
+        mock_credentials._expiry_time = None
+        mock_session.get_credentials.return_value = mock_credentials
         
         # Configure session.client() to return appropriate clients
         def client_factory(service_name):
@@ -41,16 +46,21 @@ class TestBedrockEmbedder(unittest.TestCase):
         self.assertTrue(mock_bedrock_client.invoke_model.called)
         self.assertTrue(mock_sts_client.get_caller_identity.called)
         
-    @patch('src.expert_among_us.embeddings.bedrock.boto3.Session')
-    def test_embed_batch(self, mock_boto3_session):
+    @patch('expert_among_us.utils.aws.boto3')
+    def test_embed_batch(self, mock_boto3):
         # Mock session and clients
         mock_session = Mock()
-        mock_boto3_session.return_value = mock_session
+        mock_boto3.Session.return_value = mock_session
         
         mock_sts_client = Mock()
         mock_sts_client.get_caller_identity.return_value = {'UserId': 'test-user'}
         
         mock_bedrock_client = Mock()
+        
+        # Mock credentials to have no expiry (static credentials)
+        mock_credentials = Mock()
+        mock_credentials._expiry_time = None
+        mock_session.get_credentials.return_value = mock_credentials
         
         # Configure session.client() to return appropriate clients
         def client_factory(service_name):
@@ -83,16 +93,21 @@ class TestBedrockEmbedder(unittest.TestCase):
         self.assertEqual(len(embeddings[0]), 1024)
         self.assertEqual(len(embeddings[1]), 1024)
         
-    @patch('src.expert_among_us.embeddings.bedrock.boto3.Session')
-    def test_dimension(self, mock_boto3_session):
+    @patch('expert_among_us.utils.aws.boto3')
+    def test_dimension(self, mock_boto3):
         # Mock session and clients
         mock_session = Mock()
-        mock_boto3_session.return_value = mock_session
+        mock_boto3.Session.return_value = mock_session
         
         mock_sts_client = Mock()
         mock_sts_client.get_caller_identity.return_value = {'UserId': 'test-user'}
         
         mock_bedrock_client = Mock()
+        
+        # Mock credentials to have no expiry (static credentials)
+        mock_credentials = Mock()
+        mock_credentials._expiry_time = None
+        mock_session.get_credentials.return_value = mock_credentials
         
         # Configure session.client() to return appropriate clients
         def client_factory(service_name):

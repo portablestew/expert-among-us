@@ -7,6 +7,7 @@ from pathlib import Path
 
 from expert_among_us.models.changelist import Changelist
 from expert_among_us.models.query import QueryParams
+from expert_among_us.models.query_result import CommitResult
 from expert_among_us.core.searcher import SearchResult
 from expert_among_us.llm.base import Message, LLMResponse, StreamChunk, UsageMetrics
 from expert_among_us.core.promptgen import PromptGenerator
@@ -179,9 +180,15 @@ class TestPromptCommandIntegration:
         assert mock_llm.generate.call_count == 3
         
         # Step 3: Build conversation context
-        conv_builder = ConversationBuilder(prompt_generator=prompt_gen, max_diff_chars=TEST_MAX_DIFF_CHARS_CONV)
+        conv_builder = ConversationBuilder(
+            prompt_generator=prompt_gen,
+            max_diff_chars=TEST_MAX_DIFF_CHARS_CONV,
+            max_context_tokens=120000,
+            max_response_tokens=4096
+        )
+        results = [CommitResult(changelist=cl, similarity_score=0.9-i*0.1, source="metadata") for i, cl in enumerate(changelists)]
         system_prompt, messages = conv_builder.build_conversation(
-            changelists=changelists,
+            results=results,
             user_prompt="How should I implement authentication?",
             amogus=False,
             impostor=True
@@ -192,7 +199,7 @@ class TestPromptCommandIntegration:
         assert messages[0].role == "user"
         assert messages[1].role == "assistant"
         assert messages[-1].role == "user"
-        assert messages[-1].content == "How should I implement authentication?"
+        assert "How should I implement authentication?" in messages[-1].content
         
         # Verify system prompt
         assert "expert software developer" in system_prompt
@@ -300,9 +307,15 @@ class TestPromptCommandIntegration:
         prompt_gen.generate_prompts(changelists)
         
         # Build conversation with amogus=True
-        conv_builder = ConversationBuilder(prompt_generator=prompt_gen, max_diff_chars=TEST_MAX_DIFF_CHARS_CONV)
+        conv_builder = ConversationBuilder(
+            prompt_generator=prompt_gen,
+            max_diff_chars=TEST_MAX_DIFF_CHARS_CONV,
+            max_context_tokens=120000,
+            max_response_tokens=4096
+        )
+        results = [CommitResult(changelist=cl, similarity_score=0.9, source="metadata") for cl in changelists]
         system_prompt, messages = conv_builder.build_conversation(
-            changelists=changelists,
+            results=results,
             user_prompt="Test query",
             amogus=True,
             impostor=True
@@ -358,11 +371,16 @@ class TestPromptCommandIntegration:
         # Should return empty list
         assert results == []
         
-        # ConversationBuilder should raise error on empty changelists
-        conv_builder = ConversationBuilder(None, TEST_MAX_DIFF_CHARS_CONV)
-        with pytest.raises(ValueError, match="Cannot build conversation with empty changelists"):
+        # ConversationBuilder should raise error on empty results
+        conv_builder = ConversationBuilder(
+            None,
+            TEST_MAX_DIFF_CHARS_CONV,
+            max_context_tokens=120000,
+            max_response_tokens=4096
+        )
+        with pytest.raises(ValueError, match="Cannot build conversation with empty results"):
             conv_builder.build_conversation(
-                changelists=[],
+                results=[],
                 user_prompt="Test",
                 amogus=False
             )
@@ -505,9 +523,15 @@ class TestPromptFlowEdgeCases:
             max_diff_chars=TEST_MAX_DIFF_CHARS_PROMPT
         )
         
-        conv_builder = ConversationBuilder(prompt_generator=prompt_gen, max_diff_chars=TEST_MAX_DIFF_CHARS_CONV)
+        conv_builder = ConversationBuilder(
+            prompt_generator=prompt_gen,
+            max_diff_chars=TEST_MAX_DIFF_CHARS_CONV,
+            max_context_tokens=120000,
+            max_response_tokens=4096
+        )
+        results = [CommitResult(changelist=cl, similarity_score=0.9, source="metadata") for cl in many_changelists]
         system_prompt, messages = conv_builder.build_conversation(
-            changelists=many_changelists,
+            results=results,
             user_prompt="Test query",
             amogus=False,
             impostor=True

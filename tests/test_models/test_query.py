@@ -25,7 +25,8 @@ def test_query_params_defaults():
     """Test default values."""
     params = QueryParams(prompt="Test query")
     
-    assert params.max_changes == 10
+    assert params.max_changes == 20
+    assert params.max_file_chunks == 10
     assert params.users is None
     assert params.files is None
     assert params.amogus is False

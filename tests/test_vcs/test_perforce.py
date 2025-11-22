@@ -178,13 +178,14 @@ class TestChangelistRetrieval:
 
     def test_get_commits_after_basic(self, mock_subprocess_run, mock_subprocess_popen, perforce_provider, tmp_path):
         """Verify basic changelist retrieval returns Changelist objects."""
-        # Mock p4 changes output (newest first)
-        changes_output = """Change 12347 on 2024/01/15 14:45:00 by user@client 'Third commit'
+        with patch('socket.gethostname', return_value='test-host'):
+            # Mock p4 changes output (newest first)
+            changes_output = """Change 12347 on 2024/01/15 14:45:00 by user@client 'Third commit'
 Change 12346 on 2024/01/15 14:30:00 by user@client 'Second commit'
 Change 12345 on 2024/01/15 14:00:00 by user@client 'First commit'"""
-        
-        # Mock p4 describe output
-        describe_output = """Change 12345 by user@client on 2024/01/15 14:00:00
+            
+            # Mock p4 describe output
+            describe_output = """Change 12345 by user@client on 2024/01/15 14:00:00
 
 \tFirst commit
 
@@ -213,37 +214,35 @@ Differences ...
 @@ -1 +1,2 @@
  int main() { return 0; }
 +// Comment"""
-        
-        # Mock p4 where for workspace mapping
-        where_output = f"//depot //client {tmp_path}"
-        
-        # Mock subprocess.run for p4 changes and p4 where
-        mock_subprocess_run.side_effect = [
-            Mock(returncode=0, stdout=changes_output),  # p4 changes
-            Mock(returncode=0, stdout=where_output),  # p4 where (for depot_to_local_path)
-        ]
-        
-        # Mock subprocess.Popen for p4 describe (now uses streaming)
-        mock_subprocess_popen.return_value = create_mock_popen_process(describe_output)
-        
-        changelists = perforce_provider.get_commits_after(
-            workspace_path=str(tmp_path),
-            after_hash=None,
-            batch_size=2,
-            subdirs=None
-        )
-        
-        # Verify results
-        assert len(changelists) == 2
-        assert all(isinstance(cl, Changelist) for cl in changelists)
+            
+            # Mock subprocess.run for workspace discovery + p4 changes
+            mock_subprocess_run.side_effect = [
+                *create_workspace_discovery_mocks(tmp_path),
+                Mock(returncode=0, stdout=changes_output),  # p4 changes
+            ]
+            
+            # Mock subprocess.Popen for p4 describe (now uses streaming)
+            mock_subprocess_popen.return_value = create_mock_popen_process(describe_output)
+            
+            changelists = perforce_provider.get_commits_after(
+                workspace_path=str(tmp_path),
+                after_hash=None,
+                batch_size=2,
+                subdirs=None
+            )
+            
+            # Verify results
+            assert len(changelists) == 2
+            assert all(isinstance(cl, Changelist) for cl in changelists)
 
     def test_get_commits_after_respects_batch_size(self, mock_subprocess_run, mock_subprocess_popen, perforce_provider, tmp_path):
         """Verify batch_size parameter limits results."""
-        changes_output = """Change 12347 on 2024/01/15 14:45:00 by user@client
+        with patch('socket.gethostname', return_value='test-host'):
+            changes_output = """Change 12347 on 2024/01/15 14:45:00 by user@client
 Change 12346 on 2024/01/15 14:30:00 by user@client
 Change 12345 on 2024/01/15 14:00:00 by user@client"""
-        
-        describe_output = """Change 12345 by user@client on 2024/01/15 14:00:00
+            
+            describe_output = """Change 12345 by user@client on 2024/01/15 14:00:00
 
 \tFirst commit
 
@@ -256,37 +255,35 @@ Differences ...
 ==== //depot/src/file.cpp#1 (text) ====
 
 +content"""
-        
-        where_output = f"//depot //client {tmp_path}"
-        
-        mock_subprocess_run.side_effect = [
-            Mock(returncode=0, stdout=changes_output),
-            Mock(returncode=0, stdout=where_output),  # p4 where
-        ]
-        
-        # Mock Popen for p4 describe
-        mock_subprocess_popen.return_value = create_mock_popen_process(describe_output)
-        
-        changelists = perforce_provider.get_commits_after(
-            workspace_path=str(tmp_path),
-            after_hash=None,
-            batch_size=1,
-            subdirs=None
-        )
-        
-        # Should return only 1 changelist
-        assert len(changelists) == 1
-        
-        # Verify p4 describe was called with -m flag and MAX_FILES_PER_CL value
-        describe_call = mock_subprocess_popen.call_args
-        cmd_args = describe_call[0][0]
-        # Command should be: ['p4', 'describe', '-du', '-m', str(MAX_FILES_PER_CL), '12345']
-        assert 'p4' in cmd_args
-        assert 'describe' in cmd_args
-        assert '-du' in cmd_args
-        assert '-m' in cmd_args
-        assert str(MAX_FILES_PER_CL) in cmd_args  # Check against the constant
-        assert '12345' in cmd_args  # The CL number
+            
+            mock_subprocess_run.side_effect = [
+                *create_workspace_discovery_mocks(tmp_path),
+                Mock(returncode=0, stdout=changes_output),
+            ]
+            
+            # Mock Popen for p4 describe
+            mock_subprocess_popen.return_value = create_mock_popen_process(describe_output)
+            
+            changelists = perforce_provider.get_commits_after(
+                workspace_path=str(tmp_path),
+                after_hash=None,
+                batch_size=1,
+                subdirs=None
+            )
+            
+            # Should return only 1 changelist
+            assert len(changelists) == 1
+            
+            # Verify p4 describe was called with -m flag and MAX_FILES_PER_CL value
+            describe_call = mock_subprocess_popen.call_args
+            cmd_args = describe_call[0][0]
+            # Command should be: ['p4', 'describe', '-du', '-m', str(MAX_FILES_PER_CL), '12345']
+            assert 'p4' in cmd_args
+            assert 'describe' in cmd_args
+            assert '-du' in cmd_args
+            assert '-m' in cmd_args
+            assert str(MAX_FILES_PER_CL) in cmd_args  # Check against the constant
+            assert '12345' in cmd_args  # The CL number
 
     def test_get_commits_after_returns_changelist_objects(self, mock_subprocess_run, mock_subprocess_popen, perforce_provider, tmp_path):
         """Verify changelists have required attributes."""
@@ -341,11 +338,12 @@ Differences ...
 
     def test_get_commits_after_with_after_hash_filter(self, mock_subprocess_run, mock_subprocess_popen, perforce_provider, tmp_path):
         """Verify after_hash filter works for cursor-based pagination."""
-        changes_output = """Change 12347 on 2024/01/15 14:45:00 by user@client
+        with patch('socket.gethostname', return_value='test-host'):
+            changes_output = """Change 12347 on 2024/01/15 14:45:00 by user@client
 Change 12346 on 2024/01/15 14:30:00 by user@client
 Change 12345 on 2024/01/15 14:00:00 by user@client"""
-        
-        describe_output = """Change 12346 by user@client on 2024/01/15 14:30:00
+            
+            describe_output = """Change 12346 by user@client on 2024/01/15 14:30:00
 
 \tSecond
 
@@ -372,29 +370,27 @@ Differences ...
 ==== //depot/src/file.cpp#3 (text) ====
 
 +line2"""
-        
-        where_output = f"//depot //client {tmp_path}"
-        
-        mock_subprocess_run.side_effect = [
-            Mock(returncode=0, stdout=changes_output),
-            Mock(returncode=0, stdout=where_output),  # p4 where
-        ]
-        
-        mock_subprocess_popen.return_value = create_mock_popen_process(describe_output)
-        
-        # Get CLs after 12345
-        changelists = perforce_provider.get_commits_after(
-            workspace_path=str(tmp_path),
-            after_hash="12345",
-            batch_size=10,
-            subdirs=None
-        )
-        
-        # Should return CLs after 12345 (i.e., 12346 and 12347)
-        assert len(changelists) == 2
-        assert all(cl.id != "12345" for cl in changelists)
-        assert any(cl.id == "12346" for cl in changelists)
-        assert any(cl.id == "12347" for cl in changelists)
+            
+            mock_subprocess_run.side_effect = [
+                *create_workspace_discovery_mocks(tmp_path),
+                Mock(returncode=0, stdout=changes_output),
+            ]
+            
+            mock_subprocess_popen.return_value = create_mock_popen_process(describe_output)
+            
+            # Get CLs after 12345
+            changelists = perforce_provider.get_commits_after(
+                workspace_path=str(tmp_path),
+                after_hash="12345",
+                batch_size=10,
+                subdirs=None
+            )
+            
+            # Should return CLs after 12345 (i.e., 12346 and 12347)
+            assert len(changelists) == 2
+            assert all(cl.id != "12345" for cl in changelists)
+            assert any(cl.id == "12346" for cl in changelists)
+            assert any(cl.id == "12347" for cl in changelists)
 
     @pytest.mark.skip(reason="Subdirs functionality tested by test_get_total_commit_count_with_subdirs")
     def test_get_commits_after_with_subdirs(self, mock_subprocess_run, perforce_provider, tmp_path):
@@ -1025,22 +1021,24 @@ class TestEdgeCases:
 
     def test_get_commits_after_with_invalid_cl(self, mock_subprocess_run, perforce_provider, tmp_path):
         """Verify error handling for nonexistent changelist number."""
-        # When cache is empty and after_hash not found, validation should fail
-        changes_output = "Change 12345 on 2024/01/15 14:00:00 by user@client"
-        validate_output = ""
-        
-        mock_subprocess_run.side_effect = [
-            Mock(returncode=0, stdout=changes_output),  # p4 changes (has 12345)
-            Mock(returncode=1, stdout=validate_output, stderr="Change 99999 unknown."),  # validate invalid CL
-        ]
-        
-        with pytest.raises(subprocess.CalledProcessError):
-            perforce_provider.get_commits_after(
-                workspace_path=str(tmp_path),
-                after_hash="99999",  # Invalid CL not in cache
-                batch_size=10,
-                subdirs=None
-            )
+        with patch('socket.gethostname', return_value='test-host'):
+            # When cache is empty and after_hash not found, validation should fail
+            changes_output = "Change 12345 on 2024/01/15 14:00:00 by user@client"
+            validate_output = ""
+            
+            mock_subprocess_run.side_effect = [
+                *create_workspace_discovery_mocks(tmp_path),
+                Mock(returncode=0, stdout=changes_output),  # p4 changes (has 12345)
+                Mock(returncode=1, stdout=validate_output, stderr="Change 99999 unknown."),  # validate invalid CL
+            ]
+            
+            with pytest.raises(subprocess.CalledProcessError):
+                perforce_provider.get_commits_after(
+                    workspace_path=str(tmp_path),
+                    after_hash="99999",  # Invalid CL not in cache
+                    batch_size=10,
+                    subdirs=None
+                )
 
     def test_get_commits_after_zero_batch_size(self, mock_subprocess_run, perforce_provider, tmp_path):
         """Verify empty result for batch_size=0."""

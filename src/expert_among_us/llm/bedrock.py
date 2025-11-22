@@ -1,7 +1,6 @@
 """AWS Bedrock LLM provider implementation using Converse API."""
 
-import boto3
-from botocore.exceptions import ClientError, NoCredentialsError
+from botocore.exceptions import ClientError
 from typing import AsyncIterator, List, Optional, Dict, Any
 
 from .base import (
@@ -15,6 +14,7 @@ from .base import (
     LLMInvalidRequestError,
 )
 from ..utils.debug import DebugLogger
+from ..utils.aws import AWSSessionManager, AWSCredentialError
 
 
 class BedrockLLM(LLMProvider):
@@ -29,7 +29,7 @@ class BedrockLLM(LLMProvider):
         region_name: str = "us-west-2",
         enable_caching: bool = True,
     ):
-        """Initialize Bedrock client with credential validation.
+        """Initialize Bedrock client with credential validation and auto-refresh.
         
         Args:
             region_name: AWS region (default: us-west-2)
@@ -38,19 +38,22 @@ class BedrockLLM(LLMProvider):
         Raises:
             LLMError: If AWS credentials are not found or invalid
         """
-        session = boto3.Session(region_name=region_name)
-        
-        # Validate credentials using STS GetCallerIdentity
         try:
-            sts = session.client('sts')
-            sts.get_caller_identity()
-        except NoCredentialsError as e:
-            raise LLMError(f"AWS credentials not found. Configure AWS CLI or set environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY).\n{e}")
-        except ClientError as e:
-            raise LLMError(f"Invalid AWS credentials: {e}")
+            self._aws = AWSSessionManager(region_name)
+        except AWSCredentialError as e:
+            raise LLMError(str(e))
         
-        self.client = session.client("bedrock-runtime")
         self.enable_caching = enable_caching
+    
+    @property
+    def client(self):
+        """Get Bedrock client with fresh credentials.
+        
+        This property ensures credentials are automatically refreshed from
+        ~/.aws/credentials when they expire, enabling long-running processes
+        to pick up externally updated credentials.
+        """
+        return self._aws.get_client("bedrock-runtime")
     
     def _to_bedrock_format(
         self,

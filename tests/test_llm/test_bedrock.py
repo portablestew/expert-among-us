@@ -25,7 +25,7 @@ NOVA_LITE_MODEL_ID = PROVIDER_MODEL_DEFAULTS["bedrock"]["promptgen"]
 @pytest.fixture
 def mock_boto3():
     """Mock boto3 for testing."""
-    with patch("expert_among_us.llm.bedrock.boto3") as mock:
+    with patch("expert_among_us.utils.aws.boto3") as mock:
         yield mock
 
 
@@ -37,7 +37,12 @@ def bedrock_llm(mock_boto3):
     mock_sts_client.get_caller_identity.return_value = {'UserId': 'test-user'}
     mock_bedrock_client = MagicMock()
     
+    # Mock credentials to have no expiry (static credentials)
+    mock_credentials = MagicMock()
+    mock_credentials._expiry_time = None
+    
     mock_boto3.Session.return_value = mock_session
+    mock_session.get_credentials.return_value = mock_credentials
     
     # Configure session.client() to return appropriate clients
     def client_factory(service_name):
@@ -50,8 +55,6 @@ def bedrock_llm(mock_boto3):
     mock_session.client.side_effect = client_factory
     
     llm = BedrockLLM(region_name="us-west-2")
-    # Store reference to bedrock client for test access
-    llm.client = mock_bedrock_client
     return llm
 
 
@@ -65,7 +68,12 @@ class TestBedrockLLMInit:
         mock_sts_client.get_caller_identity.return_value = {'UserId': 'test-user'}
         mock_bedrock_client = MagicMock()
         
+        # Mock credentials to have no expiry (static credentials)
+        mock_credentials = MagicMock()
+        mock_credentials._expiry_time = None
+        
         mock_boto3.Session.return_value = mock_session
+        mock_session.get_credentials.return_value = mock_credentials
         
         # Configure session.client() to return appropriate clients
         def client_factory(service_name):
@@ -92,7 +100,12 @@ class TestBedrockLLMInit:
         mock_sts_client.get_caller_identity.return_value = {'UserId': 'test-user'}
         mock_bedrock_client = MagicMock()
         
+        # Mock credentials to have no expiry (static credentials)
+        mock_credentials = MagicMock()
+        mock_credentials._expiry_time = None
+        
         mock_boto3.Session.return_value = mock_session
+        mock_session.get_credentials.return_value = mock_credentials
         
         # Configure session.client() to return appropriate clients
         def client_factory(service_name):
@@ -118,7 +131,12 @@ class TestBedrockLLMInit:
         mock_sts_client.get_caller_identity.return_value = {'UserId': 'test-user'}
         mock_bedrock_client = MagicMock()
         
+        # Mock credentials to have no expiry (static credentials)
+        mock_credentials = MagicMock()
+        mock_credentials._expiry_time = None
+        
         mock_boto3.Session.return_value = mock_session
+        mock_session.get_credentials.return_value = mock_credentials
         
         # Configure session.client() to return appropriate clients
         def client_factory(service_name):

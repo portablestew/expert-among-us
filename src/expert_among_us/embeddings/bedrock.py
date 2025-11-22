@@ -1,9 +1,9 @@
-import boto3
 import json
-from botocore.exceptions import ClientError, NoCredentialsError
+from botocore.exceptions import ClientError
 from .base import Embedder
 from typing import List, Optional, Callable
 from ..utils.debug import DebugLogger
+from ..utils.aws import AWSSessionManager, AWSCredentialError
 
 
 class EmbedderError(Exception):
@@ -12,7 +12,7 @@ class EmbedderError(Exception):
 
 class BedrockEmbedder(Embedder):
     def __init__(self, model_id: str, region_name: str = "us-west-2"):
-        """Initialize Bedrock embedder with credential validation.
+        """Initialize Bedrock embedder with credential validation and auto-refresh.
         
         Args:
             model_id: Bedrock model ID for embeddings (e.g., amazon.titan-embed-text-v2:0)
@@ -21,19 +21,22 @@ class BedrockEmbedder(Embedder):
         Raises:
             EmbedderError: If AWS credentials are not found or invalid
         """
-        session = boto3.Session(region_name=region_name)
-        
-        # Validate credentials using STS GetCallerIdentity
-        try:
-            sts = session.client('sts')
-            sts.get_caller_identity()
-        except NoCredentialsError:
-            raise EmbedderError("AWS credentials not found. Configure AWS CLI or set environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY).")
-        except ClientError as e:
-            raise EmbedderError(f"Invalid AWS credentials: {e}")
-        
-        self.client = session.client('bedrock-runtime')
         self.model_id = model_id
+        
+        try:
+            self._aws = AWSSessionManager(region_name)
+        except AWSCredentialError as e:
+            raise EmbedderError(str(e))
+    
+    @property
+    def client(self):
+        """Get Bedrock client with fresh credentials.
+        
+        This property ensures credentials are automatically refreshed from
+        ~/.aws/credentials when they expire, enabling long-running processes
+        to pick up externally updated credentials.
+        """
+        return self._aws.get_client('bedrock-runtime')
         
     def embed(self, text: str) -> List[float]:
         # Format request body for Amazon Titan Embed Text v2
