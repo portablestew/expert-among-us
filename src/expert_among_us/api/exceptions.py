@@ -19,8 +19,8 @@ class ExpertNotFoundError(ExpertAPIError):
         self.expert_name = expert_name
         if message is None:
             message = (
-                f"Expert '{expert_name}' does not exist. "
-                f"Please run 'populate' command first to create the expert index."
+                f"Expert index '{expert_name}' does not exist. "
+                f"Please check your spelling, or run the 'populate' command to create it."
             )
         super().__init__(message)
 

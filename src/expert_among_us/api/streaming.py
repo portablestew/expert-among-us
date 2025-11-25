@@ -113,6 +113,11 @@ async def prompt_expert_stream(
         if not ctx.metadata_db.exists():
             raise ExpertNotFoundError(expert_name)
         
+        # Verify expert exists in database
+        expert_info = ctx.metadata_db.get_expert(expert_name)
+        if not expert_info:
+            raise ExpertNotFoundError(expert_name)
+        
         logger.debug(f"[STREAM] Initializing vector DB at +{time.time() - start_time:.3f}s")
         ctx.vector_db.initialize(
             dimension=ctx.embedder.dimension,
