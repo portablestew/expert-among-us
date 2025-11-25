@@ -11,14 +11,22 @@ import shutil
 import socket
 import subprocess
 import time
+from enum import Enum
 from pathlib import Path
 from typing import Callable, Optional
 from datetime import datetime, timezone
 
 from expert_among_us.vcs.base import VCSProvider
 from expert_among_us.models.changelist import Changelist
-from expert_among_us.utils.truncate import filter_binary_from_diff, is_binary_file
+from expert_among_us.utils.truncate import filter_binary_from_diff, is_binary_file, should_index_file
 from expert_among_us.utils.debug import DebugLogger
+
+
+class DescribeResult(Enum):
+    """Result status from p4 describe operation."""
+    SUCCESS = "success"
+    SIZE_LIMIT = "size_limit"
+    CORRUPTION = "corruption"
 
 # Automated users to exclude from changelist queries
 # These patterns use Perforce wildcard syntax (* for multiple chars)
@@ -54,14 +62,14 @@ class Perforce(VCSProvider):
     This mirrors the Git provider's caching strategy for efficient pagination.
     """
     
-    def __init__(self, debug_logger: Optional[callable] = None):
+    def __init__(self, settings):
         """Initialize Perforce provider.
         
         Args:
-            debug_logger: Deprecated, kept for backward compatibility.
-                         Use DebugLogger.is_enabled() for debug logging.
+            settings: Settings instance with indexing configuration (required)
         """
-        self._debug_logger = debug_logger
+        self._settings = settings
+        self._debug_logger = None  # Deprecated, kept for backward compatibility
         
         # Changelist number cache for efficient chronological pagination
         # Design matches Git._hash_cache pattern:
@@ -79,6 +87,10 @@ class Perforce(VCSProvider):
         # Cache for depot root → local root mapping (workspace_path → (depot_root, local_root))
         # This avoids calling p4 where for every file conversion
         self._workspace_mapping_cache: dict[str, tuple[str, str]] = {}
+        
+        # Circuit breaker for consecutive corrupt changelists
+        self._consecutive_corrupt_cls = 0
+        self._max_consecutive_corrupt_cls = 10
     
     def _get_all_user_workspaces(self) -> list[dict]:
         """Fetch all user workspaces with depot mappings (cached).
@@ -321,7 +333,8 @@ class Perforce(VCSProvider):
         
         try:
             # Create temporary provider instance to use cached workspace discovery
-            provider = Perforce()
+            from expert_among_us.config.settings import Settings
+            provider = Perforce(Settings())
             workspaces = provider._get_all_user_workspaces()
             
             if not workspaces:
@@ -516,7 +529,7 @@ class Perforce(VCSProvider):
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=120,  # Longer timeout than detect() since this can legitimately take time
+            timeout=180,  # Longer timeout than detect() since this can legitimately take time
         )
         
         if result.returncode != 0:
@@ -606,6 +619,7 @@ class Perforce(VCSProvider):
                 depot_prefixes=depot_prefixes,
                 timeout=SUB_BATCH_TIMEOUT,
                 max_output_bytes=MAX_DESCRIBE_OUTPUT_BYTES,
+                embed_diffs=self._settings.embed_diffs,
             )
             
             all_changelists.extend(sub_changelists)
@@ -627,6 +641,7 @@ class Perforce(VCSProvider):
         depot_prefixes: Optional[list[str]],
         timeout: int,
         max_output_bytes: int = MAX_DESCRIBE_OUTPUT_BYTES,
+        embed_diffs: bool = True,
     ) -> list[Changelist]:
         """Fetch full details for a single batch of CLs with size limit fallback.
         
@@ -640,6 +655,7 @@ class Perforce(VCSProvider):
             depot_prefixes: Optional depot path prefixes for filtering
             timeout: Timeout in seconds for the p4 describe command
             max_output_bytes: Maximum output size in bytes (default 10 MB)
+            embed_diffs: Whether to fetch diffs (True) or only metadata (False)
             
         Returns:
             List of Changelist objects for this batch
@@ -653,45 +669,59 @@ class Perforce(VCSProvider):
             )
         
         # Try batch with size limit
-        output, truncated = self._run_describe_with_size_limit(
-            workspace_path, cl_numbers, timeout, max_output_bytes
+        output, result = self._run_describe_with_size_limit(
+            workspace_path, cl_numbers, timeout, max_output_bytes, embed_diffs
         )
         
-        if not truncated:
+        if result == DescribeResult.SUCCESS:
             # Success - parse normally
-            result = self._parse_describe_output(
-                output, workspace_path, depot_prefixes
+            parsed = self._parse_describe_output(
+                output, workspace_path, depot_prefixes, embed_diffs
             )
             # Explicit cleanup after large describe operation
             del output
             gc.collect()
-            return result
+            self._consecutive_corrupt_cls = 0  # Reset circuit breaker
+            return parsed
         
-        # Output was truncated due to size limit
+        # Not success - SIZE_LIMIT or CORRUPTION
         if DebugLogger.is_enabled():
             from expert_among_us.utils.progress import console as progress_console
             progress_console.print(
-                f"[yellow]Batch {cl_numbers[0]}..{cl_numbers[-1]} truncated to "
-                f"{max_output_bytes / (1024*1024):.1f} MB[/yellow]"
+                f"[yellow]Batch {cl_numbers[0]}..{cl_numbers[-1]} {result.value}, "
+                f"max {max_output_bytes / (1024*1024):.1f} MB[/yellow]"
             )
         
         if len(cl_numbers) == 1:
-            # Single huge CL - use truncated output (acceptable per requirements)
-            result = self._parse_describe_output(
-                output, workspace_path, depot_prefixes
-            )
-            # Explicit cleanup after large describe operation
-            del output
-            gc.collect()
-            return result
+            # Single CL handling
+            if result == DescribeResult.CORRUPTION:
+                # CORRUPTION: Skip entirely (output is invalid/empty)
+                self._consecutive_corrupt_cls += 1
+                if self._consecutive_corrupt_cls >= self._max_consecutive_corrupt_cls:
+                    raise RuntimeError(
+                        f"Too many consecutive corrupt CLs ({self._consecutive_corrupt_cls}). "
+                        "Depot needs 'p4 verify' or 'p4d -xU'."
+                    )
+                from expert_among_us.utils.progress import console as progress_console
+                progress_console.print(f"[yellow]Skipping corrupt CL {cl_numbers[0]}[/yellow]")
+                del output
+                gc.collect()
+                return []
+            else:
+                # SIZE_LIMIT: Use truncated output (acceptable per existing behavior)
+                parsed = self._parse_describe_output(
+                    output, workspace_path, depot_prefixes, embed_diffs
+                )
+                del output
+                gc.collect()
+                return parsed
         
-        # Multiple CLs - binary search to isolate problem CL(s)
-        # Cleanup will happen in recursive calls
+        # Multiple CLs - binary search (same for both SIZE_LIMIT and CORRUPTION)
         del output
         gc.collect()
         return self._fetch_with_binary_search(
             workspace_path, cl_numbers, depot_prefixes,
-            timeout, max_output_bytes
+            timeout, max_output_bytes, embed_diffs
         )
     
     def _run_describe_with_size_limit(
@@ -700,7 +730,8 @@ class Perforce(VCSProvider):
         cl_numbers: list[str],
         timeout: int,
         max_bytes: int = MAX_DESCRIBE_OUTPUT_BYTES,
-    ) -> tuple[str, bool]:
+        embed_diffs: bool = True,
+    ) -> tuple[str, DescribeResult]:
         """Run p4 describe with streaming output size limit.
         
         Streams subprocess output and enforces a hard byte limit to prevent
@@ -712,15 +743,23 @@ class Perforce(VCSProvider):
             cl_numbers: List of CL numbers to describe
             timeout: Command timeout in seconds
             max_bytes: Maximum output size in bytes (default 10 MB)
+            embed_diffs: Whether to fetch diffs (True) or only metadata (False)
             
         Returns:
-            Tuple of (output, was_truncated)
+            Tuple of (output, result_status)
+            - SUCCESS: Full output retrieved
+            - SIZE_LIMIT: Output truncated, needs splitting
+            - CORRUPTION: Depot corruption, needs isolation
             
         Raises:
             subprocess.CalledProcessError: On p4 command failure
             subprocess.TimeoutExpired: On timeout (always fatal)
         """
-        cmd = ["p4", "describe", "-du", "-m", str(MAX_FILES_PER_CL)]
+        # Conditionally include diffs based on embed_diffs flag
+        if embed_diffs:
+            cmd = ["p4", "describe", "-du", "-m", str(MAX_FILES_PER_CL)]
+        else:
+            cmd = ["p4", "describe", "-s"]
         cmd.extend(cl_numbers)
         
         process = subprocess.Popen(
@@ -774,16 +813,32 @@ class Perforce(VCSProvider):
             # Add truncation marker if output was cut off
             if truncated:
                 output_parts.append("\n\n[TRUNCATED - exceeded size limit]")
+                return ''.join(output_parts), DescribeResult.SIZE_LIMIT
             elif process.returncode != 0:
                 # Only raise on real errors, not our intentional kill
                 stderr_output = process.stderr.read()
+                
+                # Check for corruption patterns
+                corruption_patterns = [
+                    "Revision table out of sync with index!",
+                ]
+                
+                if any(pattern in stderr_output for pattern in corruption_patterns):
+                    if DebugLogger.is_enabled():
+                        from expert_among_us.utils.progress import console as progress_console
+                        progress_console.print(
+                            f"[yellow]Corruption detected in CLs {cl_numbers}: {stderr_output.strip()}[/yellow]"
+                        )
+                    return "", DescribeResult.CORRUPTION
+                
+                # Non-corruption error
                 raise subprocess.CalledProcessError(
                     process.returncode, cmd,
                     ''.join(output_parts),
                     stderr_output
                 )
             
-            return ''.join(output_parts), truncated
+            return ''.join(output_parts), DescribeResult.SUCCESS
             
         finally:
             # Ensure process cleanup
@@ -798,6 +853,7 @@ class Perforce(VCSProvider):
         depot_prefixes: Optional[list[str]],
         timeout: int,
         max_output_bytes: int,
+        embed_diffs: bool = True,
     ) -> list[Changelist]:
         """Split batch using binary search to isolate problematic CLs.
         
@@ -810,6 +866,7 @@ class Perforce(VCSProvider):
             depot_prefixes: Optional depot path prefixes for filtering
             timeout: Command timeout in seconds
             max_output_bytes: Maximum output size per batch
+            embed_diffs: Whether to fetch diffs (True) or only metadata (False)
             
         Returns:
             List of Changelist objects from all sub-batches
@@ -818,7 +875,7 @@ class Perforce(VCSProvider):
             # Base case - caller handles single CL truncation
             return self._fetch_single_describe_batch(
                 workspace_path, cl_numbers, depot_prefixes,
-                timeout, max_output_bytes
+                timeout, max_output_bytes, embed_diffs
             )
         
         # Split in half
@@ -831,13 +888,13 @@ class Perforce(VCSProvider):
         results.extend(
             self._fetch_single_describe_batch(
                 workspace_path, first_half, depot_prefixes,
-                timeout, max_output_bytes
+                timeout, max_output_bytes, embed_diffs
             )
         )
         results.extend(
             self._fetch_single_describe_batch(
                 workspace_path, second_half, depot_prefixes,
-                timeout, max_output_bytes
+                timeout, max_output_bytes, embed_diffs
             )
         )
         
@@ -848,8 +905,9 @@ class Perforce(VCSProvider):
         output: str,
         workspace_path: str,
         depot_prefixes: Optional[list[str]] = None,
+        embed_diffs: bool = True,
     ) -> list[Changelist]:
-        """Parse output from `p4 describe -du` command.
+        """Parse output from `p4 describe` command (with or without diffs).
         
         Filters files and diffs to only include those matching depot_prefixes.
         
@@ -963,6 +1021,11 @@ class Perforce(VCSProvider):
                                     i += 1
                                     continue  # Skip this file
                             
+                            # Filter by file extension
+                            if not should_index_file(depot_path, self._settings.allowed_file_extensions):
+                                i += 1
+                                continue
+                            
                             # Convert to local path
                             local_path = self._depot_to_local_path(workspace_path, depot_path)
                             if local_path:
@@ -971,16 +1034,16 @@ class Perforce(VCSProvider):
                     else:
                         break
                 
-                # Skip to "Differences ..." section
-                while i < len(lines) and not lines[i].startswith("Differences"):
+                # Skip to "Differences ..." section (or next changelist if no diffs)
+                while i < len(lines) and not lines[i].startswith("Differences") and not lines[i].startswith("Change "):
                     i += 1
                 
-                if i < len(lines):
+                if i < len(lines) and lines[i].startswith("Differences"):
                     i += 1  # Skip "Differences ..." line
-                
-                # Skip empty line
-                if i < len(lines) and not lines[i].strip():
-                    i += 1
+                    
+                    # Skip empty line after "Differences"
+                    if i < len(lines) and not lines[i].strip():
+                        i += 1
                 
                 # Collect diff until next changelist or EOF
                 # If filtering by depot_prefixes, only include diff sections for matching files
@@ -1012,6 +1075,12 @@ class Perforce(VCSProvider):
                                 current_file_matches = True
                         else:
                             current_file_matches = True
+                        
+                        # Also filter by extension
+                        if current_file_matches and self._settings.allowed_file_extensions:
+                            current_file_matches = should_index_file(
+                                depot_path, self._settings.allowed_file_extensions
+                            )
                     
                     # Only include lines if current file matches filter
                     if current_file_matches:
@@ -1024,8 +1093,9 @@ class Perforce(VCSProvider):
                 # Filter binary content from diff
                 diff, _binary_files = filter_binary_from_diff(diff)
                 
-                # Skip changelists with empty diffs (consistent with Git)
-                if not diff or not diff.strip():
+                # Only skip empty diffs when we expected diffs
+                # (if embed_diffs was False, diff will be empty but that's intentional)
+                if embed_diffs and (not diff or not diff.strip()):
                     continue
                 
                 changelist = Changelist(

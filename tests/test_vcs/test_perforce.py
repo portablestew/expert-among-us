@@ -16,8 +16,15 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from expert_among_us.vcs.perforce import Perforce, MAX_FILES_PER_CL
+from expert_among_us.vcs.perforce import Perforce, MAX_FILES_PER_CL, DescribeResult
 from expert_among_us.models.changelist import Changelist
+from expert_among_us.config.settings import Settings
+
+
+@pytest.fixture
+def settings():
+    """Fixture providing a Settings instance for tests."""
+    return Settings()
 
 
 @pytest.fixture
@@ -43,9 +50,9 @@ def mock_which():
 
 
 @pytest.fixture
-def perforce_provider():
+def perforce_provider(settings):
     """Fixture providing a Perforce provider instance."""
-    return Perforce()
+    return Perforce(settings)
 
 
 def create_mock_popen_process(output: str, returncode: int = 0):
@@ -391,15 +398,6 @@ Differences ...
             assert all(cl.id != "12345" for cl in changelists)
             assert any(cl.id == "12346" for cl in changelists)
             assert any(cl.id == "12347" for cl in changelists)
-
-    @pytest.mark.skip(reason="Subdirs functionality tested by test_get_total_commit_count_with_subdirs")
-    def test_get_commits_after_with_subdirs(self, mock_subprocess_run, perforce_provider, tmp_path):
-        """Verify subdirectory filtering includes depot paths in command.
-        
-        Note: This test has complex mocking requirements and subdirs functionality
-        is already thoroughly tested by test_get_total_commit_count_with_subdirs.
-        """
-        pass
 
     def test_get_commits_after_empty_repo(self, mock_subprocess_run, perforce_provider, tmp_path):
         """Verify empty result for repository with no changelists."""
@@ -1105,14 +1103,14 @@ Differences ...
         
         mock_subprocess_popen.return_value = create_mock_popen_process(small_output)
         
-        output, truncated = perforce_provider._run_describe_with_size_limit(
+        output, result = perforce_provider._run_describe_with_size_limit(
             workspace_path=str(tmp_path),
             cl_numbers=["12345"],
             timeout=60,
             max_bytes=10 * 1024 * 1024  # 10 MB
         )
         
-        assert not truncated
+        assert result == DescribeResult.SUCCESS
         assert "small content" in output
         assert "[TRUNCATED" not in output
     
@@ -1137,14 +1135,14 @@ Differences ...
         mock_process = create_mock_popen_process(large_output)
         mock_subprocess_popen.return_value = mock_process
         
-        output, truncated = perforce_provider._run_describe_with_size_limit(
+        output, result = perforce_provider._run_describe_with_size_limit(
             workspace_path=str(tmp_path),
             cl_numbers=["12345"],
             timeout=60,
             max_bytes=1024  # 1 KB limit
         )
         
-        assert truncated
+        assert result == DescribeResult.SIZE_LIMIT
         assert "[TRUNCATED - exceeded size limit]" in output
         assert len(output.encode('utf-8')) <= 1024 + 100  # Allow some margin for marker
         # Verify process was killed
@@ -1378,14 +1376,14 @@ Differences ...
         mock_subprocess_popen.return_value = mock_process
         
         # Should not raise error despite negative returncode
-        output, truncated = perforce_provider._run_describe_with_size_limit(
+        output, result = perforce_provider._run_describe_with_size_limit(
             workspace_path=str(tmp_path),
             cl_numbers=["12345"],
             timeout=60,
             max_bytes=1024
         )
         
-        assert truncated
+        assert result == DescribeResult.SIZE_LIMIT
         assert "[TRUNCATED - exceeded size limit]" in output
         # Verify process was killed
         mock_process.kill.assert_called_once()

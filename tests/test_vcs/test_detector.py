@@ -12,12 +12,19 @@ from pathlib import Path
 
 from expert_among_us.vcs.detector import detect_vcs
 from expert_among_us.vcs.git import Git
+from expert_among_us.config.settings import Settings
+
+
+@pytest.fixture
+def settings():
+    """Fixture providing a Settings instance for tests."""
+    return Settings()
 
 
 class TestVCSDetection:
     """Tests for VCS detection functionality."""
 
-    def test_detect_git_repository(self):
+    def test_detect_git_repository(self, settings):
         """Verify that Git repositories are correctly detected."""
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_path = Path(tmpdir)
@@ -31,19 +38,19 @@ class TestVCSDetection:
             )
             
             # Detect VCS
-            vcs = detect_vcs(str(repo_path))
+            vcs = detect_vcs(str(repo_path), settings)
             
             assert vcs is not None
             assert isinstance(vcs, Git)
 
-    def test_detect_no_vcs_in_empty_directory(self):
+    def test_detect_no_vcs_in_empty_directory(self, settings):
         """Verify that empty directories return None."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            vcs = detect_vcs(tmpdir)
+            vcs = detect_vcs(tmpdir, settings)
             
             assert vcs is None
 
-    def test_detect_vcs_in_subdirectory(self):
+    def test_detect_vcs_in_subdirectory(self, settings):
         """Verify that VCS detection works from subdirectories."""
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_path = Path(tmpdir)
@@ -61,12 +68,12 @@ class TestVCSDetection:
             nested.mkdir(parents=True)
             
             # Detect VCS from root should work
-            vcs = detect_vcs(str(repo_path))
+            vcs = detect_vcs(str(repo_path), settings)
             
             assert vcs is not None
             assert isinstance(vcs, Git)
 
-    def test_detect_vcs_returns_correct_type_for_git(self):
+    def test_detect_vcs_returns_correct_type_for_git(self, settings):
         """Verify that detected Git VCS is of correct type."""
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_path = Path(tmpdir)
@@ -78,7 +85,7 @@ class TestVCSDetection:
                 check=True
             )
 
-            vcs = detect_vcs(str(repo_path))
+            vcs = detect_vcs(str(repo_path), settings)
 
             # Verify it's a Git instance with expected methods (updated interface)
             assert hasattr(vcs, 'get_commits_after')
@@ -87,14 +94,14 @@ class TestVCSDetection:
             assert hasattr(vcs, 'get_latest_commit_time')
             assert hasattr(vcs, 'detect')
 
-    def test_detect_vcs_with_nonexistent_path(self):
+    def test_detect_vcs_with_nonexistent_path(self, settings):
         """Verify behavior when path doesn't exist."""
-        vcs = detect_vcs("/nonexistent/path")
+        vcs = detect_vcs("/nonexistent/path", settings)
         
         # Should return None
         assert vcs is None
 
-    def test_detect_vcs_consistency(self):
+    def test_detect_vcs_consistency(self, settings):
         """Verify that multiple detections return same type."""
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_path = Path(tmpdir)
@@ -106,14 +113,14 @@ class TestVCSDetection:
                 check=True
             )
             
-            vcs1 = detect_vcs(str(repo_path))
-            vcs2 = detect_vcs(str(repo_path))
+            vcs1 = detect_vcs(str(repo_path), settings)
+            vcs2 = detect_vcs(str(repo_path), settings)
             
             assert type(vcs1) == type(vcs2)
             assert isinstance(vcs1, Git)
             assert isinstance(vcs2, Git)
 
-    def test_detect_vcs_multiple_repositories_root_wins(self):
+    def test_detect_vcs_multiple_repositories_root_wins(self, settings):
         """Verify that when in a git directory, it's detected."""
         with tempfile.TemporaryDirectory() as tmpdir:
             outer_repo = Path(tmpdir)
@@ -139,18 +146,18 @@ class TestVCSDetection:
             )
             
             # Detect from inner directory should find a repo
-            vcs = detect_vcs(str(inner_dir))
+            vcs = detect_vcs(str(inner_dir), settings)
             
             assert vcs is not None
             assert isinstance(vcs, Git)
 
-    def test_detect_vcs_with_file_not_directory(self):
+    def test_detect_vcs_with_file_not_directory(self, settings):
         """Verify that passing a file path (not directory) returns None."""
         with tempfile.TemporaryDirectory() as tmpdir:
             file_path = Path(tmpdir) / "test.txt"
             file_path.write_text("test content")
             
-            vcs = detect_vcs(str(file_path))
+            vcs = detect_vcs(str(file_path), settings)
             
             # Should return None for files
             assert vcs is None
@@ -159,7 +166,7 @@ class TestVCSDetection:
 class TestVCSProviderIntegration:
     """Tests for VCS provider integration with detector."""
 
-    def test_detected_git_can_get_commits(self):
+    def test_detected_git_can_get_commits(self, settings):
         """Verify that detected Git provider can retrieve commits."""
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_path = Path(tmpdir)
@@ -198,7 +205,7 @@ class TestVCSProviderIntegration:
                 check=True
             )
             
-            vcs = detect_vcs(str(repo_path))
+            vcs = detect_vcs(str(repo_path), settings)
             commits = vcs.get_commits_after(
                 workspace_path=str(repo_path),
                 after_hash=None,
@@ -208,7 +215,7 @@ class TestVCSProviderIntegration:
 
             assert len(commits) > 0
 
-    def test_detected_git_can_get_latest_commit_time(self):
+    def test_detected_git_can_get_latest_commit_time(self, settings):
         """Verify that detected Git provider can get latest commit time."""
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_path = Path(tmpdir)
@@ -247,12 +254,12 @@ class TestVCSProviderIntegration:
                 check=True
             )
             
-            vcs = detect_vcs(str(repo_path))
+            vcs = detect_vcs(str(repo_path), settings)
             latest_time = vcs.get_latest_commit_time(str(repo_path))
             
             assert latest_time is not None
 
-    def test_detected_git_can_check_detect_method(self):
+    def test_detected_git_can_check_detect_method(self, settings):
         """Verify that detected Git provider has working detect method."""
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_path = Path(tmpdir)
@@ -264,7 +271,7 @@ class TestVCSProviderIntegration:
                 check=True
             )
             
-            vcs = detect_vcs(str(repo_path))
+            vcs = detect_vcs(str(repo_path), settings)
             
             # Should be able to call detect on the class
             assert Git.detect(str(repo_path)) is True
@@ -273,7 +280,7 @@ class TestVCSProviderIntegration:
 class TestEdgeCases:
     """Tests for edge cases in VCS detection."""
 
-    def test_detect_vcs_with_relative_path(self):
+    def test_detect_vcs_with_relative_path(self, settings):
         """Verify VCS detection works with relative paths."""
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_path = Path(tmpdir)
@@ -290,13 +297,13 @@ class TestEdgeCases:
             original_cwd = os.getcwd()
             try:
                 os.chdir(repo_path)
-                vcs = detect_vcs(".")
+                vcs = detect_vcs(".", settings)
                 assert vcs is not None
                 assert isinstance(vcs, Git)
             finally:
                 os.chdir(original_cwd)
 
-    def test_detect_vcs_with_trailing_slash(self):
+    def test_detect_vcs_with_trailing_slash(self, settings):
         """Verify VCS detection works with trailing slashes."""
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_path = Path(tmpdir)
@@ -310,21 +317,21 @@ class TestEdgeCases:
             
             # Add trailing slash (works differently on Windows vs Unix)
             path_with_slash = str(repo_path) + "/"
-            vcs = detect_vcs(path_with_slash)
+            vcs = detect_vcs(path_with_slash, settings)
             assert vcs is not None
             assert isinstance(vcs, Git)
 
-    def test_detect_vcs_returns_none_not_raises(self):
+    def test_detect_vcs_returns_none_not_raises(self, settings):
         """Verify that no VCS returns None, not exception."""
         with tempfile.TemporaryDirectory() as tmpdir:
             # Create some files but not a git repo
             file_path = Path(tmpdir) / "test.txt"
             file_path.write_text("not a repo")
             
-            vcs = detect_vcs(tmpdir)
+            vcs = detect_vcs(tmpdir, settings)
             assert vcs is None
 
-    def test_detect_vcs_multiple_calls_same_directory(self):
+    def test_detect_vcs_multiple_calls_same_directory(self, settings):
         """Verify that multiple detections from same directory are consistent."""
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_path = Path(tmpdir)
@@ -336,21 +343,21 @@ class TestEdgeCases:
                 check=True
             )
             
-            results = [detect_vcs(str(repo_path)) for _ in range(3)]
+            results = [detect_vcs(str(repo_path), settings) for _ in range(3)]
             
             # All should be Git instances
             assert all(isinstance(r, Git) for r in results)
 
-    def test_detect_vcs_empty_string_path(self):
+    def test_detect_vcs_empty_string_path(self, settings):
         """Verify behavior with empty string path."""
-        vcs = detect_vcs("")
+        vcs = detect_vcs("", settings)
         
         # Should return None for empty path
         assert vcs is None
 
-    def test_detect_vcs_whitespace_path(self):
+    def test_detect_vcs_whitespace_path(self, settings):
         """Verify behavior with whitespace path."""
-        vcs = detect_vcs("   ")
+        vcs = detect_vcs("   ", settings)
         
         # Should return None for whitespace path
         assert vcs is None
@@ -397,7 +404,7 @@ class TestProviderRegistry:
             # Should be Git or GitProvider
             assert "Git" in first_provider.__name__
 
-    def test_detect_vcs_checks_providers_sequentially(self):
+    def test_detect_vcs_checks_providers_sequentially(self, settings):
         """Verify that detect_vcs tries providers in sequence."""
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_path = Path(tmpdir)
@@ -411,7 +418,7 @@ class TestProviderRegistry:
             )
             
             # Should detect and return first matching provider
-            vcs = detect_vcs(str(repo_path))
+            vcs = detect_vcs(str(repo_path), settings)
             assert vcs is not None
             
             # Verify it's one of the registered providers
@@ -422,7 +429,7 @@ class TestProviderRegistry:
 class TestVCSProviderInterface:
     """Tests verifying provider interface compliance."""
 
-    def test_detected_provider_has_required_methods(self):
+    def test_detected_provider_has_required_methods(self, settings):
         """Verify detected provider implements required interface."""
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_path = Path(tmpdir)
@@ -434,7 +441,7 @@ class TestVCSProviderInterface:
                 check=True
             )
             
-            vcs = detect_vcs(str(repo_path))
+            vcs = detect_vcs(str(repo_path), settings)
 
             # Verify required methods exist on detected provider (updated interface)
             assert hasattr(vcs, 'get_commits_after')
@@ -446,7 +453,7 @@ class TestVCSProviderInterface:
             assert hasattr(vcs, 'get_latest_commit_time')
             assert callable(vcs.get_latest_commit_time)
 
-    def test_detected_provider_class_has_detect_method(self):
+    def test_detected_provider_class_has_detect_method(self, settings):
         """Verify provider class has static detect method."""
         with tempfile.TemporaryDirectory() as tmpdir:
             repo_path = Path(tmpdir)
@@ -458,7 +465,7 @@ class TestVCSProviderInterface:
                 check=True
             )
             
-            vcs = detect_vcs(str(repo_path))
+            vcs = detect_vcs(str(repo_path), settings)
             
             # Verify class has detect method
             assert hasattr(type(vcs), 'detect')

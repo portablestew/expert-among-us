@@ -19,7 +19,7 @@ VCS_PROVIDERS: list[type[VCSProvider]] = [
 ]
 
 
-def detect_vcs(workspace_path: str, debug_logger=None) -> Optional[VCSProvider]:
+def detect_vcs(workspace_path: str, settings) -> Optional[VCSProvider]:
     """Automatically detect which VCS is in use and return a provider instance.
     
     This function tries each registered VCS provider's detect() method in order
@@ -28,12 +28,15 @@ def detect_vcs(workspace_path: str, debug_logger=None) -> Optional[VCSProvider]:
     
     Args:
         workspace_path: Path to the workspace directory to check
+        settings: Settings instance (required)
         
     Returns:
         An instance of the detected VCS provider, or None if no VCS is detected
         
     Example:
-        >>> vcs = detect_vcs("/path/to/my/project")
+        >>> from expert_among_us.config.settings import Settings
+        >>> settings = Settings()
+        >>> vcs = detect_vcs("/path/to/my/project", settings)
         >>> if vcs:
         ...     commits = vcs.get_commits_after("/path/to/my/project", after_hash=None, batch_size=10)
         >>> else:
@@ -45,12 +48,7 @@ def detect_vcs(workspace_path: str, debug_logger=None) -> Optional[VCSProvider]:
 
     for provider_class in VCS_PROVIDERS:
         if provider_class.detect(workspace_path):
-            # Instantiate provider without threading debug_logger; providers consult DebugLogger directly.
-            try:
-                # New-style providers ignore debug_logger and use DebugLogger.is_enabled() internally.
-                return provider_class()
-            except TypeError:
-                # Fallback: in case of legacy providers with different signatures.
-                return provider_class()
+            # Instantiate provider with settings
+            return provider_class(settings)
      
     return None

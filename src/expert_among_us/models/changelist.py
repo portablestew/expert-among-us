@@ -72,7 +72,7 @@ class Changelist(BaseModel):
             raise ValueError("Commit ID cannot be empty")
         return v.strip()
 
-    @field_validator("message", "diff", "author")
+    @field_validator("message", "author")
     @classmethod
     def validate_non_empty_string(cls, v: str, info) -> str:
         """Validate that required string fields are non-empty."""

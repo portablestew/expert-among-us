@@ -252,3 +252,57 @@ def filter_binary_from_diff(diff: str) -> tuple[str, list[str]]:
     filtered_diff = "\n".join(filtered_sections)
     
     return filtered_diff, binary_files
+
+
+def should_index_file(file_path: str, allowed_extensions: Optional[List[str]]) -> bool:
+    """Check if file should be indexed based on extension.
+    
+    Args:
+        file_path: File path to check
+        allowed_extensions: List of allowed extensions (e.g., [".cpp", ".py"])
+                          None means allow all files
+    
+    Returns:
+        True if file should be indexed
+    """
+    if allowed_extensions is None:
+        return True
+    
+    return any(file_path.endswith(ext) for ext in allowed_extensions)
+
+
+def filter_diff_by_extensions(diff: str, allowed_extensions: List[str]) -> str:
+    """Filter diff sections to only include files with allowed extensions.
+    
+    Args:
+        diff: Complete diff content
+        allowed_extensions: List of allowed extensions (e.g., [".cpp", ".py"])
+    
+    Returns:
+        Filtered diff with only sections for allowed file types
+    """
+    if not diff or not allowed_extensions:
+        return diff
+    
+    sections = []
+    current_section = []
+    include_section = True
+    
+    for line in diff.split("\n"):
+        if line.startswith("diff --git "):
+            # Save previous section if it should be included
+            if current_section and include_section:
+                sections.append("\n".join(current_section))
+            
+            # Check if new section should be included
+            filename = extract_filename_from_diff(line)
+            include_section = should_index_file(filename, allowed_extensions) if filename else True
+            current_section = [line]
+        else:
+            current_section.append(line)
+    
+    # Don't forget last section
+    if current_section and include_section:
+        sections.append("\n".join(current_section))
+    
+    return "\n".join(sections)

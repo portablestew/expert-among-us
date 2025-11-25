@@ -299,8 +299,8 @@ class Indexer:
                 for commit in batch:
                     file_paths.update(commit.files)
                 
-                # Index files with progress
-                if file_paths:
+                # Index files with progress (skip if embed_file_chunks is disabled)
+                if file_paths and self.settings.embed_file_chunks:
                     existing, missing = self._check_file_existence(file_paths, batch[-1].id)
 
                     if existing:
@@ -565,11 +565,12 @@ class Indexer:
             # Metadata text (single entry per commit)
             metadata_texts.append(commit.get_metadata_text())
 
-            # Diff chunks (0..N per commit)
-            diff_chunks = chunk_text_with_lines(commit.diff, chunk_size=self.settings.diff_chunk_size_bytes)
-            for idx, (chunk_text, _, _) in enumerate(diff_chunks):
-                diff_chunk_texts.append(chunk_text)
-                diff_chunk_keys.append((commit.id, idx))
+            # Diff chunks (0..N per commit) - only if embed_diffs is enabled
+            if self.settings.embed_diffs:
+                diff_chunks = chunk_text_with_lines(commit.diff, chunk_size=self.settings.diff_chunk_size_bytes)
+                for idx, (chunk_text, _, _) in enumerate(diff_chunks):
+                    diff_chunk_texts.append(chunk_text)
+                    diff_chunk_keys.append((commit.id, idx))
 
         # Task 1: Metadata embeddings
         self.progress.start_task(self._commit_meta_task)

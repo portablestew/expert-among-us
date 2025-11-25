@@ -268,8 +268,8 @@ class SQLiteMetadataDB(MetadataDB):
         """Insert or update multiple changelists.
 
         Notes on expert_name handling:
-        - VCS providers like Git._parse_commits() may set expert_name="" because they
-          do not know which expert the commits belong to.
+        - VCS providers may set expert_name="" because they do not know which expert
+          the commits belong to during retrieval.
         - Callers that know the expert (e.g. Indexer, batch pipelines) SHOULD set
           changelist.expert_name explicitly before calling this method.
         - As a safety net, when changelist.expert_name is empty we fall back to this

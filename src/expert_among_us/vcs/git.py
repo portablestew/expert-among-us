@@ -5,7 +5,7 @@ from datetime import datetime, timezone, timedelta
 
 from expert_among_us.vcs.base import VCSProvider
 from expert_among_us.models.changelist import Changelist
-from expert_among_us.utils.truncate import filter_binary_from_diff, is_binary_file
+from expert_among_us.utils.truncate import filter_binary_from_diff, is_binary_file, should_index_file, filter_diff_by_extensions
 from expert_among_us.utils.debug import DebugLogger
 
 # Maximum commits to fetch details for in a single git operation
@@ -14,10 +14,13 @@ MAX_COMMITS_PER_BATCH = 50
 class Git(VCSProvider):
     """Git VCS provider implementation."""
  
-    def __init__(self, debug_logger: Optional[callable] = None):
-        # debug_logger is deprecated; we keep it only for backward compatibility.
-        # Newer code paths rely on DebugLogger.is_enabled() directly.
-        self._debug_logger = debug_logger
+    def __init__(self, settings):
+        """Initialize Git provider.
+        
+        Args:
+            settings: Settings instance with indexing configuration (required)
+        """
+        self._settings = settings
 
         # In-memory commit hash cache for efficient chronological pagination.
         # These are implementation details of the Git provider and are not part
@@ -237,6 +240,7 @@ class Git(VCSProvider):
                     workspace_path=workspace_path,
                     hashes=batch_hashes,
                     subdirs=subdirs,
+                    embed_diffs=self._settings.embed_diffs,
                 )
                 all_changelists.extend(batch_changelists)
             except Exception as e:
@@ -262,12 +266,13 @@ class Git(VCSProvider):
         workspace_path: str,
         hashes: list[str],
         subdirs: Optional[list[str]] = None,
+        embed_diffs: bool = True,
     ) -> list[Changelist]:
         """Fetch full commit details for a single batch of commits.
 
         Strategy:
         - One `git log` to get metadata lines for the requested hashes.
-        - One `git show` (or equivalent) to batch diffs for all requested commits.
+        - One `git show` (or equivalent) to batch diffs for all requested commits (if embed_diffs is True).
         - One `git show` to batch name-status for all requested commits.
         - Then assemble Changelist objects from these pre-fetched maps.
 
@@ -320,58 +325,59 @@ class Git(VCSProvider):
             if line.strip()
         ]
 
-        # 2) Batch fetch diffs for all commits.
-        # We use a custom header "commit <hash>" to delimit sections.
-        diff_cmd = [
-            "git",
-            "-C",
-            workspace_path,
-            "show",
-            "--no-merges",
-            "--format=commit %H",
-            "--patch",
-        ]
-        diff_cmd.extend(hashes)
-
-        if DebugLogger.is_enabled():
-            from expert_among_us.utils.progress import console as progress_console
-            diff_cmd_str = " ".join(str(part) for part in diff_cmd)
-            progress_console.print(
-                f"[dim]Git._fetch_commits_by_hashes: diffs via {diff_cmd_str}[/dim]"
-            )
-
-        diff_result = subprocess.run(
-            diff_cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        if diff_result.returncode != 0:
-            raise subprocess.CalledProcessError(
-                diff_result.returncode,
-                diff_cmd,
-                diff_result.stdout,
-                diff_result.stderr,
-            )
-
+        # 2) Conditionally fetch diffs for all commits (only when embed_diffs is True)
         diff_by_commit: dict[str, str] = {}
-        current_hash: str | None = None
-        current_lines: list[str] = []
+        
+        if embed_diffs:
+            diff_cmd = [
+                "git",
+                "-C",
+                workspace_path,
+                "show",
+                "--no-merges",
+                "--format=commit %H",
+                "--patch",
+            ]
+            diff_cmd.extend(hashes)
 
-        for line in diff_result.stdout.splitlines():
-            if line.startswith("commit "):
-                # Flush previous commit block
-                if current_hash is not None:
-                    diff_by_commit[current_hash] = "\n".join(current_lines).lstrip("\n")
-                # Start new block
-                current_hash = line[len("commit ") :].strip()
-                current_lines = []
-            else:
-                current_lines.append(line)
-        # Flush final commit block, if any
-        if current_hash is not None:
-            diff_by_commit[current_hash] = "\n".join(current_lines).lstrip("\n")
+            if DebugLogger.is_enabled():
+                from expert_among_us.utils.progress import console as progress_console
+                diff_cmd_str = " ".join(str(part) for part in diff_cmd)
+                progress_console.print(
+                    f"[dim]Git._fetch_commits_by_hashes: diffs via {diff_cmd_str}[/dim]"
+                )
+
+            diff_result = subprocess.run(
+                diff_cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if diff_result.returncode != 0:
+                raise subprocess.CalledProcessError(
+                    diff_result.returncode,
+                    diff_cmd,
+                    diff_result.stdout,
+                    diff_result.stderr,
+                )
+
+            current_hash: str | None = None
+            current_lines: list[str] = []
+
+            for line in diff_result.stdout.splitlines():
+                if line.startswith("commit "):
+                    # Flush previous commit block
+                    if current_hash is not None:
+                        diff_by_commit[current_hash] = "\n".join(current_lines).lstrip("\n")
+                    # Start new block
+                    current_hash = line[len("commit ") :].strip()
+                    current_lines = []
+                else:
+                    current_lines.append(line)
+            # Flush final commit block, if any
+            if current_hash is not None:
+                diff_by_commit[current_hash] = "\n".join(current_lines).lstrip("\n")
 
         # 3) Batch fetch name-status (changed files) for all commits.
         files_cmd = [
@@ -426,7 +432,9 @@ class Git(VCSProvider):
                 parts = stripped.split("\t", 1)
                 if len(parts) == 2:
                     _status, path = parts
-                    current_files.append(path)
+                    # Filter by extension if specified
+                    if should_index_file(path, self._settings.allowed_file_extensions):
+                        current_files.append(path)
         if current_hash is not None:
             files_by_commit[current_hash] = current_files
 
@@ -446,162 +454,22 @@ class Git(VCSProvider):
                 # Skip malformed lines defensively
                 continue
 
-            # Lookup pre-fetched diff; default to empty string if missing
-            raw_diff = diff_by_commit.get(commit_hash, "")
-            # Filter binary content from diff
-            diff, binary_files = filter_binary_from_diff(raw_diff)
-
-            # Skip commits with empty diffs (consistent with previous behavior)
-            if not diff or not diff.strip():
-                continue
+            # Handle diff based on embed_diffs flag
+            diff = ""
+            if embed_diffs:
+                raw_diff = diff_by_commit.get(commit_hash, "")
+                diff, binary_files = filter_binary_from_diff(raw_diff)
+                
+                # Filter diff by extensions if specified
+                if self._settings.allowed_file_extensions:
+                    diff = filter_diff_by_extensions(diff, self._settings.allowed_file_extensions)
+                
+                # Skip commits with empty diffs when we expected diffs
+                if not diff or not diff.strip():
+                    continue
 
             # Lookup pre-fetched file list for this commit
             files = files_by_commit.get(commit_hash, [])
-
-            changelist = Changelist(
-                id=commit_hash,
-                expert_name="",  # Will be set by the caller
-                timestamp=timestamp,
-                author=f"{author_name} <{author_email}>",
-                message=message,
-                diff=diff,
-                files=files,
-            )
-            changelists.append(changelist)
-
-        return changelists
-
-    # Legacy pagination API preserved for backward compatibility with existing tests.
-    # New code paths should use get_commits_after() instead.
-    def get_commits_page(
-        self,
-        workspace_path: str,
-        since_hash: Optional[str],
-        page: int,
-        page_size: int,
-        subdirs: Optional[list[str]] = None,
-    ) -> list[Changelist]:
-        """Legacy paginated commit retrieval used by older tests.
-
-        Semantics preserved:
-        - Uses `git log` with optional `since_hash` to define the range.
-        - Raises subprocess.CalledProcessError when git reports an invalid range
-          (e.g. nonexistent since_hash), as expected by tests.
-        """
-        if page_size <= 0:
-            return []
-
-        # Base git log command; keep behavior close to original implementation.
-        cmd = [
-            "git",
-            "-C",
-            workspace_path,
-            "log",
-            "--no-merges",
-            "--pretty=format:%H|%an|%ae|%at|%s",
-        ]
-
-        if since_hash:
-            # For the legacy API, use since_hash as a lower bound; invalid hashes
-            # will cause git log to fail, which we propagate to match tests.
-            cmd.append(f"{since_hash}..HEAD")
-
-        if subdirs:
-            cmd.append("--")
-            cmd.extend(subdirs)
-
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-
-        if result.returncode != 0:
-            # Preserve legacy behavior: surface invalid range as CalledProcessError
-            raise subprocess.CalledProcessError(
-                result.returncode,
-                cmd,
-                result.stdout,
-                result.stderr,
-            )
-
-        # Paginate lines manually
-        lines = [l for l in result.stdout.strip().split("\n") if l.strip()]
-        start = page * page_size
-        end = start + page_size
-        page_lines = lines[start:end]
-
-        return self._parse_commits(workspace_path, "\n".join(page_lines))
-
-    def _parse_commits(self, workspace_path: str, stdout: str) -> list[Changelist]:
-        """Parse commit output and return list of Changelist objects.
-
-        Deprecated compatibility helper for older tests that exercise the
-        legacy pagination APIs. Newer code paths should rely on the batched
-        _fetch_commits_by_hashes() implementation instead.
-        """
-        changelists: list[Changelist] = []
-        for line in stdout.strip().split("\n"):
-            if not line:
-                continue
-
-            parts = line.split("|", 4)
-            if len(parts) < 5:
-                continue
-
-            commit_hash, author_name, author_email, timestamp_str, message = parts
-            try:
-                # Create timezone-aware datetime in UTC
-                timestamp = datetime.fromtimestamp(int(timestamp_str), tz=timezone.utc)
-            except (TypeError, ValueError):
-                continue
-
-            # Get diff and files for this commit via git show, matching previous behavior.
-            diff_cmd = ["git", "-C", workspace_path, "show", "--format=", commit_hash]
-            diff_result = subprocess.run(
-                diff_cmd,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
-            diff = diff_result.stdout if diff_result.returncode == 0 else ""
-
-            # Filter binary content from diff
-            diff, _binary_files = filter_binary_from_diff(diff)
-
-            # Skip commits with empty diffs (merge commits are already excluded by --no-merges)
-            if not diff or not diff.strip():
-                continue
-
-            files_cmd = [
-                "git",
-                "-C",
-                workspace_path,
-                "show",
-                "--name-status",
-                "--format=",
-                commit_hash,
-            ]
-            files_result = subprocess.run(
-                files_cmd,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
-
-            files: list[str] = []
-            if files_result.returncode == 0:
-                for file_line in files_result.stdout.strip().split("\n"):
-                    if not file_line:
-                        continue
-                    parts = file_line.split("\t", 1)
-                    if len(parts) == 2:
-                        _status, filepath = parts
-                        files.append(filepath)
 
             changelist = Changelist(
                 id=commit_hash,

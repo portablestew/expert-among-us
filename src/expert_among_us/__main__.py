@@ -81,6 +81,11 @@ def main(ctx, debug: bool, data_dir: Optional[Path], llm_provider: str, base_url
 @click.option("--max-batches", type=int, help="Maximum batches to run (returns exit code 2 if more remain)")
 @click.option("--batch-size", default=1000, type=int, help="Maximum commits per embedding batch")
 @click.option("--start-at", type=str, help="Start indexing from this specific commit hash (use with --max-commits to test specific commits)")
+@click.option("--index-scope",
+              type=click.Choice(["metadata", "diffs", "files", "all"], case_sensitive=False),
+              default="all",
+              help="Index scope: metadata (messages+files only), diffs (metadata+diffs, no file content), or all (everything, default)")
+@click.option("--allowed-extensions", type=str, help="Comma-separated list of allowed file extensions (e.g., '.cpp,.h,.py')")
 @click.pass_context
 def populate(
     ctx,
@@ -90,6 +95,8 @@ def populate(
     max_batches: Optional[int],
     batch_size: int,
     start_at: Optional[str],
+    index_scope: str,
+    allowed_extensions: Optional[str],
 ) -> None:
     """Build or update an expert index from a repository.
     
@@ -191,6 +198,30 @@ def populate(
         if data_dir is not None:
             settings_kwargs['data_dir'] = data_dir
         
+        # Configure indexing scope based on CLI option
+        if index_scope == "metadata":
+            settings_kwargs['embed_file_chunks'] = False
+            settings_kwargs['embed_diffs'] = False
+            log_info("Index scope: metadata only -- commit messages + file lists")
+        elif index_scope == "diffs":
+            settings_kwargs['embed_file_chunks'] = False
+            settings_kwargs['embed_diffs'] = True
+            log_info("Index scope: diffs -- metadata + diffs, no file content")
+        elif index_scope == "files":
+            settings_kwargs['embed_file_chunks'] = True
+            settings_kwargs['embed_diffs'] = False
+            log_info("Index scope: files -- metadata + files, no diff content")
+        else:  # "all"
+            settings_kwargs['embed_file_chunks'] = True
+            settings_kwargs['embed_diffs'] = True
+            log_info("Index scope: all -- files + diffs + metadata")
+        
+        # Configure file extension filtering
+        if allowed_extensions:
+            extensions_list = [ext.strip() for ext in allowed_extensions.split(',')]
+            settings_kwargs['allowed_file_extensions'] = extensions_list
+            log_info(f"Filtering to extensions: {', '.join(extensions_list)}")
+        
         settings = Settings(**settings_kwargs)
         
         log_info("Initializing components...")
@@ -202,7 +233,7 @@ def populate(
         log_info(f"Detecting version control system in {workspace}...")
  
         # Detect VCS directly; Git will consult DebugLogger.is_enabled() for its own debug output.
-        vcs_provider = detect_vcs(str(workspace))
+        vcs_provider = detect_vcs(str(workspace), settings)
         
         if vcs_provider is None:
             log_error(f"No supported VCS detected in {workspace}")

@@ -15,6 +15,13 @@ from pathlib import Path
 from datetime import datetime, timedelta
 
 from expert_among_us.vcs.git import Git
+from expert_among_us.config.settings import Settings
+
+
+@pytest.fixture
+def settings():
+    """Fixture providing a Settings instance for tests."""
+    return Settings()
 
 
 @pytest.fixture
@@ -46,9 +53,9 @@ def temp_repo_path():
 
 
 @pytest.fixture
-def git_provider():
+def git_provider(settings):
     """Fixture providing a Git provider instance."""
-    return Git()
+    return Git(settings)
 
 
 @pytest.fixture

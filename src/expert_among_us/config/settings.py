@@ -165,6 +165,12 @@ class Settings(BaseSettings):
     # Indexing
     embed_diffs: bool = True
     embed_metadata: bool = True
+    embed_file_chunks: bool = True
+    
+    # File filtering
+    allowed_file_extensions: Optional[list[str]] = None
+    # Example: [".cpp", ".h", ".py", ".java", ".ts", ".js"]
+    # If None, all files are indexed (current behavior)
     
     # Text sanitization settings
     enable_sanitization: bool = True
