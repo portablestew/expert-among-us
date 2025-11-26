@@ -164,9 +164,10 @@ class Searcher:
         file_retrieval_limit = params.max_file_chunks * retrieval_multiplier
         
         # Log the multiplier and limits
-        log_info(f"Using candidate multiplier {retrieval_multiplier}")
-        log_info(f"Retrieving {commit_retrieval_limit} candidates for {params.max_changes} final results")
-        log_info(f"Performing {self.expansion_passes} expansion passes")
+        if DebugLogger.is_enabled():
+            log_info(f"Using candidate multiplier {retrieval_multiplier}")
+            log_info(f"Retrieving {commit_retrieval_limit} candidates for {params.max_changes} final results")
+            log_info(f"Performing {self.expansion_passes} expansion passes")
         
         # Step 3: Search metadata and diff collections
         metadata_results: List[VectorSearchResult] = []
