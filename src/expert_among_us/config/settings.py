@@ -167,6 +167,9 @@ class Settings(BaseSettings):
     embed_metadata: bool = True
     embed_file_chunks: bool = True
     
+    # Compact diff settings (disabled by default)
+    compact_diffs: bool = False
+    
     # File filtering
     allowed_file_extensions: Optional[list[str]] = None
     # Example: [".cpp", ".h", ".py", ".java", ".ts", ".js"]

@@ -86,6 +86,7 @@ def main(ctx, debug: bool, data_dir: Optional[Path], llm_provider: str, base_url
               default="all",
               help="Index scope: metadata (messages+files only), diffs (metadata+diffs, no file content), or all (everything, default)")
 @click.option("--allowed-extensions", type=str, help="Comma-separated list of allowed file extensions (e.g., '.cpp,.h,.py')")
+@click.option("--compact-diffs", is_flag=True, help="Reduce diff size by removing context (trades search quality for cost)")
 @click.pass_context
 def populate(
     ctx,
@@ -97,6 +98,7 @@ def populate(
     start_at: Optional[str],
     index_scope: str,
     allowed_extensions: Optional[str],
+    compact_diffs: bool,
 ) -> None:
     """Build or update an expert index from a repository.
     
@@ -221,6 +223,11 @@ def populate(
             extensions_list = [ext.strip() for ext in allowed_extensions.split(',')]
             settings_kwargs['allowed_file_extensions'] = extensions_list
             log_info(f"Filtering to extensions: {', '.join(extensions_list)}")
+        
+        # Configure compact diff setting
+        if compact_diffs:
+            settings_kwargs['compact_diffs'] = True
+            log_info("Compact diffs enabled: no context, max 128 bytes per change line")
         
         settings = Settings(**settings_kwargs)
         

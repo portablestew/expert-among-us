@@ -306,3 +306,100 @@ def filter_diff_by_extensions(diff: str, allowed_extensions: List[str]) -> str:
         sections.append("\n".join(current_section))
     
     return "\n".join(sections)
+
+
+def compact_diff(diff: str, max_line_bytes: int = 250) -> str:
+    """Transform unified diff to compact format with no context.
+    
+    Compatible with both Git and Perforce diff formats.
+    Extracts only changed lines (+/-) and formats as:
+        filepath
+        line#: +/- truncated_change
+    
+    Args:
+        diff: Unified diff content (Git or Perforce format)
+        max_line_bytes: Max bytes per change line including '...' marker (default: 250)
+        
+    Returns:
+        Compact diff with only changes, or original if no changes found
+    """
+    if not diff:
+        return diff
+    
+    lines = diff.split('\n')
+    output = []
+    current_file = None
+    current_line_num = 0
+    has_changes = False
+    
+    # Reserve space for truncation marker
+    TRUNCATION_MARKER = '...'
+    truncate_at = max_line_bytes - len(TRUNCATION_MARKER)
+    
+    for line in lines:
+        # Extract file path from Git diff header: diff --git a/file b/file
+        if line.startswith('diff --git'):
+            filename = extract_filename_from_diff(line)
+            if filename:
+                current_file = filename
+                output.append(f"\n{filename}")
+                continue
+        
+        # Extract file path from Perforce diff header: ==== //depot/path/file.cpp#42 (text) ====
+        if line.startswith('===='):
+            parts = line.split()
+            if len(parts) >= 2:
+                depot_spec = parts[1]  # //depot/path/file.cpp#42
+                # Remove revision number
+                depot_path = depot_spec.split('#')[0]
+                # Remove Perforce depot prefix (//)
+                if depot_path.startswith('//'):
+                    depot_path = depot_path[2:]
+                current_file = depot_path
+                output.append(f"\n{depot_path}")
+            continue
+        
+        # Track line numbers from hunk headers (@@ -45,7 +45,7 @@)
+        if line.startswith('@@'):
+            match = re.match(r'@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@', line)
+            if match:
+                current_line_num = int(match.group(1))
+            continue
+        
+        # Process addition lines
+        if line.startswith('+') and not line.startswith('+++'):
+            has_changes = True
+            change = line[1:].lstrip()  # Remove + prefix and leading space
+            
+            # Truncate to max_line_bytes (including marker)
+            change_bytes = change.encode('utf-8', errors='ignore')
+            if len(change_bytes) > max_line_bytes:
+                change = change_bytes[:truncate_at].decode('utf-8', errors='ignore')
+                change += TRUNCATION_MARKER
+            
+            output.append(f"{current_line_num}: + {change}")
+            current_line_num += 1
+        
+        # Process deletion lines
+        elif line.startswith('-') and not line.startswith('---'):
+            has_changes = True
+            change = line[1:].lstrip()  # Remove - prefix and leading space
+            
+            # Truncate to max_line_bytes (including marker)
+            change_bytes = change.encode('utf-8', errors='ignore')
+            if len(change_bytes) > max_line_bytes:
+                change = change_bytes[:truncate_at].decode('utf-8', errors='ignore')
+                change += TRUNCATION_MARKER
+            
+            output.append(f"{current_line_num}: - {change}")
+            # Don't increment line number for deletions
+        
+        # Track context lines for line numbering
+        elif line.startswith(' '):
+            current_line_num += 1
+    
+    # Return original diff if no changes were found (defensive)
+    if not has_changes:
+        return diff
+    
+    return '\n'.join(output)

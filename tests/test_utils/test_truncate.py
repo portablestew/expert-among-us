@@ -321,3 +321,92 @@ def test_filter_binary_from_diff_high_nontext_ratio():
     # Should be detected as binary due to high non-text ratio
     assert "data.bin" in binary_files
     assert "[binary file: data.bin]" in filtered
+
+
+def test_compact_diff_basic():
+    """Test basic compact diff transformation."""
+    from expert_among_us.utils.truncate import compact_diff
+    
+    # Standard Git diff with context lines
+    diff = """diff --git a/test.py b/test.py
+--- a/test.py
++++ b/test.py
+@@ -10,7 +10,7 @@
+ def greet(name):
+     # Context line 1
+     # Context line 2
+-    return "Hello"
++    return "Hello, " + name
+     # Context line 3
+     # Context line 4
+"""
+    
+    result = compact_diff(diff)
+    
+    # Should contain file header
+    assert "test.py" in result
+    
+    # Should contain only changes with line numbers
+    assert '13: - return "Hello"' in result
+    assert '13: + return "Hello, " + name' in result
+    
+    # Should NOT contain context lines
+    assert "Context line 1" not in result
+    assert "Context line 2" not in result
+    assert "def greet(name):" not in result
+    
+    # Should NOT contain diff headers
+    assert "---" not in result
+    assert "+++" not in result
+    assert "@@" not in result
+
+
+def test_compact_diff_truncates_long_lines():
+    """Test that lines over 250 bytes are truncated."""
+    from expert_among_us.utils.truncate import compact_diff
+    
+    long_line = "x" * 300  # Exceeds 250 bytes
+    diff = f"""diff --git a/long.txt b/long.txt
+@@ -1,1 +1,1 @@
+-{long_line}
+"""
+    
+    result = compact_diff(diff)
+    
+    # Should contain truncation marker
+    assert "..." in result
+    
+    # The change content itself should be <= 250 bytes
+    # Format is: "1: - " + truncated_content_with_marker
+    # Extract the actual change content (after "1: - ")
+    lines = [l for l in result.split('\n') if l.startswith('1: -')]
+    assert len(lines) == 1
+    change_line = lines[0]
+    
+    # Extract just the content part (after "1: - ")
+    content_part = change_line.split('1: - ', 1)[1]
+    assert len(content_part.encode('utf-8')) <= 250
+    assert content_part.endswith('...')
+
+
+def test_compact_diff_perforce_format():
+    """Test compact diff with Perforce format."""
+    from expert_among_us.utils.truncate import compact_diff
+    
+    # Perforce diff format
+    diff = """==== //depot/src/game.cpp#42 (text) ====
+@@ -10,3 +10,3 @@
+ void start() {
+-    score = 0;
++    score = 100;
+ }
+"""
+    
+    result = compact_diff(diff)
+    
+    # Should extract depot path correctly (without // prefix)
+    assert "depot/src/game.cpp" in result
+    
+    # Should contain changes
+    assert "11: - score = 0;" in result
+    assert "11: + score = 100;" in result

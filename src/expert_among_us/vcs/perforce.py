@@ -594,14 +594,23 @@ class Perforce(VCSProvider):
             return []
         
         # Convert subdirs to depot path prefixes once for all sub-batches
-        depot_prefixes = None
+        # ALWAYS create depot_prefixes to filter files:
+        # - If subdirs provided: use those as filters (explicit control)
+        # - If subdirs None: use workspace_path as filter boundary (intuitive default)
         if subdirs:
+            # Explicit subdirectories provided - filter by those
             depot_prefixes = []
             for subdir in subdirs:
                 depot_path = self._local_to_depot_path(workspace_path, subdir)
                 # Remove trailing /... to get prefix for matching
                 prefix = depot_path.rstrip("/...")
                 depot_prefixes.append(prefix)
+        else:
+            # No subdirs - use workspace_path as the filtering boundary
+            # This ensures commits only include files within workspace_path
+            depot_path = self._local_to_depot_path(workspace_path, None)
+            prefix = depot_path.rstrip("/...")
+            depot_prefixes = [prefix]
         
         # Process in sub-batches to avoid timeouts
         SUB_BATCH_SIZE = 50
@@ -1090,8 +1099,15 @@ class Perforce(VCSProvider):
                 
                 diff = "\n".join(diff_lines)
                 
-                # Filter binary content from diff
+                # Step 1: Filter binary content from diff
                 diff, _binary_files = filter_binary_from_diff(diff)
+                
+                # Step 2: Apply compact transformation (LAST - after all filtering)
+                # Note: Extension filtering for Perforce already happens earlier via should_index_file()
+                # on individual files (lines 1025-1027, 1080-1083), so no additional filtering needed here
+                if self._settings.compact_diffs:
+                    from expert_among_us.utils.truncate import compact_diff
+                    diff = compact_diff(diff)
                 
                 # Only skip empty diffs when we expected diffs
                 # (if embed_diffs was False, diff will be empty but that's intentional)

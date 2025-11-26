@@ -339,6 +339,10 @@ class Git(VCSProvider):
                 "--patch",
             ]
             diff_cmd.extend(hashes)
+            
+            # Filter diffs to only include files in subdirs (if specified)
+            if subdirs:
+                diff_cmd.extend(["--"] + subdirs)
 
             if DebugLogger.is_enabled():
                 from expert_among_us.utils.progress import console as progress_console
@@ -390,6 +394,10 @@ class Git(VCSProvider):
             "--format=commit %H",
         ]
         files_cmd.extend(hashes)
+        
+        # Filter files to only include those in subdirs (if specified)
+        if subdirs:
+            files_cmd.extend(["--"] + subdirs)
 
         if DebugLogger.is_enabled():
             from expert_among_us.utils.progress import console as progress_console
@@ -458,11 +466,18 @@ class Git(VCSProvider):
             diff = ""
             if embed_diffs:
                 raw_diff = diff_by_commit.get(commit_hash, "")
+                
+                # Step 1: Filter binary content
                 diff, binary_files = filter_binary_from_diff(raw_diff)
                 
-                # Filter diff by extensions if specified
+                # Step 2: Filter by extensions (BEFORE compacting - needs diff headers)
                 if self._settings.allowed_file_extensions:
                     diff = filter_diff_by_extensions(diff, self._settings.allowed_file_extensions)
+                
+                # Step 3: Apply compact transformation (LAST - after all filtering)
+                if self._settings.compact_diffs:
+                    from expert_among_us.utils.truncate import compact_diff
+                    diff = compact_diff(diff)
                 
                 # Skip commits with empty diffs when we expected diffs
                 if not diff or not diff.strip():
