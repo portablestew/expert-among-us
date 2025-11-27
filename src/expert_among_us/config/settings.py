@@ -169,6 +169,7 @@ class Settings(BaseSettings):
     
     # Compact diff settings (disabled by default)
     compact_diffs: bool = False
+    compact_diff_max_line_bytes: int = 250  # Maximum bytes per change line when compact_diffs=True
     
     # File filtering
     allowed_file_extensions: Optional[list[str]] = None

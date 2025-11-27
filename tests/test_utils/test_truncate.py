@@ -341,7 +341,7 @@ def test_compact_diff_basic():
      # Context line 4
 """
     
-    result = compact_diff(diff)
+    result = compact_diff(diff, max_line_bytes=250)
     
     # Should contain file header
     assert "test.py" in result
@@ -371,7 +371,7 @@ def test_compact_diff_truncates_long_lines():
 -{long_line}
 """
     
-    result = compact_diff(diff)
+    result = compact_diff(diff, max_line_bytes=250)
     
     # Should contain truncation marker
     assert "..." in result
@@ -402,7 +402,7 @@ def test_compact_diff_perforce_format():
  }
 """
     
-    result = compact_diff(diff)
+    result = compact_diff(diff, max_line_bytes=250)
     
     # Should extract depot path correctly (without // prefix)
     assert "depot/src/game.cpp" in result

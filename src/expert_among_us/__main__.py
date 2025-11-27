@@ -227,9 +227,12 @@ def populate(
         # Configure compact diff setting
         if compact_diffs:
             settings_kwargs['compact_diffs'] = True
-            log_info("Compact diffs enabled: no context, max 128 bytes per change line")
         
         settings = Settings(**settings_kwargs)
+        
+        # Log compact diff setting after settings object is created
+        if compact_diffs:
+            log_info(f"Compact diffs enabled: no context, max {settings.compact_diff_max_line_bytes} bytes per change line")
         
         log_info("Initializing components...")
         log_info(f"Using embedding provider: {embedding_provider}")

@@ -308,7 +308,7 @@ def filter_diff_by_extensions(diff: str, allowed_extensions: List[str]) -> str:
     return "\n".join(sections)
 
 
-def compact_diff(diff: str, max_line_bytes: int = 250) -> str:
+def compact_diff(diff: str, max_line_bytes: int) -> str:
     """Transform unified diff to compact format with no context.
     
     Compatible with both Git and Perforce diff formats.

@@ -1107,7 +1107,7 @@ class Perforce(VCSProvider):
                 # on individual files (lines 1025-1027, 1080-1083), so no additional filtering needed here
                 if self._settings.compact_diffs:
                     from expert_among_us.utils.truncate import compact_diff
-                    diff = compact_diff(diff)
+                    diff = compact_diff(diff, max_line_bytes=self._settings.compact_diff_max_line_bytes)
                 
                 # Only skip empty diffs when we expected diffs
                 # (if embed_diffs was False, diff will be empty but that's intentional)

@@ -477,7 +477,7 @@ class Git(VCSProvider):
                 # Step 3: Apply compact transformation (LAST - after all filtering)
                 if self._settings.compact_diffs:
                     from expert_among_us.utils.truncate import compact_diff
-                    diff = compact_diff(diff)
+                    diff = compact_diff(diff, max_line_bytes=self._settings.compact_diff_max_line_bytes)
                 
                 # Skip commits with empty diffs when we expected diffs
                 if not diff or not diff.strip():
