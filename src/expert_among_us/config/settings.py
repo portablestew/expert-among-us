@@ -157,6 +157,8 @@ class Settings(BaseSettings):
     max_tokens_prompt_gen: int = 1000
     max_diff_chars_for_llm: int = 60000  # Maximum diff characters to send to LLM (60KB)
     max_diff_chars_for_promptgen: int = 8000  # Maximum diff characters for prompt generation (8KB) - much smaller to fit in small model context
+    max_diff_bytes_per_commit: int = 2 * 1024 * 1024  # Maximum diff bytes per commit (2 MB) - caps individual commits before chunking
+    max_file_bytes_for_chunking: int = 1 * 1024 * 1024  # Maximum file bytes before chunking (1 MB) - caps at ~250 chunks per file
     
     # Context limits for expert LLM
     max_expert_context_tokens: int = 150000  # Total context window (150k tokens to allow headroom for Claude Sonnet)
@@ -178,6 +180,7 @@ class Settings(BaseSettings):
     
     # Text sanitization settings
     enable_sanitization: bool = True
+    custom_sanitization_patterns: list[str] = []  # Custom regex patterns for sanitization (CLI-provided)
     
     # Reranking settings
     enable_reranking: bool = True  # Enabled by default
@@ -190,8 +193,9 @@ class Settings(BaseSettings):
     expansion_min_anchors: int = 3  # Minimum anchors for diversity
 
     # GPU tuning
-    embedding_tokens_per_gb: int = 12288 # Max tokens per batch per GB of GPU memory
-    reranking_tokens_per_gb: int = 6144  # Cross-encoders need even more headroom
+    gpu_memory_multiplier: float = 1.0  # Global GPU memory scaling factor (0.5=half, 2.0=double)
+    embedding_tokens_per_gb: int = 12288 # Base tokens per batch per GB of GPU memory
+    reranking_tokens_per_gb: int = 6144  # Base tokens per GB (2:1 ratio maintained)
     
     # Multiprocessing settings
     enable_multiprocessing: bool = True  # Enable multiprocessing for embeddings (set to False in MCP context)
@@ -207,5 +211,23 @@ class Settings(BaseSettings):
     @property
     def debug_log_dir(self) -> Path:
         """Get the debug log directory."""
+    
+    @property
+    def effective_embedding_tokens_per_gb(self) -> int:
+        """Get embedding tokens per GB with multiplier applied.
+        
+        Returns:
+            Scaled embedding tokens per GB based on gpu_memory_multiplier
+        """
+        return int(self.embedding_tokens_per_gb * self.gpu_memory_multiplier)
+    
+    @property
+    def effective_reranking_tokens_per_gb(self) -> int:
+        """Get reranking tokens per GB with multiplier applied.
+        
+        Returns:
+            Scaled reranking tokens per GB based on gpu_memory_multiplier
+        """
+        return int(self.reranking_tokens_per_gb * self.gpu_memory_multiplier)
         return self.data_dir / "logs"
     

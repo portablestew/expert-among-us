@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 
 from expert_among_us.vcs.base import VCSProvider
 from expert_among_us.models.changelist import Changelist
-from expert_among_us.utils.truncate import filter_binary_from_diff, is_binary_file, should_index_file
+from expert_among_us.utils.truncate import filter_binary_from_diff, is_binary_file, should_index_file, compact_diff, truncate_to_bytes
 from expert_among_us.utils.debug import DebugLogger
 
 
@@ -45,7 +45,7 @@ MAX_FILES_PER_CL = 200
 # Maximum output size from p4 describe command per batch
 # Prevents timeouts and memory issues from huge changelists (e.g., 2.8 GB commits)
 # Batches exceeding this limit will be split via binary search
-MAX_DESCRIBE_OUTPUT_BYTES = 10 * 1024 * 1024  # 10 MB
+MAX_DESCRIBE_OUTPUT_BYTES = 15 * 1024 * 1024  # 15 MB
 
 
 class Perforce(VCSProvider):
@@ -1102,12 +1102,17 @@ class Perforce(VCSProvider):
                 # Step 1: Filter binary content from diff
                 diff, _binary_files = filter_binary_from_diff(diff)
                 
-                # Step 2: Apply compact transformation (LAST - after all filtering)
+                # Step 2: Apply compact transformation (after all filtering)
                 # Note: Extension filtering for Perforce already happens earlier via should_index_file()
                 # on individual files (lines 1025-1027, 1080-1083), so no additional filtering needed here
                 if self._settings.compact_diffs:
-                    from expert_among_us.utils.truncate import compact_diff
                     diff = compact_diff(diff, max_line_bytes=self._settings.compact_diff_max_line_bytes)
+                
+                # Step 3: Truncate individual commit diffs to limit
+                if diff:
+                    diff, was_truncated = truncate_to_bytes(diff, self._settings.max_diff_bytes_per_commit)
+                    if was_truncated:
+                        diff += "\n\n[TRUNCATED - commit diff exceeded limit]"
                 
                 # Only skip empty diffs when we expected diffs
                 # (if embed_diffs was False, diff will be empty but that's intentional)
@@ -1590,3 +1595,32 @@ class Perforce(VCSProvider):
             subdirs=subdirs,
         )
         return len(cl_numbers)
+    
+    def get_commit_position(self, commit_id: Optional[str]) -> tuple[int, int]:
+        """Get position of changelist in ordered sequence for progress tracking.
+        
+        Args:
+            commit_id: Changelist number, or None for start position
+            
+        Returns:
+            Tuple of (commits_considered, total_commits)
+        """
+        # If no cache, return (0, 0)
+        if not self._cl_cache:
+            return (0, 0)
+        
+        # If commit_id is None, starting from beginning
+        if not commit_id:
+            return (0, len(self._cl_cache))
+        
+        # If no index built yet, return (0, total)
+        if not self._cl_index:
+            return (0, len(self._cl_cache))
+        
+        # Look up position and add +1 to convert from 0-based index to 1-based count
+        position = self._cl_index.get(commit_id, -1)
+        if position == -1:
+            # CL not in cache, return 0 (will be validated elsewhere)
+            return (0, len(self._cl_cache))
+        
+        return (position + 1, len(self._cl_cache))

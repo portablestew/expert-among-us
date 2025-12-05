@@ -26,6 +26,7 @@ def mock_vcs():
     vcs = Mock()
     vcs.get_total_commit_count.return_value = 2
     vcs.get_tracked_files_at_commit.return_value = []  # Simulates deleted file
+    vcs.get_commit_position.return_value = (0, 2)  # (commits_considered, total)
     return vcs
 
 

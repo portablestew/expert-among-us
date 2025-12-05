@@ -12,12 +12,18 @@ class Embedder(ABC):
         self,
         texts: List[str],
         progress_callback: Optional[Callable[[int, int], None]] = None
-    ) -> List[List[float]]:
+    ) -> List[Optional[List[float]]]:
         """Generate embeddings for multiple texts efficiently
+        
+        Returns None for empty/whitespace-only texts to avoid polluting vector space
+        with meaningless embeddings.
         
         Args:
             texts: List of input texts to embed
             progress_callback: Optional callback(current, total) called after each batch
+            
+        Returns:
+            List of embeddings (same length as input), with None for empty texts
         """
         
     @property

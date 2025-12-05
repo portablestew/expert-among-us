@@ -53,6 +53,7 @@ class ExpertContext:
     llm_provider: str = "auto"
     debug: bool = False
     enable_multiprocessing: bool = True
+    gpu_memory_multiplier: float = 1.0
     
     # Lazy-initialized components (use field with init=False)
     _settings: Optional[Settings] = field(default=None, init=False, repr=False)
@@ -73,6 +74,7 @@ class ExpertContext:
                 'embedding_provider': self.embedding_provider,
                 'llm_provider': self.llm_provider,
                 'enable_multiprocessing': self.enable_multiprocessing,
+                'gpu_memory_multiplier': self.gpu_memory_multiplier,
             }
             if self.data_dir is not None:
                 settings_kwargs['data_dir'] = self.data_dir

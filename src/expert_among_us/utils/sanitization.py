@@ -38,20 +38,31 @@ class TextSanitizer:
         self,
         enable_hex_numeric: bool = True,
         enable_base64: bool = True,
+        custom_patterns: Optional[list[str]] = None,
         removal_mode: str = "remove"  # "remove" or "replace"
     ):
         """Initialize sanitizer.
         
         Args:
             enable_hex_numeric: Toggle hex/numeric pattern sanitization
-            enable_base64: Toggle base64 pattern sanitization  
-            removal_mode: 
+            enable_base64: Toggle base64 pattern sanitization
+            custom_patterns: List of custom regex pattern strings to apply
+            removal_mode:
                 - "remove": Delete patterns entirely
                 - "replace": Replace with normalized tokens
         """
         self.enable_hex_numeric = enable_hex_numeric
         self.enable_base64 = enable_base64
         self.removal_mode = removal_mode
+        
+        # Compile custom patterns
+        self.custom_patterns: list[re.Pattern] = []
+        if custom_patterns:
+            for pattern_str in custom_patterns:
+                try:
+                    self.custom_patterns.append(re.compile(pattern_str, re.MULTILINE))
+                except re.error as e:
+                    print(f"[WARNING] Invalid custom pattern '{pattern_str}': {e}")
     
     def sanitize(self, text: str) -> str:
         """Sanitize high-entropy patterns in text.
@@ -70,12 +81,18 @@ class TextSanitizer:
                 result = self.HEX_NUMERIC_PATTERN.sub('', result)
             if self.enable_base64:
                 result = self.BASE64_PATTERN.sub('', result)
+            # Apply custom patterns
+            for pattern in self.custom_patterns:
+                result = pattern.sub('', result)
         else:
             # Replace with normalized tokens
             if self.enable_hex_numeric:
                 result = self.HEX_NUMERIC_PATTERN.sub('HEX_TOKEN', result)
             if self.enable_base64:
                 result = self.BASE64_PATTERN.sub('BASE64_TOKEN', result)
+            # Apply custom patterns
+            for pattern in self.custom_patterns:
+                result = pattern.sub('CUSTOM_TOKEN', result)
         
         return result
     

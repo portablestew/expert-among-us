@@ -35,7 +35,8 @@ def query_expert(
     embedding_provider: str = "local",
     llm_provider: str = "auto",
     enable_multiprocessing: bool = True,
-    enable_reranking: bool = True,  # NEW PARAMETER
+    enable_reranking: bool = True,
+    gpu_memory_multiplier: float = 1.0,
 ) -> List[SearchResult]:
     """Query expert for similar changes.
     
@@ -97,6 +98,7 @@ def query_expert(
         embedding_provider=embedding_provider,
         llm_provider=llm_provider,
         enable_multiprocessing=enable_multiprocessing,
+        gpu_memory_multiplier=gpu_memory_multiplier,
     )
     
     try:

@@ -370,8 +370,8 @@ async def handle_query(
                 
                 if cl.diff:
                     # Truncate very long diffs
-                    diff_preview = cl.diff[:5000]
-                    if len(cl.diff) > 5000:
+                    diff_preview = cl.diff[:10000]
+                    if len(cl.diff) > 10000:
                         diff_preview += f"\n... (truncated, {len(cl.diff)} total chars)"
                     lines.append(f"\n**Diff**:\n```diff\n{diff_preview}\n```")
             
@@ -381,8 +381,8 @@ async def handle_query(
                 lines.append(f"**Lines**: {fc.line_start}-{fc.line_end}")
                 lines.append(f"**Revision**: {fc.revision_id[:12]}")
                 
-                content_preview = fc.content[:5000]
-                if len(fc.content) > 5000:
+                content_preview = fc.content[:10000]
+                if len(fc.content) > 10000:
                     content_preview += f"\n... (truncated, {len(fc.content)} total chars)"
                 
                 # Detect language for syntax highlighting

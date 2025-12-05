@@ -80,11 +80,24 @@ class BedrockEmbedder(Embedder):
         self,
         texts: List[str],
         progress_callback: Optional[Callable[[int, int], None]] = None
-    ) -> List[List[float]]:
+    ) -> List[Optional[List[float]]]:
+        """Generate embeddings, returning None for empty texts.
+        
+        Args:
+            texts: List of input texts to embed
+            progress_callback: Optional callback(current, total) called after each embedding
+            
+        Returns:
+            List of embeddings (same length as input), with None for empty texts
+        """
         embeddings = []
         total = len(texts)
         for i, text in enumerate(texts):
-            embeddings.append(self.embed(text))
+            # Return None for empty/whitespace-only texts
+            if text and text.strip():
+                embeddings.append(self.embed(text))
+            else:
+                embeddings.append(None)
             if progress_callback:
                 progress_callback(i + 1, total)
         return embeddings

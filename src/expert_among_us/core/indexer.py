@@ -6,7 +6,7 @@ from expert_among_us.vcs.base import VCSProvider
 from expert_among_us.db.metadata.base import MetadataDB
 from expert_among_us.db.vector.base import VectorDB
 from expert_among_us.utils.chunking import chunk_text_with_lines
-from expert_among_us.utils.truncate import is_binary_file
+from expert_among_us.utils.truncate import is_binary_file, truncate_to_bytes
 from expert_among_us.utils.sanitization import TextSanitizer
 from expert_among_us.utils.progress import console, log_info
 from rich.progress import Progress, BarColumn, TextColumn, MofNCompleteColumn, TaskID, TimeElapsedColumn, TimeRemainingColumn
@@ -51,7 +51,9 @@ class Indexer:
         # Initialize text sanitizer for removing high-entropy patterns
         # Sanitization happens before embedding but after SQLite storage,
         # so search results show original content while embeddings are clean
-        self.sanitizer = TextSanitizer()
+        self.sanitizer = TextSanitizer(
+            custom_patterns=settings.custom_sanitization_patterns
+        )
 
         # Static description constants for progress tasks
         self._TASK_DESC_CL_FETCH = "[cyan]  ├─ Fetching changelist details"
@@ -121,13 +123,19 @@ class Indexer:
         # Respect global max_commits across runs: treat already indexed commits as part of the total.
         max_commits = self.max_commits
         already_indexed = self.metadata_db.get_commit_count(self.expert_config["name"])
-
+        
         # Total available commits according to VCS; clamp max_commits to this so we don't
         # overrun or show misleading progress when there are fewer commits than the cap.
+        # IMPORTANT: Call this BEFORE get_commit_position() to ensure VCS cache is loaded
         total_available = self.vcs.get_total_commit_count(
             workspace_path=workspace_path,
             subdirs=self.expert_config.get("subdirs"),
         )
+
+        # Get position in VCS sequence for accurate progress tracking
+        # This tracks commits considered (fetched from VCS), not just stored commits
+        # NOTE: Relies on cache being loaded by get_total_commit_count() above
+        commits_considered, _ = self.vcs.get_commit_position(last_processed_id)
 
         if isinstance(total_available, int) and total_available > 0:
             max_commits = min(max_commits, total_available)
@@ -144,7 +152,9 @@ class Indexer:
 
         # Intro line before any processing: show constraints and starting point.
         console.print(
-            f"[green]Indexing {self.expert_config['name']}: {already_indexed}/{max_commits} commits = {last_processed_id or 'OLDEST'}, batch_size={batch_size}\n"
+            f"[green]Indexing {self.expert_config['name']}: "
+            f"{already_indexed} stored, {commits_considered} considered / {max_commits}, "
+            f"starting from {last_processed_id or 'OLDEST'}, batch_size={batch_size}\n"
         )
 
         # Single progress context for entire indexing operation
@@ -153,7 +163,7 @@ class Indexer:
             self._overall_task = self.progress.add_task(
                 f"[green]Indexing commits: {workspace_path}",
                 total=max_commits,
-                completed=already_indexed
+                completed=commits_considered
             )
             # Changelist fetching task (total=1 prevents scrolling, start=True+stop prevents pulse and stops timer)
             self._changelist_fetch_task = self.progress.add_task(
@@ -329,10 +339,11 @@ class Indexer:
                     f"{final_commit.timestamp.strftime('%Y-%m-%d %H:%M:%S%z')}"
                 )
                 
-                # Update overall progress
+                # Update overall progress based on VCS position (commits considered, not stored)
+                commits_considered, _ = self.vcs.get_commit_position(last_processed_id)
                 self.progress.update(
                     self._overall_task,
-                    completed=total_commits
+                    completed=commits_considered
                 )
 
         # If loop exited because total_commits hit max_commits, print a clear message.
@@ -434,6 +445,12 @@ class Indexer:
                 # If binary detection fails, skip conservatively.
                 continue
 
+            # Truncate file content to limit before chunking
+            if len(content) > self.settings.max_file_bytes_for_chunking:
+                content, was_truncated = truncate_to_bytes(content, self.settings.max_file_bytes_for_chunking)
+                if was_truncated:
+                    content += "\n\n[TRUNCATED - file exceeded limit]"
+
             chunks = chunk_text_with_lines(content, chunk_size=self.settings.file_chunk_size_bytes)
             if chunks:
                 file_chunks_map[file_path] = chunks
@@ -517,10 +534,11 @@ class Indexer:
         for chunk in chunks:
             chunks_by_file[chunk.file_path].append(chunk)
 
-        # Map embeddings back to chunks by chroma_id
+        # Map embeddings back to chunks by chroma_id (skip None embeddings)
         vector_by_id: dict[str, list[float]] = {}
         for chunk, embedding in zip(chunks, embeddings):
-            vector_by_id[chunk.get_chroma_id()] = embedding
+            if embedding is not None:
+                vector_by_id[chunk.get_chroma_id()] = embedding
 
         # Insert per-file metadata, chunks, and vectors
         for file_path, file_chunks in chunks_by_file.items():
@@ -628,12 +646,13 @@ class Indexer:
             self.progress.update(self._commit_diff_task, description=self._TASK_DESC_COMMIT_DIFF)
             self.progress.stop_task(self._commit_diff_task)
 
-        # Build commit_id -> diff vectors mapping
+        # Build commit_id -> diff vectors mapping (skip None embeddings)
         from collections import defaultdict
         commit_diff_vectors: dict[str, list[tuple[str, list[float]]]] = defaultdict(list)
         for (commit_id, chunk_idx), emb in zip(diff_chunk_keys, diff_embeddings):
-            vector_id = f"{commit_id}_chunk_{chunk_idx}"
-            commit_diff_vectors[commit_id].append((vector_id, emb))
+            if emb is not None:
+                vector_id = f"{commit_id}_chunk_{chunk_idx}"
+                commit_diff_vectors[commit_id].append((vector_id, emb))
 
         # Task 3: Storage
         self.progress.start_task(self._commit_store_task)
@@ -648,9 +667,10 @@ class Indexer:
         for idx, commit in enumerate(batch):
             metadata_emb = metadata_embeddings[idx]
 
-            # Store metadata
+            # Store metadata (skip if embedding is None)
             self.metadata_db.insert_changelists([commit])
-            self.vector_db.insert_metadata([(commit.id, metadata_emb)])
+            if metadata_emb is not None:
+                self.vector_db.insert_metadata([(commit.id, metadata_emb)])
 
             # Store diffs for this commit, if any
             diff_vectors = commit_diff_vectors.get(commit.id)

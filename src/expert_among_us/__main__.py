@@ -38,9 +38,10 @@ console = Console(stderr=True)
 @click.option('--expert-model', type=str, help='Override default expert model for the selected provider')
 @click.option('--promptgen-model', type=str, help='Override default promptgen model for the selected provider')
 @click.option('--no-reranking', is_flag=True, help='Disable cross-encoder reranking (enabled by default)')
+@click.option('--gpu-memory-multiplier', type=float, default=1.0, help='GPU memory scaling factor (0.5=half, 2.0=double). Affects embedding and reranking batch sizes.')
 @click.version_option(version=__version__)
 @click.pass_context
-def main(ctx, debug: bool, data_dir: Optional[Path], llm_provider: str, base_url_override: Optional[str], embedding_provider: str, expert_model: Optional[str], promptgen_model: Optional[str], no_reranking: bool) -> None:
+def main(ctx, debug: bool, data_dir: Optional[Path], llm_provider: str, base_url_override: Optional[str], embedding_provider: str, expert_model: Optional[str], promptgen_model: Optional[str], no_reranking: bool, gpu_memory_multiplier: float) -> None:
     """Expert Among Us - Queryable expert from commit history using LLM and embeddings.
     
     Create experts from git repositories, search commit history, and get
@@ -68,6 +69,7 @@ def main(ctx, debug: bool, data_dir: Optional[Path], llm_provider: str, base_url
     ctx.obj['expert_model'] = expert_model
     ctx.obj['promptgen_model'] = promptgen_model
     ctx.obj['enable_reranking'] = not no_reranking
+    ctx.obj['gpu_memory_multiplier'] = gpu_memory_multiplier
     
     # Initialize debug logger if enabled
     if debug:
@@ -87,6 +89,7 @@ def main(ctx, debug: bool, data_dir: Optional[Path], llm_provider: str, base_url
               help="Index scope: metadata (messages+files only), diffs (metadata+diffs, no file content), or all (everything, default)")
 @click.option("--allowed-extensions", type=str, help="Comma-separated list of allowed file extensions (e.g., '.cpp,.h,.py')")
 @click.option("--compact-diffs", is_flag=True, help="Reduce diff size by removing context (trades search quality for cost)")
+@click.option("--custom-sanitize-pattern", type=str, help="Custom regex pattern to remove from text before embedding")
 @click.pass_context
 def populate(
     ctx,
@@ -99,6 +102,7 @@ def populate(
     index_scope: str,
     allowed_extensions: Optional[str],
     compact_diffs: bool,
+    custom_sanitize_pattern: Optional[str],
 ) -> None:
     """Build or update an expert index from a repository.
     
@@ -200,6 +204,10 @@ def populate(
         if data_dir is not None:
             settings_kwargs['data_dir'] = data_dir
         
+        # Configure GPU memory multiplier
+        gpu_memory_multiplier = ctx.obj.get('gpu_memory_multiplier', 1.0)
+        settings_kwargs['gpu_memory_multiplier'] = gpu_memory_multiplier
+        
         # Configure indexing scope based on CLI option
         if index_scope == "metadata":
             settings_kwargs['embed_file_chunks'] = False
@@ -227,6 +235,11 @@ def populate(
         # Configure compact diff setting
         if compact_diffs:
             settings_kwargs['compact_diffs'] = True
+        
+        # Configure custom sanitization pattern
+        if custom_sanitize_pattern:
+            settings_kwargs['custom_sanitization_patterns'] = [custom_sanitize_pattern]
+            log_info(f"Custom sanitization pattern: {custom_sanitize_pattern[:50]}...")
         
         settings = Settings(**settings_kwargs)
         
@@ -513,6 +526,7 @@ def query(
         
         # Call API function
         enable_reranking = ctx.obj.get('enable_reranking', True)
+        gpu_memory_multiplier = ctx.obj.get('gpu_memory_multiplier', 1.0)
         results = query_expert(
             expert_name=expert_name,
             prompt=prompt,
@@ -530,6 +544,7 @@ def query(
             llm_provider="auto",
             enable_multiprocessing=True,
             enable_reranking=enable_reranking,
+            gpu_memory_multiplier=gpu_memory_multiplier,
         )
         
         # Display results
@@ -782,6 +797,7 @@ def prompt(
         
         try:
             enable_reranking = ctx.obj.get('enable_reranking', True)
+            gpu_memory_multiplier = ctx.obj.get('gpu_memory_multiplier', 1.0)
             async for chunk in prompt_expert_stream(
                 expert_name=expert_name,
                 prompt=prompt,
@@ -799,6 +815,7 @@ def prompt(
                 enable_reranking=enable_reranking,
                 expansion_candidate_multiplier=expansion_candidate_multiplier,
                 expansion_passes=expansion_passes,
+                gpu_memory_multiplier=gpu_memory_multiplier,
             ):
                 if chunk.delta:
                     # Print "Expert Response:" header on first chunk with content

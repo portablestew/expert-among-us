@@ -164,3 +164,26 @@ class VCSProvider(ABC):
             Integer count of commits.
         """
         pass
+
+    @abstractmethod
+    def get_commit_position(self, commit_id: Optional[str]) -> tuple[int, int]:
+        """Get position of commit in ordered sequence for progress tracking.
+        
+        This method uses the VCS provider's internal commit cache to determine
+        how many commits have been considered (fetched from VCS), independent
+        of how many were actually stored after filtering.
+        
+        Args:
+            commit_id: Commit hash/CL number, or None for start position
+            
+        Returns:
+            Tuple of (commits_considered, total_commits):
+            - commits_considered: Number of commits up to and including this one (0 if None)
+            - total_commits: Total commits in the filtered sequence
+            
+        Example:
+            Cache: ["commit1", "commit2", "commit3", "commit4"]
+            get_commit_position("commit3") -> (3, 4)  # 3 commits considered, 4 total
+            get_commit_position(None) -> (0, 4)  # Starting position
+        """
+        pass

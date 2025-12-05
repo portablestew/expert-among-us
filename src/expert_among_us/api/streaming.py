@@ -47,6 +47,7 @@ async def prompt_expert_stream(
     enable_reranking: bool = True,
     expansion_candidate_multiplier: int = 5,
     expansion_passes: int = 1,
+    gpu_memory_multiplier: float = 1.0,
 ) -> AsyncIterator[StreamChunk]:
     """Stream AI recommendations from expert.
     
@@ -105,6 +106,7 @@ async def prompt_expert_stream(
         embedding_provider=embedding_provider,
         llm_provider=llm_provider,
         enable_multiprocessing=enable_multiprocessing,
+        gpu_memory_multiplier=gpu_memory_multiplier,
     )
     
     try:

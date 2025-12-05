@@ -170,8 +170,11 @@ class JinaCodeEmbedder(Embedder):
         self,
         texts: List[str],
         progress_callback: Optional[Callable[[int, int], None]] = None
-    ) -> List[List[float]]:
+    ) -> List[Optional[List[float]]]:
         """Generate embeddings with token-aware dynamic batching.
+        
+        Returns None for empty/whitespace-only texts to avoid polluting
+        vector space with meaningless embeddings.
         
         Batches are built dynamically based on estimated token counts to
         prevent OOM errors with variable-length inputs.
@@ -181,13 +184,25 @@ class JinaCodeEmbedder(Embedder):
             progress_callback: Optional callback(current, total) called after each batch
             
         Returns:
-            List of embedding vectors
+            List of embedding vectors (same length as input), with None for empty texts
         """
         if not texts:
             return []
         
-        # Add task prefix to all texts
-        prefixed_texts = [self.task_prefix + text for text in texts]
+        # Identify non-empty texts and their indices
+        non_empty_indices = []
+        non_empty_texts = []
+        for i, text in enumerate(texts):
+            if text and text.strip():
+                non_empty_indices.append(i)
+                non_empty_texts.append(text)
+        
+        # If all texts are empty, return list of Nones
+        if not non_empty_texts:
+            return [None] * len(texts)
+        
+        # Add task prefix only to non-empty texts
+        prefixed_texts = [self.task_prefix + text for text in non_empty_texts]
         
         # Log request if debug enabled
         request_id = None
@@ -212,7 +227,7 @@ class JinaCodeEmbedder(Embedder):
             item_token_estimator=estimate_tokens
         )
         
-        # Process each batch
+        # Process each batch and collect embeddings for non-empty texts
         embeddings_list = []
         total_texts = len(prefixed_texts)
         processed = 0
@@ -261,12 +276,18 @@ class JinaCodeEmbedder(Embedder):
                 if self.device == "cuda":
                     self.torch.cuda.empty_cache()
         
+        # Build result list with None for empty texts at their original positions
+        result = [None] * len(texts)
+        for idx, embedding in zip(non_empty_indices, embeddings_list):
+            result[idx] = embedding
+        
         # Log response if debug enabled
         if DebugLogger.is_enabled():
             DebugLogger.log_response(
                 "local",
                 {
-                    "embeddings_count": len(embeddings_list),
+                    "embeddings_count": len([e for e in result if e is not None]),
+                    "empty_count": len([e for e in result if e is None]),
                     "batches_used": len(batches),
                     "response_metadata": {
                         "model_id": self.model_id,
@@ -278,7 +299,7 @@ class JinaCodeEmbedder(Embedder):
                 category="embedding"
             )
         
-        return embeddings_list
+        return result
     
     def __del__(self):
         """Cleanup multi-process pool when object is destroyed."""

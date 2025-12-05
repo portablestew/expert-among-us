@@ -80,6 +80,18 @@ def mock_vcs():
                 progress_callback(len(file_paths), len(file_paths))
             
             return results
+        
+        def get_commit_position(self, commit_id):
+            """Return position in commit sequence for progress tracking."""
+            if commit_id is None:
+                return (0, len(self._commits))
+            
+            ids = [c.id for c in self._commits]
+            try:
+                idx = ids.index(commit_id)
+                return (idx + 1, len(self._commits))
+            except ValueError:
+                return (0, len(self._commits))
 
     return MockVCS()
 
