@@ -54,6 +54,7 @@ class ExpertContext:
     debug: bool = False
     enable_multiprocessing: bool = True
     gpu_memory_multiplier: float = 1.0
+    max_expert_response_tokens: int = 4096
     
     # Lazy-initialized components (use field with init=False)
     _settings: Optional[Settings] = field(default=None, init=False, repr=False)
@@ -75,6 +76,7 @@ class ExpertContext:
                 'llm_provider': self.llm_provider,
                 'enable_multiprocessing': self.enable_multiprocessing,
                 'gpu_memory_multiplier': self.gpu_memory_multiplier,
+                'max_expert_response_tokens': self.max_expert_response_tokens,
             }
             if self.data_dir is not None:
                 settings_kwargs['data_dir'] = self.data_dir

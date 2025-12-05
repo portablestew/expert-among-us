@@ -153,7 +153,6 @@ class Settings(BaseSettings):
     max_embedding_text_size_bytes: int = 100000  # Maximum bytes for diff before chunking (100KB)
     file_chunk_size_bytes: int = 4096  # File content chunk size in characters (4KB)
     diff_chunk_size_bytes: int = 4096  # Diff chunk size in characters (4KB)
-    max_tokens_impostor: int = 8000
     max_tokens_prompt_gen: int = 1000
     max_diff_chars_for_llm: int = 60000  # Maximum diff characters to send to LLM (60KB)
     max_diff_chars_for_promptgen: int = 8000  # Maximum diff characters for prompt generation (8KB) - much smaller to fit in small model context

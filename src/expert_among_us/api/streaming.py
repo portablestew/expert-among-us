@@ -40,6 +40,7 @@ async def prompt_expert_stream(
     amogus: bool = False,
     impostor: bool = False,
     temperature: float = 0.7,
+    max_expert_response_tokens: int = 4096,
     data_dir: Optional[Path] = None,
     embedding_provider: str = "local",
     llm_provider: str = "auto",
@@ -64,6 +65,7 @@ async def prompt_expert_stream(
         amogus: Enable Among Us mode
         impostor: Use impostor mode (generate prompts)
         temperature: LLM temperature
+        max_expert_response_tokens: Maximum tokens for expert response (default: 4096)
         data_dir: Custom data directory
         embedding_provider: Embedding provider
         llm_provider: LLM provider
@@ -107,6 +109,7 @@ async def prompt_expert_stream(
         llm_provider=llm_provider,
         enable_multiprocessing=enable_multiprocessing,
         gpu_memory_multiplier=gpu_memory_multiplier,
+        max_expert_response_tokens=max_expert_response_tokens,
     )
     
     try:

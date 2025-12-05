@@ -36,6 +36,9 @@ _data_dir: Optional[Path] = None
 _impostor_mode = False
 _amogus_mode = False
 
+# Global variable to store max response tokens
+_max_response_tokens = 4096
+
 from mcp.server import Server
 from mcp.server.lowlevel import NotificationOptions
 from mcp.server.models import InitializationOptions
@@ -447,6 +450,7 @@ async def handle_prompt(
             amogus=_amogus_mode,
             impostor=_impostor_mode,
             temperature=temperature,
+            max_expert_response_tokens=_max_response_tokens,
             data_dir=_data_dir,
             embedding_provider="local",
             llm_provider=_llm_provider,
@@ -535,6 +539,12 @@ async def main():
         action='store_true',
         help='⚠️ DO NOT USE',
     )
+    parser.add_argument(
+        '--max-response-tokens',
+        type=int,
+        default=4096,
+        help='Maximum tokens for expert response (reduce to avoid MCP timeouts, default: 4096)',
+    )
     args = parser.parse_args()
     
     # Store LLM provider choice in global variable
@@ -548,6 +558,10 @@ async def main():
     global _impostor_mode, _amogus_mode
     _impostor_mode = args.impostor
     _amogus_mode = args.amogus
+    
+    # Store max response tokens in global variable
+    global _max_response_tokens
+    _max_response_tokens = args.max_response_tokens
     
     # Get PID for log file name
     pid = os.getpid()
