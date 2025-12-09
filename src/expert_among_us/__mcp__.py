@@ -39,6 +39,9 @@ _amogus_mode = False
 # Global variable to store max response tokens
 _max_response_tokens = 4096
 
+# Global variable to store prompt timeout in seconds
+_prompt_timeout_seconds: Optional[int] = None
+
 from mcp.server import Server
 from mcp.server.lowlevel import NotificationOptions
 from mcp.server.models import InitializationOptions
@@ -427,6 +430,11 @@ async def handle_prompt(
     logger = logging.getLogger(__name__)
     start_time = time.time()
     
+    # Calculate deadline at request start (if timeout is configured)
+    deadline = time.time() + _prompt_timeout_seconds if _prompt_timeout_seconds else None
+    if deadline:
+        logger.info(f"[PROMPT] Timeout configured: {_prompt_timeout_seconds}s (deadline: {deadline:.2f})")
+    
     try:
         logger.info(f"[PROMPT] Starting prompt request for expert '{expert_name}'")
         logger.debug(f"[PROMPT] Prompt: {prompt[:100]}{'...' if len(prompt) > 100 else ''}")
@@ -436,6 +444,7 @@ async def handle_prompt(
         full_response = ""
         chunk_count = 0
         first_chunk_time = None
+        timed_out = False
         
         stream_start = time.time()
         logger.debug(f"[PROMPT] Initiating stream at +{stream_start - start_time:.2f}s")
@@ -469,9 +478,18 @@ async def handle_prompt(
                 if chunk_count % 10 == 0:
                     elapsed = time.time() - start_time
                     logger.debug(f"[PROMPT] Received {chunk_count} chunks, {len(full_response)} chars at +{elapsed:.2f}s")
+            
+            # Check deadline AFTER processing chunk (keeps final chunk that exceeded timeout)
+            if deadline and time.time() >= deadline:
+                elapsed = time.time() - start_time
+                full_response += f"\n\n[Response truncated: timeout reached after {elapsed:.1f}s]"
+                timed_out = True
+                logger.warning(f"[PROMPT] Timeout reached at +{elapsed:.2f}s after {chunk_count} chunks")
+                break
         
         total_time = time.time() - start_time
-        logger.info(f"[PROMPT] Completed in {total_time:.2f}s - received {chunk_count} chunks, {len(full_response)} chars")
+        status = "timed out" if timed_out else "completed"
+        logger.info(f"[PROMPT] {status.capitalize()} in {total_time:.2f}s - received {chunk_count} chunks, {len(full_response)} chars")
         
         return [TextContent(
             type="text",
@@ -545,6 +563,12 @@ async def main():
         default=4096,
         help='Maximum tokens for expert response (reduce to avoid MCP timeouts, default: 4096)',
     )
+    parser.add_argument(
+        '--prompt-timeout-seconds',
+        type=int,
+        default=None,
+        help='Maximum seconds for expert-prompt operations (includes DB queries + LLM streaming, default: no timeout)',
+    )
     args = parser.parse_args()
     
     # Store LLM provider choice in global variable
@@ -562,6 +586,10 @@ async def main():
     # Store max response tokens in global variable
     global _max_response_tokens
     _max_response_tokens = args.max_response_tokens
+    
+    # Store prompt timeout in global variable
+    global _prompt_timeout_seconds
+    _prompt_timeout_seconds = args.prompt_timeout_seconds
     
     # Get PID for log file name
     pid = os.getpid()

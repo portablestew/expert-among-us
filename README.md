@@ -739,6 +739,8 @@ The MCP server supports optional CLI arguments that affect all queries:
 - `--debug`: Enable debug logging to troubleshoot issues (writes logs to `~/.expert-among-us/logs/`)
 - `--llm-provider`: Choose LLM provider (auto-detects by default)
 - `--embedding-provider`: Choose embedding provider (default: local)
+- `--max-response-tokens`: Maximum tokens for expert response (default: 4096). Reduce to avoid MCP timeouts on slow connections.
+- `--prompt-timeout-seconds`: Maximum seconds for expert-prompt operations, including DB queries and LLM streaming (default: no timeout). Enforces hard time limits and returns partial responses with truncation message if exceeded.
 
 #### Example: Claude Desktop (Linux/macOS) + OpenAI
 
