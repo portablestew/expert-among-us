@@ -118,6 +118,13 @@ class LocalCrossEncoderReranker(Reranker):
                 )
                 
                 all_scores.extend(batch_scores)
+                
+                # Clear GPU memory after each batch
+                del batch_scores
+                if self.device == "cuda":
+                    import gc
+                    gc.collect()
+                    self.torch.cuda.empty_cache()
         
         # Max pooling: aggregate chunk scores by document
         doc_scores = {}
