@@ -13,7 +13,7 @@ DEFAULT_EMBEDDING_MODEL_ID = "amazon.titan-embed-text-v2:0"
 # Provider-specific model defaults
 PROVIDER_MODEL_DEFAULTS = {
     "bedrock": {
-        "expert": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "expert": "global.anthropic.claude-sonnet-4-6",
         "promptgen": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
     },
     "openai": {
@@ -21,15 +21,15 @@ PROVIDER_MODEL_DEFAULTS = {
         "promptgen": "gpt-5-mini",
     },
     "openrouter": {
-        "expert": "minimax/minimax-m2:free",
-        "promptgen": "meta-llama/llama-3.3-70b-instruct:free",
+        "expert": "arcee-ai/trinity-large-preview:free",
+        "promptgen": "stepfun/step-3.5-flash:free",
     },
     "ollama": {
         "expert": "deepseek-coder-v2:16b",
         "promptgen": "qwen2.5-coder:7b",
     },
     "claude-code": {
-        "expert": "claude-sonnet-4-5",
+        "expert": "claude-sonnet-4-6",
         "promptgen": "claude-haiku-4-5",
     },
 }
