@@ -987,6 +987,56 @@ def import_(ctx, source_path: Path) -> None:
 
 
 @main.command()
+@click.pass_context
+def prewarm(ctx) -> None:
+    """Download and initialize embedding models, then exit.
+    
+    Use this to ensure all models are cached locally before first real use.
+    Avoids a ~60s delay on the first MCP query or populate run.
+    
+    Examples:
+    
+        \b
+        # Pre-download models
+        $ expert-among-us prewarm
+        
+        \b
+        # With Bedrock embeddings (no local model needed)
+        $ expert-among-us --embedding-provider bedrock prewarm
+    """
+    import time
+    from expert_among_us.config.settings import Settings
+    from expert_among_us.embeddings.factory import create_embedder
+    from expert_among_us.reranking.factory import create_reranker
+
+    embedding_provider = ctx.obj.get('embedding_provider', 'local')
+    gpu_memory_multiplier = ctx.obj.get('gpu_memory_multiplier', 1.0)
+
+    settings = Settings(
+        embedding_provider=embedding_provider,
+        gpu_memory_multiplier=gpu_memory_multiplier,
+    )
+
+    log_info("Pre-warming embedding and reranking models...")
+    start = time.time()
+
+    try:
+        embedder = create_embedder(settings)
+        log_success(f"Embedder ready: {embedder.__class__.__name__} (dim={embedder.dimension})")
+    except Exception as e:
+        log_error(f"Embedder failed: {e}")
+
+    try:
+        reranker = create_reranker(settings)
+        log_success(f"Reranker ready: {reranker.__class__.__name__}")
+    except Exception as e:
+        log_error(f"Reranker failed: {e}")
+
+    elapsed = time.time() - start
+    log_success(f"Prewarm complete in {elapsed:.1f}s")
+
+
+@main.command()
 @click.option('--impostor', is_flag=True, help='Enable impostor mode for all queries')
 @click.option('--amogus', is_flag=True, hidden=True)
 @click.option('--max-response-tokens', type=int, default=4096, help='Maximum tokens for expert response (default: 4096)')
