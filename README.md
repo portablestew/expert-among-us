@@ -96,17 +96,9 @@ Expert Among Us includes several features that significantly improve search qual
 
 ## Installation
 
-### End-Users (Recommended)
+### Prerequisites
 
-No installation needed. Just run with [uvx](https://docs.astral.sh/uv/guides/tools/):
-
-```bash
-uvx expert-among-us --help
-```
-
-This automatically handles Python, all dependencies, and CUDA-enabled PyTorch. The CUDA wheels fall back to CPU at runtime if no GPU is present.
-
-If you don't have uv/uvx installed yet, see the [uv installation guide](https://docs.astral.sh/uv/getting-started/installation/) or run:
+Install [uv](https://docs.astral.sh/uv/) if you don't have it:
 
 ```bash
 # Linux/macOS
@@ -117,6 +109,40 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 # Windows (PowerShell)
 irm https://astral.sh/uv/install.ps1 | iex
 ```
+
+### End-Users (Recommended)
+
+Install as a persistent tool with GPU support (NVIDIA CUDA):
+
+```bash
+uv tool install expert-among-us --index pytorch-cu130=https://download.pytorch.org/whl/cu130
+```
+
+If you don't have an NVIDIA GPU, install without the index flag (CPU-only):
+
+```bash
+uv tool install expert-among-us
+```
+
+After installation, `expert-among-us` is available directly on your PATH:
+
+```bash
+expert-among-us --help
+```
+
+#### Updating
+
+```bash
+uv tool upgrade expert-among-us --upgrade
+```
+
+This retains the CUDA index setting from the original install. The `--upgrade` flag forces a fresh check against PyPI.
+
+#### GPU Notes
+
+- **Prerequisites:** NVIDIA GPU with compatible drivers (`nvidia-smi` should show your GPU). A separate CUDA toolkit install is not required — the PyTorch wheel bundles its own CUDA runtime.
+- **Performance:** GPU embeddings run ~8x faster (~0.5s vs ~4s per commit batch).
+- **Why not `uvx`?** `uvx` resolves dependencies from PyPI, which only ships CPU-only PyTorch wheels on Windows and macOS. The `--index` flag on `uv tool install` directs torch to the CUDA wheel index.
 
 ### Local Development
 
@@ -130,19 +156,11 @@ For contributors working from a clone:
 .\install.ps1
 ```
 
-These scripts install [uv](https://docs.astral.sh/uv/) if needed, then run `uv sync` to set up the environment. After that, use `uv run` to execute commands:
+These scripts install uv if needed, then run `uv sync` to set up the environment with CUDA-enabled PyTorch (configured via `[tool.uv.sources]` in `pyproject.toml`). Use `uv run` to execute commands:
 
 ```bash
 uv run expert-among-us --help
 ```
-
-### GPU Performance
-
-CUDA-enabled PyTorch is installed by default. If an NVIDIA GPU is available, embeddings run on it automatically. No separate GPU install step is needed.
-
-**Performance Impact:**
-- **With GPU**: ~0.5s per commit embedding
-- **CPU only**: ~4s per commit embedding
 
 ## Quick Start
 
@@ -218,7 +236,7 @@ expert-among-us --debug prompt MyExpert "Optimize queries"
 
 ## CLI Command Reference
 
-> **Note:** All examples below use `expert-among-us` directly. When running from a local clone, prefix with `uv run`. When running without install, prefix with `uvx`.
+> **Note:** All examples below assume `expert-among-us` is installed via `uv tool install`. When running from a local clone, prefix with `uv run`.
 
 ### `populate` - Index Repository
 
@@ -441,14 +459,13 @@ Expert Among Us provides a fully implemented MCP (Model Context Protocol) server
 ### Starting the MCP Server
 
 ```bash
-# With uvx (no install needed)
-uvx expert-among-us mcp
+expert-among-us mcp
+
+# With options
+expert-among-us --debug mcp --impostor
 
 # From a local clone
 uv run expert-among-us mcp
-
-# With options
-uvx expert-among-us --debug mcp --impostor
 ```
 
 ### MCP Server CLI Arguments
@@ -471,8 +488,8 @@ Config: `~/Library/Application Support/Claude/claude_desktop_config.json`
 {
   "mcpServers": {
     "expert-among-us": {
-      "command": "uvx",
-      "args": ["expert-among-us", "mcp"],
+      "command": "expert-among-us",
+      "args": ["mcp"],
       "timeout": 120,
       "alwaysAllow": ["experts-list", "expert-prompt", "expert-query"],
       "env": {
@@ -491,8 +508,8 @@ Config: `%APPDATA%\Claude\claude_desktop_config.json`
 {
   "mcpServers": {
     "expert-among-us": {
-      "command": "uvx",
-      "args": ["expert-among-us", "--debug", "mcp"],
+      "command": "expert-among-us",
+      "args": ["--debug", "mcp"],
       "timeout": 120,
       "alwaysAllow": ["experts-list", "expert-prompt", "expert-query"],
       "env": {
@@ -509,8 +526,8 @@ Config: `%APPDATA%\Claude\claude_desktop_config.json`
 {
   "mcpServers": {
     "expert-among-us": {
-      "command": "uvx",
-      "args": ["expert-among-us", "mcp", "--impostor"],
+      "command": "expert-among-us",
+      "args": ["mcp", "--impostor"],
       "timeout": 120,
       "alwaysAllow": ["experts-list", "expert-prompt", "expert-query"],
       "env": {
@@ -529,8 +546,8 @@ Config: `%APPDATA%\Claude\claude_desktop_config.json`
 {
   "mcpServers": {
     "expert-among-us": {
-      "command": "uvx",
-      "args": ["expert-among-us", "--data-dir", "/path/to/shared/experts", "mcp"],
+      "command": "expert-among-us",
+      "args": ["--data-dir", "/path/to/shared/experts", "mcp"],
       "timeout": 120,
       "autoApprove": ["experts-list", "expert-query", "expert-prompt"],
       "env": {
@@ -542,7 +559,7 @@ Config: `%APPDATA%\Claude\claude_desktop_config.json`
 ```
 
 **Important Notes:**
-- `uvx` handles Python installation and dependencies automatically
+- These examples assume `expert-among-us` is installed via `uv tool install` (see [Installation](#installation))
 - Set required environment variables in the `env` section
 - Restart your MCP client after updating the configuration
 

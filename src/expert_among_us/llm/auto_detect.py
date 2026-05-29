@@ -16,8 +16,8 @@ def detect_llm_provider() -> str:
        - OPENROUTER_API_KEY -> openrouter
        - AWS_ACCESS_KEY_ID -> bedrock
     2. AWS Bedrock via boto3 default credentials
-    3. Claude Code CLI on PATH
-    4. Kiro CLI (default install or PATH)
+    3. Kiro CLI on PATH
+    4. Claude Code CLI on PATH
     5. Ollama running on localhost:11434
     6. Fail with error
     
@@ -59,15 +59,15 @@ def detect_llm_provider() -> str:
         console.print("bedrock")
         return "bedrock"
     
-    # Step 3: Check for claude CLI
-    if shutil.which("claude"):
-        console.print("claude-code")
-        return "claude-code"
-    
-    # Step 4: Check for kiro-cli
+    # Step 3: Check for kiro-cli
     if _check_kiro_cli():
         console.print("kiro-cli")
         return "kiro-cli"
+    
+    # Step 4: Check for claude CLI
+    if shutil.which("claude"):
+        console.print("claude-code")
+        return "claude-code"
     
     # Step 5: Check for Ollama
     if _check_ollama_running():

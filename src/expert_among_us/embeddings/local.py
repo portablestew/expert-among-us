@@ -51,10 +51,11 @@ class JinaCodeEmbedder(Embedder):
             console.print(f"   PyTorch version: {torch.__version__}")
             console.print(f"   CUDA GPUs available: {gpu_count}")
             console.print(f"   CUDA built: {torch.version.cuda if hasattr(torch.version, 'cuda') else 'N/A'}")
-            console.print("\n   To enable GPU (run after uv sync):")
+            console.print("\n   To enable GPU:")
             console.print("   1. Check NVIDIA drivers: nvidia-smi")
-            console.print("   2. Install PyTorch with CUDA: ./install-gpu.sh or ./install-gpu.ps1")
-            console.print("   3. Restart your terminal or reactivate venv")
+            console.print("   2. Reinstall with CUDA index:")
+            console.print("      uv tool install expert-among-us --index pytorch-cu130=https://download.pytorch.org/whl/cu130")
+            console.print("   3. Restart your terminal")
             console.print()
         
         # Load model with trust_remote_code for FlashAttention2 and fp16 for GPU optimization
