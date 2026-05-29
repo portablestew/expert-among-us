@@ -32,6 +32,10 @@ PROVIDER_MODEL_DEFAULTS = {
         "expert": "claude-sonnet-4-6",
         "promptgen": "claude-haiku-4-5",
     },
+    "kiro-cli": {
+        "expert": "claude-sonnet-4.6",
+        "promptgen": "claude-haiku-4.5",
+    },
 }
 
 # Embedding model characteristics - Bedrock Titan
@@ -71,6 +75,8 @@ class Settings(BaseSettings):
     claude_code_model: str = "claude-sonnet-4-5"
     claude_code_cli_path: str = "claude"
     claude_code_session_dir: Optional[Path] = None
+    kiro_cli_path: Optional[str] = None  # Auto-detected if not set
+    kiro_cli_sessions_dir: Optional[Path] = None  # Defaults to ~/.kiro/sessions/cli/
     
     # OpenAI-compatible API keys
     openai_api_key: Optional[str] = Field(

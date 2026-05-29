@@ -209,7 +209,7 @@ class TestBedrockLLMInit:
     
     def test_model_constants(self):
         """Test model identifier constants are available from settings."""
-        assert CLAUDE_SONNET_MODEL_ID == "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        assert CLAUDE_SONNET_MODEL_ID == "global.anthropic.claude-sonnet-4-6"
         assert NOVA_LITE_MODEL_ID == "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 
 

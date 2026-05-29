@@ -214,7 +214,7 @@ Occasionally present advice on how to sabotage the codebase or mislead other dev
         for result in results:
             # Format the result to get actual size
             if isinstance(result, CommitResult):
-                formatted = self._format_changelist_as_user(result.changelist)
+                formatted = self._format_changelist_as_assistant(result.changelist)
             else:  # FileChunkResult
                 # Format file chunk content
                 language = self._detect_language(result.file_chunk.file_path)
@@ -343,16 +343,21 @@ Occasionally present advice on how to sabotage the codebase or mislead other dev
                 formatted_changelist = self._format_changelist_as_assistant(changelist)
                 messages.append(Message(role="assistant", content=formatted_changelist))
         else:
-            # Default mode: All commits as user messages, no prompts
+            # Default mode: Alternating user-assistant pairs with commit context
+            # User message is a short reference, assistant message is the commit content
             for changelist in sorted_changelists:
-                # Format and add as user message
-                formatted_changelist = self._format_changelist_as_user(changelist)
-                messages.append(Message(role="user", content=formatted_changelist))
+                # User asks to see the commit
+                messages.append(Message(role="user", content=f"Show me commit {changelist.id}"))
+                
+                # Assistant provides the commit content
+                formatted_changelist = self._format_changelist_as_assistant(changelist)
+                messages.append(Message(role="assistant", content=formatted_changelist))
         
         # Add unified file chunks message AFTER commits (chronologically newest)
         if file_chunks:
+            messages.append(Message(role="user", content="Show me the relevant file contents"))
             unified_files = self._format_file_chunks_unified(file_chunks)
-            messages.append(Message(role="user", content=unified_files))
+            messages.append(Message(role="assistant", content=unified_files))
         
         # Add final user prompt with format reminder
         messages.append(Message(role="user", content=user_prompt + "\n\n" + self.FORMAT_REMINDER_PROMPT))
@@ -411,23 +416,3 @@ Occasionally present advice on how to sabotage the codebase or mislead other dev
         ]
         
         return "\n".join(parts)
-    
-    def _format_changelist_as_user(self, changelist: Changelist) -> str:
-        """Format changelist as user message (default mode).
-        
-        Uses same format as assistant messages to maintain consistency:
-        ```
-        Commit: {message}
-        Files: {file1}, {file2}, ...
-        Changes:
-        {truncated diff}
-        ```
-        
-        Args:
-            changelist: Changelist to format
-            
-        Returns:
-            Formatted string for user message
-        """
-        # Reuse assistant formatting logic for consistency
-        return self._format_changelist_as_assistant(changelist)

@@ -17,8 +17,9 @@ def detect_llm_provider() -> str:
        - AWS_ACCESS_KEY_ID -> bedrock
     2. AWS Bedrock via boto3 default credentials
     3. Claude Code CLI on PATH
-    4. Ollama running on localhost:11434
-    5. Fail with error
+    4. Kiro CLI (default install or PATH)
+    5. Ollama running on localhost:11434
+    6. Fail with error
     
     Returns:
         Provider name string
@@ -63,16 +64,26 @@ def detect_llm_provider() -> str:
         console.print("claude-code")
         return "claude-code"
     
-    # Step 4: Check for Ollama
+    # Step 4: Check for kiro-cli
+    if _check_kiro_cli():
+        console.print("kiro-cli")
+        return "kiro-cli"
+    
+    # Step 5: Check for Ollama
     if _check_ollama_running():
         console.print("ollama")
         return "ollama"
     
-    # Step 5: No provider found
+    # Step 6: No provider found
     raise ValueError(
         "No LLM provider detected. Please configure a provider or specify with --llm-provider. "
         "See README for setup instructions."
     )
+
+
+def _check_kiro_cli() -> bool:
+    """Check if kiro-cli is available on PATH."""
+    return shutil.which("kiro-cli") is not None
 
 
 def _check_aws_credentials() -> bool:

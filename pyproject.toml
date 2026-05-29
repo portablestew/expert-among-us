@@ -36,6 +36,9 @@ dependencies = [
     "numpy>=1.22,<2.0",  # Pin numpy < 2.0 for ChromaDB compatibility
     # UV
     "uv>=0.1,<1.0",
+    # PTY for kiro-cli provider
+    "pywinpty>=2.0; sys_platform == 'win32'",
+    "pexpect>=4.8; sys_platform != 'win32'",
     # Utilities
     "python-dateutil>=2.8,<3.0",
     "pyyaml>=6.0,<7.0",

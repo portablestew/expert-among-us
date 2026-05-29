@@ -490,7 +490,7 @@ class TestConversationBuilder:
     def test_build_conversation_default_mode_all_user_messages(
         self, mock_prompt_generator, sample_changelists_multiple
     ):
-        """Test default mode with impostor=False creates only user messages."""
+        """Test default mode with impostor=False creates alternating user-assistant pairs."""
         builder = ConversationBuilder(
             None,
             TEST_MAX_DIFF_CHARS,
@@ -509,19 +509,31 @@ class TestConversationBuilder:
             impostor=False  # Default mode
         )
         
-        # Should have 4 messages: 3 commits + final prompt (all user role)
-        assert len(messages) == 4
+        # Should have 7 messages: 3 commits × (user + assistant) + final user prompt
+        assert len(messages) == 7
         
-        # All messages should be user role
-        for msg in messages:
-            assert msg.role == "user"
+        # Verify alternating pattern: user, assistant, user, assistant, user, assistant, user
+        assert messages[0].role == "user"
+        assert messages[1].role == "assistant"
+        assert messages[2].role == "user"
+        assert messages[3].role == "assistant"
+        assert messages[4].role == "user"
+        assert messages[5].role == "assistant"
+        assert messages[6].role == "user"
         
-        # Verify chronological ordering
-        assert "Initial commit" in messages[0].content  # ghi789
-        assert "Add feature X" in messages[1].content   # abc123
-        assert "Fix bug Y" in messages[2].content       # def456
-        assert "Final question" in messages[3].content
-        assert "Remember to structure your response" in messages[3].content
+        # User messages are "Show me commit <id>" references
+        assert "Show me commit" in messages[0].content
+        assert "Show me commit" in messages[2].content
+        assert "Show me commit" in messages[4].content
+        
+        # Assistant messages contain commit content (chronological order)
+        assert "Initial commit" in messages[1].content  # ghi789
+        assert "Add feature X" in messages[3].content   # abc123
+        assert "Fix bug Y" in messages[5].content       # def456
+        
+        # Final message is the user prompt
+        assert "Final question" in messages[6].content
+        assert "Remember to structure your response" in messages[6].content
         
         # Verify no prompts were generated (mock not called)
         mock_prompt_generator._generate_single_prompt.assert_not_called()
@@ -579,20 +591,3 @@ class TestConversationBuilder:
                 user_prompt="Test",
                 impostor=True
             )
-    
-    
-    def test_format_changelist_as_user_same_as_assistant(
-        self, mock_prompt_generator, sample_changelist
-    ):
-        """Test that user and assistant formatting are identical."""
-        builder = ConversationBuilder(
-            mock_prompt_generator,
-            TEST_MAX_DIFF_CHARS,
-            max_context_tokens=120000,
-            max_response_tokens=4096
-        )
-        
-        user_format = builder._format_changelist_as_user(sample_changelist)
-        assistant_format = builder._format_changelist_as_assistant(sample_changelist)
-        
-        assert user_format == assistant_format

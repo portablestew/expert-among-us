@@ -6,6 +6,7 @@ from typing import Optional, Dict
 from .base import LLMProvider
 from .bedrock import BedrockLLM
 from .claude_code import ClaudeCodeLLM
+from .kiro_cli import KiroCliLLM
 from .openai_compatible import OpenAICompatibleLLM
 from ..config.settings import Settings
 
@@ -53,7 +54,8 @@ def create_llm_provider(settings: Settings, debug: bool = False) -> LLMProvider:
             "  --llm-provider openrouter  (requires OPENROUTER_API_KEY)\n"
             "  --llm-provider ollama      (default: http://127.0.0.1:11434/v1)\n"
             "  --llm-provider bedrock     (requires AWS credentials)\n"
-            "  --llm-provider claude-code (requires claude CLI)"
+            "  --llm-provider claude-code (requires claude CLI)\n"
+            "  --llm-provider kiro-cli    (requires kiro-cli + pywinpty/pexpect)"
         )
     
     # Check cache (one instance per provider type)
@@ -138,8 +140,16 @@ def create_llm_provider(settings: Settings, debug: bool = False) -> LLMProvider:
         _llm_cache[provider] = llm
         return llm
     
+    elif provider == "kiro-cli":
+        llm = KiroCliLLM(
+            cli_path=getattr(settings, "kiro_cli_path", None),
+            sessions_dir=getattr(settings, "kiro_cli_sessions_dir", None),
+        )
+        _llm_cache[provider] = llm
+        return llm
+    
     else:
         raise ValueError(
             f"Unknown LLM provider: {provider}\n"
-            "Valid providers: openai, openrouter, ollama, bedrock, claude-code"
+            "Valid providers: openai, openrouter, ollama, bedrock, claude-code, kiro-cli"
         )

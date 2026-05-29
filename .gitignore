@@ -208,3 +208,7 @@ __marimo__/
 
 # Archived specs
 archived/
+
+# Kiro IDE / pyddock workspace artifacts
+.kiro/
+.pyddock/

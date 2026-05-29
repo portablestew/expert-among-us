@@ -1,6 +1,7 @@
 """Claude Code CLI LLM provider implementation with session-based conversations."""
 
 import json
+import platform
 import shutil
 import subprocess
 import uuid
@@ -43,16 +44,19 @@ class ClaudeCodeLLM(LLMProvider):
         Raises:
             LLMError: If claude CLI is not found
         """
-        # Check if claude CLI exists and get full path
-        full_cli_path = shutil.which(cli_path)
-        if not full_cli_path:
+        # Check if claude CLI exists — verify on PATH
+        # On Windows, shutil.which may return uppercase .EXE extension which
+        # breaks Toolbox shims (they're case-sensitive). Lowercase the path.
+        full_path = shutil.which(cli_path)
+        if not full_path:
             raise LLMError(
                 f"Claude CLI not found at '{cli_path}'. "
                 "Please install the Claude CLI from https://github.com/anthropics/claude-cli"
             )
         
-        # Store full path for Windows compatibility with subprocess
-        self.cli_path = full_cli_path
+        if platform.system() == "Windows":
+            full_path = full_path.lower()
+        self.cli_path = full_path
         # Store project directory where we'll run Claude from
         self.project_dir = project_dir or Path.cwd()
         # Create session directory using Claude's naming convention

@@ -531,7 +531,7 @@ async def main():
     parser.add_argument(
         '--llm-provider',
         type=str,
-        choices=['auto', 'openai', 'openrouter', 'ollama', 'bedrock', 'claude-code'],
+        choices=['auto', 'openai', 'openrouter', 'ollama', 'bedrock', 'claude-code', 'kiro-cli'],
         default='auto',
         help='LLM provider for AI recommendations (auto-detects by default)',
     )
