@@ -2,7 +2,7 @@
 set -e
 
 # Expert Among Us - Local Development Setup
-# For end-users: just run `uvx expert-among-us --help` — no install needed.
+# For end-users: install with `uv tool install expert-among-us` — see README.
 
 echo "Expert Among Us - Local Development Setup"
 echo ""

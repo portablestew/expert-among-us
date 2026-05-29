@@ -54,7 +54,7 @@ class JinaCodeEmbedder(Embedder):
             console.print("\n   To enable GPU:")
             console.print("   1. Check NVIDIA drivers: nvidia-smi")
             console.print("   2. Reinstall with CUDA index:")
-            console.print("      uv tool install expert-among-us --index pytorch-cu130=https://download.pytorch.org/whl/cu130")
+            console.print("      uv tool install expert-among-us --python 3.12 --index pytorch-cu130=https://download.pytorch.org/whl/cu130")
             console.print("   3. Restart your terminal")
             console.print()
         

@@ -115,13 +115,13 @@ irm https://astral.sh/uv/install.ps1 | iex
 Install as a persistent tool with GPU support (NVIDIA CUDA):
 
 ```bash
-uv tool install expert-among-us --index pytorch-cu130=https://download.pytorch.org/whl/cu130
+uv tool install expert-among-us --python 3.12 --index pytorch-cu130=https://download.pytorch.org/whl/cu130
 ```
 
 If you don't have an NVIDIA GPU, install without the index flag (CPU-only):
 
 ```bash
-uv tool install expert-among-us
+uv tool install expert-among-us --python 3.12
 ```
 
 After installation, `expert-among-us` is available directly on your PATH:
@@ -133,7 +133,7 @@ expert-among-us --help
 #### Updating
 
 ```bash
-uv tool upgrade expert-among-us --upgrade
+uv tool upgrade expert-among-us
 ```
 
 This retains the CUDA index setting from the original install. The `--upgrade` flag forces a fresh check against PyPI.
