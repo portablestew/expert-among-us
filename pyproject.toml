@@ -1,9 +1,9 @@
 [project]
 name = "expert-among-us"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Queryable expert from commit history using LLM and embeddings"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 license = {text = "MIT"}
 authors = [
     {name = "Expert Among Us Contributors"}
@@ -19,30 +19,28 @@ dependencies = [
     "mcp>=1.0.0,<2.0",
     # CLI
     "click>=8.1,<9.0",
-    "rich>=13.0,<14.0", # For nice CLI output
+    "rich>=13.0,<14.0",
     # VCS
     "gitpython>=3.1,<4.0",
     # AWS/Bedrock
     "boto3>=1.34,<2.0",
     "botocore>=1.34,<2.0",
-    # Embeddings
+    # Embeddings & ML
     "sentence-transformers>=2.2.0",
     "torch>=2.0.0",
     "torchvision>=0.15.0",
     "torchaudio>=2.0.0",
     # Databases
     "chromadb>=0.4,<0.5",
-    "posthog>=2.4.0,<6.0.0",  # Pin posthog <6.0.0 for ChromaDB compatibility (v6+ breaks capture() API)
-    "numpy>=1.22,<2.0",  # Pin numpy < 2.0 for ChromaDB compatibility
-    # UV
-    "uv>=0.1,<1.0",
+    "posthog>=2.4.0,<6.0.0",
+    "numpy>=1.22,<2.0",
     # PTY for kiro-cli provider
     "pywinpty>=2.0; sys_platform == 'win32'",
     "pexpect>=4.8; sys_platform != 'win32'",
     # Utilities
     "python-dateutil>=2.8,<3.0",
     "pyyaml>=6.0,<7.0",
-    "httpx>=0.27,<1.0",  # For Ollama health check
+    "httpx>=0.27,<1.0",
 ]
 
 [project.optional-dependencies]
@@ -59,21 +57,25 @@ dev = [
 expert-among-us = "expert_among_us.__main__:main"
 
 [build-system]
-requires = ["hatchling", "uv>=0.1"]
+requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.uv]
-required-version = ">=0.1"
+[tool.hatch.version]
+path = "src/expert_among_us/__init__.py"
 
-[dependency-groups]
-dev = [
-    "pytest>=7.4,<8.0",
-    "pytest-asyncio>=0.21,<1.0",
-    "pytest-cov>=4.1,<5.0",
-    "black>=23.0,<24.0",
-    "ruff>=0.1,<1.0",
-    "mypy>=1.7,<2.0",
-]
+# Source torch from the CUDA 13.0 index by default.
+# CUDA wheels fall back to CPU at runtime if no GPU is present.
+[tool.uv.sources]
+torch = [{index = "pytorch-cu130"}]
+torchvision = [{index = "pytorch-cu130"}]
+torchaudio = [{index = "pytorch-cu130"}]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+# --- Tool configuration ---
 
 [tool.black]
 line-length = 100

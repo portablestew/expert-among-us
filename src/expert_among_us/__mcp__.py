@@ -13,10 +13,9 @@ Tool descriptions automatically include the current list of available experts
 and usage guidance, making them immediately visible to users without needing
 to call additional tools.
 
-Run with: python -m expert_among_us.__mcp__
+Run with: expert-among-us mcp
 """
 
-import argparse
 import asyncio
 import logging
 import math
@@ -28,6 +27,9 @@ from typing import Any, Optional, List
 
 # Global variable to store LLM provider choice
 _llm_provider = "auto"
+
+# Global variable to store embedding provider choice
+_embedding_provider = "local"
 
 # Global variable to store data directory
 _data_dir: Optional[Path] = None
@@ -41,6 +43,9 @@ _max_response_tokens = 4096
 
 # Global variable to store prompt timeout in seconds
 _prompt_timeout_seconds: Optional[int] = None
+
+# Global variable to store debug flag
+_debug = False
 
 from mcp.server import Server
 from mcp.server.lowlevel import NotificationOptions
@@ -64,6 +69,7 @@ from expert_among_us.api import (
     NoResultsError,
 )
 from expert_among_us.models.query_result import CommitResult, FileChunkResult
+from expert_among_us import __version__
 
 
 # Initialize MCP server
@@ -350,7 +356,7 @@ async def handle_query(
             files=files,
             search_scope=search_scope,
             data_dir=_data_dir,
-            embedding_provider="local",
+            embedding_provider=_embedding_provider,
             llm_provider=_llm_provider,
             enable_multiprocessing=False,
         )
@@ -461,7 +467,7 @@ async def handle_prompt(
             temperature=temperature,
             max_expert_response_tokens=_max_response_tokens,
             data_dir=_data_dir,
-            embedding_provider="local",
+            embedding_provider=_embedding_provider,
             llm_provider=_llm_provider,
             enable_multiprocessing=False,
         ):
@@ -521,85 +527,38 @@ async def handle_prompt(
         )]
 
 
-async def main():
-    """Main entry point for MCP server."""
-    global _llm_provider
-    
-    # Parse command line arguments
-    parser = argparse.ArgumentParser(description="Expert Among Us MCP Server")
-    parser.add_argument('--debug', action='store_true', help='Enable debug logging')
-    parser.add_argument(
-        '--llm-provider',
-        type=str,
-        choices=['auto', 'openai', 'openrouter', 'ollama', 'bedrock', 'claude-code', 'kiro-cli'],
-        default='auto',
-        help='LLM provider for AI recommendations (auto-detects by default)',
-    )
-    parser.add_argument(
-        '--embedding-provider',
-        type=str,
-        choices=['local', 'bedrock'],
-        default='local',
-        help='Embedding provider: local=Jina Code, bedrock=AWS Titan (default: local)',
-    )
-    parser.add_argument(
-        '--data-dir',
-        type=Path,
-        help='Base directory for expert data storage (default: ~/.expert-among-us)',
-    )
-    parser.add_argument(
-        '--impostor',
-        action='store_true',
-        help='Enable impostor mode: generates prompts from commits (enhances lackluster commit messages)',
-    )
-    parser.add_argument(
-        '--amogus',
-        action='store_true',
-        help='⚠️ DO NOT USE',
-    )
-    parser.add_argument(
-        '--max-response-tokens',
-        type=int,
-        default=4096,
-        help='Maximum tokens for expert response (reduce to avoid MCP timeouts, default: 4096)',
-    )
-    parser.add_argument(
-        '--prompt-timeout-seconds',
-        type=int,
-        default=None,
-        help='Maximum seconds for expert-prompt operations (includes DB queries + LLM streaming, default: no timeout)',
-    )
-    args = parser.parse_args()
-    
-    # Store LLM provider choice in global variable
-    _llm_provider = args.llm_provider
-    
-    # Store data_dir in global variable
-    global _data_dir
-    _data_dir = args.data_dir
-    
-    # Store impostor and amogus modes in global variables
+async def start_server(
+    llm_provider: str = "auto",
+    data_dir: Optional[Path] = None,
+    embedding_provider: str = "local",
+    impostor_mode: bool = False,
+    amogus_mode: bool = False,
+    max_response_tokens: int = 4096,
+    prompt_timeout_seconds: Optional[int] = None,
+    debug: bool = False,
+):
+    """Start the MCP server with the given configuration."""
+    global _llm_provider, _data_dir, _embedding_provider
     global _impostor_mode, _amogus_mode
-    _impostor_mode = args.impostor
-    _amogus_mode = args.amogus
-    
-    # Store max response tokens in global variable
-    global _max_response_tokens
-    _max_response_tokens = args.max_response_tokens
-    
-    # Store prompt timeout in global variable
-    global _prompt_timeout_seconds
-    _prompt_timeout_seconds = args.prompt_timeout_seconds
-    
+    global _max_response_tokens, _prompt_timeout_seconds, _debug
+    _llm_provider = llm_provider
+    _data_dir = data_dir
+    _embedding_provider = embedding_provider
+    _impostor_mode = impostor_mode
+    _amogus_mode = amogus_mode
+    _max_response_tokens = max_response_tokens
+    _prompt_timeout_seconds = prompt_timeout_seconds
+    _debug = debug
+
     # Get PID for log file name
     pid = os.getpid()
     
-    # Configure logging to both stderr AND file when --debug is enabled
-    log_level = logging.DEBUG if args.debug else logging.INFO
-    handlers = [logging.StreamHandler(sys.stderr)]
+    # Configure logging to both stderr AND file when debug is enabled
+    log_level = logging.DEBUG if _debug else logging.INFO
+    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stderr)]
     
     # Add file handler for debug mode
-    if args.debug:
+    if _debug:
         log_dir = Path.home() / ".expert-among-us" / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / f"mcp-{pid}.log"
@@ -616,7 +575,7 @@ async def main():
     )
     logger = logging.getLogger(__name__)
     
-    if args.debug:
+    if _debug:
         logger.debug(f"Debug logging enabled - writing to mcp-{pid}.log")
         logger.debug(f"Process ID: {pid}")
     
@@ -628,13 +587,13 @@ async def main():
     from expert_among_us.embeddings.factory import create_embedder
     from expert_among_us.reranking.factory import create_reranker
     
-    settings_kwargs = {
-        "embedding_provider": args.embedding_provider,
-        "llm_provider": args.llm_provider,
+    settings_kwargs: dict[str, Any] = {
+        "embedding_provider": _embedding_provider,
+        "llm_provider": _llm_provider,
         "enable_multiprocessing": False,  # Disable multiprocessing in MCP context to prevent hanging
     }
-    if args.data_dir:
-        settings_kwargs["data_dir"] = args.data_dir
+    if _data_dir:
+        settings_kwargs["data_dir"] = _data_dir
     settings = Settings(**settings_kwargs)
     
     # Warm up embeddings, mainly for the local provider
@@ -669,7 +628,7 @@ async def main():
             write_stream,
             InitializationOptions(
                 server_name="expert-among-us",
-                server_version="0.1.0",
+                server_version=__version__,
                 capabilities=server.get_capabilities(
                     notification_options=NotificationOptions(),
                     experimental_capabilities={}
@@ -679,4 +638,5 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(start_server())
+

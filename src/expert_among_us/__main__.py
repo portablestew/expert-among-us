@@ -986,5 +986,46 @@ def import_(ctx, source_path: Path) -> None:
 
 
 
+@main.command()
+@click.option('--impostor', is_flag=True, help='Enable impostor mode for all queries')
+@click.option('--amogus', is_flag=True, hidden=True)
+@click.option('--max-response-tokens', type=int, default=4096, help='Maximum tokens for expert response (default: 4096)')
+@click.option('--prompt-timeout-seconds', type=int, default=None, help='Maximum seconds for expert-prompt operations (default: no timeout)')
+@click.pass_context
+def mcp(ctx, impostor: bool, amogus: bool, max_response_tokens: int, prompt_timeout_seconds: Optional[int]) -> None:
+    """Start the MCP (Model Context Protocol) server.
+    
+    Exposes expert-among-us tools to MCP clients like Claude Desktop or Kiro.
+    
+    Examples:
+    
+        \b
+        # Start MCP server
+        $ expert-among-us mcp
+        
+        \b
+        # With impostor mode and debug logging
+        $ expert-among-us --debug mcp --impostor
+        
+        \b
+        # With custom data directory
+        $ expert-among-us --data-dir /shared/experts mcp
+    """
+    import asyncio
+    from expert_among_us.__mcp__ import start_server
+    
+    asyncio.run(start_server(
+        llm_provider=ctx.obj.get('llm_provider', 'auto'),
+        data_dir=ctx.obj.get('data_dir'),
+        embedding_provider=ctx.obj.get('embedding_provider', 'local'),
+        impostor_mode=impostor,
+        amogus_mode=amogus,
+        max_response_tokens=max_response_tokens,
+        prompt_timeout_seconds=prompt_timeout_seconds,
+        debug=ctx.obj.get('debug', False),
+    ))
+
+
 if __name__ == "__main__":
     main()
+

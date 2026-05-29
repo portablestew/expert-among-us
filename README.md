@@ -44,15 +44,15 @@ The result is key contextual insights that naive file search cannot provide:
 A **[blind comparative analysis](case-studies/summary.md)** of the expert-among-us MCP was conducted on the [OpenRA game engine](https://github.com/OpenRA/OpenRA/), comparing outcomes with and without the MCP across four technical scenarios. The analysis was performed without prior knowledge of expert-among-us or its purpose, including stripping the tool description from the conversation history. This provides an unbiased (albeit AI-generated) evaluation.
 
 **Key Findings:**
-- Completed all scenarios with roughly **20% fewer actions** overall, and context sizes comparble to non-MCP completion
+- Completed all scenarios with roughly **20% fewer actions** overall, and context sizes comparable to non-MCP completion
 - Successfully identified regressions and key patterns that standard exploration missed
 - Provided historical context and design rationale not available through code inspection alone
 
-The case study demonstrates measurable efficiency gains and qualitative improvements in debugging and architecture understanding. For the detailed comparison, see [case-studies/summary.md]() and the [raw conversation files](case-studies/OpenRA/).
+The case study demonstrates measurable efficiency gains and qualitative improvements in debugging and architecture understanding. For the detailed comparison, see [case-studies/summary.md](case-studies/summary.md) and the [raw conversation files](case-studies/OpenRA/).
 
 ### Synthetic Commit Context
 
-Not all commit messages are created equal. Fortunately, transformer LLMs are excellent at filling in the blanks. 
+Not all commit messages are created equal. Fortunately, transformer LLMs are excellent at filling in the blanks.
 When run with `--impostor` mode, Expert Among Us generates additional commit message content.
 This is presented as an ordered chain of user prompt -> assistant response entries, where the user is the generated prompts, and the real commits are the assistant responses.
 The actual user prompt is the final message. Effectively, a conversation is presented as if the LLM has authored all commits by itself. The AI acts as an impostor of the human experts.
@@ -72,7 +72,7 @@ It helps you understand development patterns, find relevant changes, and get AI-
 - **Metadata Extraction**: Index commit messages, authors, files, and code diffs
 - **Vector Embeddings**: Supports local (GPU-accelerated) or cloud (AWS Bedrock) embedding models
 - **Flexible Filtering**: Search by author, files, or time period
-- **Version Control Support**: Works with Git repositories (Perforce support planned)
+- **Version Control Support**: Works with Git and Perforce repositories
 - **Commit Enhancement**: Optionally adds LLM-generated analysis of a commit to its context
 
 ### Search Quality Features
@@ -96,67 +96,53 @@ Expert Among Us includes several features that significantly improve search qual
 
 ## Installation
 
-### Quick Install (Recommended)
+### End-Users (Recommended)
 
-Use the provided installation scripts to automate the setup process:
+No installation needed. Just run with [uvx](https://docs.astral.sh/uv/guides/tools/):
 
-#### CPU-Only Installation
-
-**Linux/macOS:**
 ```bash
-./install-cpu.sh
+uvx expert-among-us --help
 ```
 
-**Windows (PowerShell):**
-```powershell
-.\install-cpu.ps1
-```
+This automatically handles Python, all dependencies, and CUDA-enabled PyTorch. The CUDA wheels fall back to CPU at runtime if no GPU is present.
 
-#### GPU Installation (NVIDIA GPUs)
+If you don't have uv/uvx installed yet, see the [uv installation guide](https://docs.astral.sh/uv/getting-started/installation/) or run:
 
-For 10-20x faster local embeddings with NVIDIA GPU support:
-
-**Linux/macOS:**
 ```bash
-./install-gpu.sh
+# Linux/macOS
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-**Windows (PowerShell):**
 ```powershell
-.\install-gpu.ps1
+# Windows (PowerShell)
+irm https://astral.sh/uv/install.ps1 | iex
 ```
 
-The GPU installation scripts will:
-- Install Python dependencies
-- Install CUDA-enabled PyTorch
-- Verify GPU detection
-- Provide usage instructions
+### Local Development
+
+For contributors working from a clone:
+
+```bash
+# Linux/macOS
+./install.sh
+
+# Windows (PowerShell)
+.\install.ps1
+```
+
+These scripts install [uv](https://docs.astral.sh/uv/) if needed, then run `uv sync` to set up the environment. After that, use `uv run` to execute commands:
+
+```bash
+uv run expert-among-us --help
+```
+
+### GPU Performance
+
+CUDA-enabled PyTorch is installed by default. If an NVIDIA GPU is available, embeddings run on it automatically. No separate GPU install step is needed.
 
 **Performance Impact:**
 - **With GPU**: ~0.5s per commit embedding
 - **CPU only**: ~4s per commit embedding
-
-### Quick Run Scripts
-
-For convenience, you can use the provided run scripts instead of activating the virtual environment:
-
-**Linux/macOS:**
-```bash
-./run.sh --help
-./run.sh populate /path/to/repo MyExpert
-./run.sh query /path/to/repo MyExpert "your question"
-```
-
-**Windows (PowerShell):**
-```powershell
-.\run.ps1 --help
-.\run.ps1 populate /path/to/repo MyExpert
-.\run.ps1 query /path/to/repo MyExpert "your question"
-```
-
-These scripts automatically use the virtual environment without activating it, leaving no side effects after execution. They work with both CPU and GPU installations.
-
-**Why not use `uv run`?** The `uv run` command resyncs the environment to the lock file, which would revert to CPU-only PyTorch. To preserve GPU PyTorch, use the run scripts which automatically use the venv without resyncing.
 
 ## Quick Start
 
@@ -166,16 +152,16 @@ Create an expert index from your git repository:
 
 ```bash
 # Index entire repository (uses local embeddings by default)
-./run.sh populate /path/to/repo MyExpert
+expert-among-us populate MyExpert /path/to/repo
 
 # Use AWS Bedrock embeddings instead
-./run.sh populate /path/to/repo MyExpert --embedding-provider bedrock
+expert-among-us --embedding-provider bedrock populate MyExpert /path/to/repo
 
 # Index specific subdirectories only
-./run.sh populate /path/to/repo MyExpert src/main/ src/resources/
+expert-among-us populate MyExpert /path/to/repo src/main/ src/resources/
 
 # Limit the number of commits to index
-./run.sh populate /path/to/repo MyExpert --max-commits 5000
+expert-among-us populate MyExpert /path/to/repo --max-commits 5000
 ```
 
 **Note**: On first run with local embeddings, the Jina Code model (~1.2GB) will be downloaded automatically. This is a one-time download.
@@ -187,21 +173,17 @@ The first indexing will take some time depending on repository size. Subsequent 
 Find commits similar to your query:
 
 ```bash
-# Basic search (uses local embeddings by default)
-./run.sh query /path/to/repo MyExpert "How to add a new feature?"
-
-# Use same embedding provider as during indexing
-./run.sh query /path/to/repo MyExpert "How to add a new feature?" \
-    --embedding-provider bedrock
+# Basic search
+expert-among-us query MyExpert "How to add a new feature?"
 
 # Search with filters
-./run.sh query /path/to/repo MyExpert "Bug fix for memory leak" \
+expert-among-us query MyExpert "Bug fix for memory leak" \
     --users john,jane \
     --files src/main.py,src/utils.py \
     --max-changes 20
 
 # Save results to JSON
-./run.sh query /path/to/repo MyExpert "API endpoint implementation" \
+expert-among-us query MyExpert "API endpoint implementation" \
     --output results.json
 ```
 
@@ -212,23 +194,19 @@ Find commits similar to your query:
 Get AI-powered recommendations that impersonate the expert based on their historical commit patterns:
 
 ```bash
-# Get recommendations (auto-detects provider by default)
-./run.sh prompt /path/to/repo MyExpert "How should I implement authentication?"
-
-# Explicitly specify provider if needed
-./run.sh --llm-provider openai prompt /path/to/repo MyExpert "How should I implement authentication?"
+# Get recommendations (auto-detects LLM provider)
+expert-among-us prompt MyExpert "How should I implement authentication?"
 
 # With filters for specific context
-./run.sh prompt /path/to/repo MyExpert "How to handle errors?" \
+expert-among-us prompt MyExpert "How to handle errors?" \
     --users alice,bob \
     --files src/handlers/
 
 # With improved commit message context
-./run.sh prompt /path/to/repo MyExpert "Add caching" \
-    --impostor
+expert-among-us prompt MyExpert "Add caching" --impostor
 
 # With debug logging to inspect API calls
-./run.sh --debug prompt /path/to/repo MyExpert "Optimize queries"
+expert-among-us --debug prompt MyExpert "Optimize queries"
 ```
 
 **How It Works:**
@@ -240,214 +218,151 @@ Get AI-powered recommendations that impersonate the expert based on their histor
 
 ## CLI Command Reference
 
+> **Note:** All examples below use `expert-among-us` directly. When running from a local clone, prefix with `uv run`. When running without install, prefix with `uvx`.
+
 ### `populate` - Index Repository
 
 Create or update an expert index from a repository.
 
 ```bash
-./run.sh populate WORKSPACE EXPERT_NAME [SUBDIRS...] [OPTIONS]
+expert-among-us populate EXPERT_NAME [WORKSPACE] [SUBDIRS...] [OPTIONS]
 ```
 
 **Arguments:**
-- `WORKSPACE`: Path to the repository root directory
 - `EXPERT_NAME`: Unique name for this expert (used to identify the index)
+- `WORKSPACE`: Path to the repository root directory (required for new experts, optional for updates)
 - `SUBDIRS`: Optional subdirectories to filter (e.g., `src/main/ src/resources/`)
 
 **Options:**
-- `--max-commits INTEGER`: Maximum number of commits to index (default: 10000)
-- `--vcs-type [git|p4]`: Version control system type (default: git)
+- `--max-commits INTEGER`: Maximum number of commits to index (default: 60000)
+- `--max-batches INTEGER`: Maximum batches to run (returns exit code 2 if more remain)
+- `--batch-size INTEGER`: Maximum commits per embedding batch (default: 1000)
+- `--start-at TEXT`: Start indexing from a specific commit hash
+- `--index-scope [metadata|diffs|files|all]`: What to index (default: all)
+- `--allowed-extensions TEXT`: Comma-separated list of allowed file extensions
+- `--compact-diffs`: Reduce diff size by removing context (trades search quality for cost)
+- `--custom-sanitize-pattern TEXT`: Custom regex pattern to remove from text before embedding
+
+**Global Options (before command):**
 - `--embedding-provider [local|bedrock]`: Embedding provider (default: local)
 - `--data-dir PATH`: Base directory for expert data storage (default: ~/.expert-among-us)
+- `--gpu-memory-multiplier FLOAT`: GPU memory scaling factor (default: 1.0)
+- `--debug`: Enable debug logging
 
 **Examples:**
 ```bash
 # Index entire repository with local embeddings (default)
-./run.sh populate ~/projects/myapp "AppExpert"
+expert-among-us populate AppExpert ~/projects/myapp
 
 # Index with AWS Bedrock embeddings
-./run.sh populate ~/projects/myapp "AppExpert" --embedding-provider bedrock
+expert-among-us --embedding-provider bedrock populate AppExpert ~/projects/myapp
 
 # Index only backend code
-./run.sh populate ~/projects/myapp "BackendExpert" src/backend/ src/api/
+expert-among-us populate BackendExpert ~/projects/myapp src/backend/ src/api/
 
-# Limit indexing to recent commits
-./run.sh populate ~/projects/myapp "RecentExpert" --max-commits 1000
+# Update existing expert (workspace looked up automatically)
+expert-among-us populate AppExpert
 
 # Use custom data directory
-./run.sh --data-dir /mnt/data/experts populate ~/projects/myapp "AppExpert"
+expert-among-us --data-dir /mnt/data/experts populate AppExpert ~/projects/myapp
 ```
 
 ### `list` - List Available Experts
 
 Display all indexed experts and their metadata.
 
-**Options:**
-- `--data-dir PATH`: Optional base directory for expert data storage (default: ~/.expert-among-us)
-
-**Examples:**
 ```bash
-# List all experts
-./run.sh list
-
-# List from custom directory
-./run.sh --data-dir /mnt/data/experts list
+expert-among-us list
 ```
 
 ### `import` - Import Expert via Symlink
 
 Import an expert from an external directory by creating a symlink.
 
-**Arguments:**
-- `SOURCE_PATH`: Path to the expert directory to import (must contain metadata.db)
-
-**Examples:**
 ```bash
-# Import from external storage
-./run.sh import /external/storage/MyExpert
-
-# Import from network location
-./run.sh import ~/shared/experts/TeamExpert
-
-# Import with custom data directory
-./run.sh --data-dir /custom/location import /external/MyExpert
+expert-among-us import SOURCE_PATH
 ```
-
-**Notes:**
-- Source directory must contain a valid expert (metadata.db file)
-- Expert name is extracted from the source directory name
-- Fails if an expert with the same name already exists
-- On Windows, requires Administrator privileges or Developer Mode enabled
 
 ### `query` - Search History
 
 Search for commits similar to your query using semantic search.
 
 ```bash
-./run.sh query WORKSPACE EXPERT_NAME PROMPT [OPTIONS]
+expert-among-us query EXPERT_NAME PROMPT [OPTIONS]
 ```
 
 **Arguments:**
-- `WORKSPACE`: Path to the repository root directory
 - `EXPERT_NAME`: Name of the expert to query
 - `PROMPT`: Search query describing what you're looking for
 
 **Options:**
-- `--max-changes INTEGER`: Maximum number of results to return (default: 10)
-- `--users TEXT`: Filter by commit authors (comma-separated, e.g., "john,jane")
-- `--files TEXT`: Filter by file paths (comma-separated, e.g., "src/main.py,src/utils.py")
-- `--search-scope [all|metadata|diffs|files]`: Search scope - "all" (default), "metadata" only, "diffs" only, or "files" only
+- `--max-changes INTEGER`: Maximum changelist results (default: 20)
+- `--max-file-chunks INTEGER`: Maximum file chunk results (default: 10)
+- `--users TEXT`: Filter by commit authors (comma-separated)
+- `--files TEXT`: Filter by file paths (comma-separated)
+- `--search-scope [all|metadata|diffs|files]`: Search scope (default: all)
 - `--no-reranking`: Disable cross-encoder reranking (faster but less accurate)
 - `--min-score FLOAT`: Minimum similarity score threshold (default: 0.1)
 - `--relative-threshold FLOAT`: Relative score threshold as fractional drop from top result (default: 0.8)
+- `--expansion-candidate-multiplier INTEGER`: Multiplier for candidate retrieval during expansion (default: 5)
+- `--expansion-passes INTEGER`: Number of expansion iterations (default: 1)
 - `--output PATH`: Save results to JSON file
-- `--embedding-provider [local|bedrock]`: Embedding provider - must match what was used during indexing (default: local)
-- `--data-dir PATH`: Base directory for expert data storage (default: ~/.expert-among-us)
 
 **Examples:**
 ```bash
 # Find commits about authentication
-./run.sh query ~/projects/myapp "AppExpert" "authentication implementation"
+expert-among-us query AppExpert "authentication implementation"
 
 # Search with author filter
-./run.sh query ~/projects/myapp "AppExpert" "database optimization" \
-    --users alice,bob
-
-# Search specific files and save results
-./run.sh query ~/projects/myapp "AppExpert" "error handling" \
-    --files src/handlers/ \
-    --output search-results.json \
-    --max-changes 20
+expert-among-us query AppExpert "database optimization" --users alice,bob
 
 # Search only current file content
-./run.sh query ~/projects/myapp "AppExpert" "function implementation" \
-    --search-scope files
+expert-among-us query AppExpert "function implementation" --search-scope files
 
-# Search only commit history
-./run.sh query ~/projects/myapp "AppExpert" "why was this changed?" \
-    --search-scope metadata
-
-# Faster search without reranking
-./run.sh query ~/projects/myapp "AppExpert" "quick search" \
-    --no-reranking
-
-# Strict filtering with high similarity threshold
-./run.sh query ~/projects/myapp "AppExpert" "exact pattern" \
-    --min-score 0.3 --relative-threshold 0.2
-
-# Query with custom data directory
-./run.sh --data-dir /mnt/data/experts query ~/projects/myapp "AppExpert" "feature implementation"
+# Strict filtering
+expert-among-us query AppExpert "exact pattern" --min-score 0.3 --relative-threshold 0.2
 ```
 
 ### `prompt` - AI Recommendations
 
 Get AI-powered recommendations that impersonate the expert based on their historical commit patterns.
-The system uses relevant past commits as examples to generate responses that match the expert's coding style and approach.
 
 ```bash
-./run.sh [--llm-provider PROVIDER] prompt WORKSPACE EXPERT_NAME PROMPT [OPTIONS]
+expert-among-us [GLOBAL OPTIONS] prompt EXPERT_NAME PROMPT [OPTIONS]
 ```
 
 **Global Options (must come before command):**
-- `--llm-provider [auto|openai|openrouter|ollama|bedrock|claude-code]`: LLM provider to use (auto-detects by default)
-- `--base-url-override TEXT`: Override base URL for OpenAI-compatible providers (openai, openrouter, ollama)
-- `--debug`: Enable debug logging of API calls
-- `--embedding-provider [local|bedrock]`: Embedding provider - must match what was used during indexing (default: local)
-- `--data-dir PATH`: Base directory for expert data storage (default: ~/.expert-among-us)
+- `--llm-provider [auto|openai|openrouter|ollama|bedrock|claude-code|kiro-cli]`: LLM provider (auto-detects by default)
+- `--base-url-override TEXT`: Override base URL for OpenAI-compatible providers
+- `--expert-model TEXT`: Override default expert model
+- `--promptgen-model TEXT`: Override default promptgen model
+- `--debug`: Enable debug logging
 
 **Arguments:**
-- `WORKSPACE`: Path to the repository root directory
 - `EXPERT_NAME`: Name of the expert to query
 - `PROMPT`: Question or task description for the AI
 
 **Options:**
-- `--max-changes INTEGER`: Maximum context changes to use (default: 15)
+- `--max-changes INTEGER`: Maximum context changes to use (default: 20)
 - `--users TEXT`: Filter by commit authors (comma-separated)
 - `--files TEXT`: Filter by file paths (comma-separated)
-- `--impostor`: Generates a user prompt for each commit, and places commit content in "assistant" messages
-  - Enhances lackluster commit messages by adding a feasible thought process
-  - Tricks the LLM into thinking it created all the code, but it is an AI impostor
-- `--amogus`: Enable Among Us mode (the LLM expert is your crewmate.. or are they?)
-- `--temperature FLOAT`: LLM temperature for generation (0.0-1.0, default: 0.7) -- if the provider supports it
-
-**LLM Provider Selection:**
-By default, the system auto-detects an available provider. You can explicitly specify a provider with `--llm-provider`. Each provider requires specific environment variables:
-- `auto`: Auto-detect available provider (default)
-- `openai`: Requires `OPENAI_API_KEY`
-- `openrouter`: Requires `OPENROUTER_API_KEY`
-- `ollama`: Uses default endpoint at `http://127.0.0.1:11434/v1` (override with `--base-url-override`)
-- `bedrock`: Requires AWS credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION)
-- `claude-code`: Requires Claude Code CLI to be installed
-
-**Base URL Override:**
-Use `--base-url-override` to use a different API endpoint, for example a custom proxy, router, or localhost port.
-It works with any OpenAI-compatible provider (openai, openrouter, ollama).
-
-**Debug Logging:**
-When `--debug` is enabled, all API requests and responses are logged to JSON files in `~/.expert-among-us/logs/` for troubleshooting and analysis.
+- `--impostor`: Generate synthetic prompts for each commit (improves poor commit messages)
+- `--amogus`: Enable Among Us mode
+- `--temperature FLOAT`: LLM temperature (0.0–1.0, default: 0.7)
 
 **Examples:**
 ```bash
 # Basic usage (auto-detects provider)
-./run.sh prompt ~/projects/myapp "AppExpert" "How to implement caching?"
+expert-among-us prompt AppExpert "How to implement caching?"
 
 # Explicitly specify OpenAI
-./run.sh --llm-provider openai prompt ~/projects/myapp "AppExpert" "How to implement caching?"
+expert-among-us --llm-provider openai prompt AppExpert "How to implement caching?"
 
-# With filters (auto-detects provider)
-./run.sh prompt ~/projects/myapp "AppExpert" "Optimize database queries" \
-    --users alice,bob \
-    --files src/db/
+# With impostor mode for better context
+expert-among-us prompt AppExpert "Add caching" --impostor
 
-# Using debug mode
-./run.sh --debug prompt ~/projects/myapp "AppExpert" "Add error handling"
-
-# With improved commit message context
-./run.sh prompt ~/projects/myapp "AppExpert" "Add caching" \
-    --impostor
-
-# With Among Us mode (don't use)
-./run.sh prompt ~/projects/myapp "AppExpert" "Implement authentication" \
-    --amogus
+# With debug logging
+expert-among-us --debug prompt AppExpert "Optimize queries"
 ```
 
 ## Configuration
@@ -456,303 +371,110 @@ When `--debug` is enabled, all API requests and responses are logged to JSON fil
 
 By default, expert indexes are stored in: `~/.expert-among-us/data/`
 
-You can customize the storage location using the `--data-dir` global option:
+Customize with the `--data-dir` global option. Always use the same `--data-dir` for all operations on the same expert.
 
-```bash
-# Use custom data directory
-./run.sh --data-dir /mnt/data/experts populate /path/to/repo MyExpert
-
-# Query from custom location (must match where data was indexed)
-./run.sh --data-dir /mnt/data/experts query /path/to/repo MyExpert "search query"
-```
-
-**Important**: Always use the same `--data-dir` value for all operations on the same expert.
-
-Each expert creates two databases within the data directory:
-- **ChromaDB**: Vector embeddings for semantic search (`{data-dir}/data/{expert-name}/chroma/`)
-- **SQLite**: Metadata (commit info, authors, files, diffs) (`{data-dir}/data/{expert-name}/metadata.db`)
+Each expert creates:
+- **ChromaDB**: Vector embeddings (`{data-dir}/data/{expert-name}/chroma/`)
+- **SQLite**: Metadata (`{data-dir}/data/{expert-name}/metadata.db`)
 - **Debug Logs**: API call logs when `--debug` is enabled (`{data-dir}/logs/`)
 
 ### Embedding Models
 
-Expert Among Us supports two embedding providers. Use `--embedding-provider` flag to switch between them.
-**Important**: You must use the same provider for both indexing and querying, as different providers produce incompatible embeddings.
+Expert Among Us supports two embedding providers. Use `--embedding-provider` to switch.
+**Important**: You must use the same provider for both indexing and querying.
 
 **Local (Default):**
-- **Model**: `jinaai/jina-code-embeddings-0.5b` (`code2code` task, optimized for code similarity)
+- **Model**: `jinaai/jina-code-embeddings-0.5b` (`code2code` task)
 - **Dimension**: 512 (Matryoshka truncation from 896)
 - **Max tokens**: 32,768
-- **Download**: ~1.2GB (one-time, automatic on first run)
-- **Advantages**: No API costs, works offline, fast CPU inference, no credentials needed
+- **Download**: ~1.2GB (one-time, automatic)
+- **Advantages**: No API costs, works offline, GPU-accelerated
 
 **AWS Bedrock:**
 - **Model**: `amazon.titan-embed-text-v2:0`
 - **Dimension**: 1024
 - **Max tokens**: 8,000
-- **Advantages**: Managed service with high availability, no local storage needed
 - **Requirements**: AWS credentials and Bedrock access
-
-**Usage Examples:**
-```bash
-# Use local embeddings (default)
-./run.sh populate /path/to/repo MyExpert
-
-# Use AWS Bedrock embeddings
-./run.sh populate /path/to/repo MyExpert --embedding-provider bedrock
-
-# Query must use same provider as indexing
-./run.sh query /path/to/repo MyExpert "query" --embedding-provider bedrock
-```
 
 ### LLM Providers
 
-Expert Among Us supports multiple LLM providers for prompt generation and recommendations. By default, it **auto-detects** an available provider, or you can explicitly specify one with `--llm-provider`.
+Expert Among Us supports multiple LLM providers for prompt generation. By default, it **auto-detects** an available provider.
 
-#### Auto-Detection (Default)
-
-When you run `prompt` without specifying `--llm-provider`, the system automatically detects available providers in this order:
+#### Auto-Detection Order
 
 1. **Environment Variables** (must be exactly one):
-   - `AWS_ACCESS_KEY_ID` → Uses AWS Bedrock
-   - `OPENROUTER_API_KEY` → Uses OpenRouter
-   - `OPENAI_API_KEY` → Uses OpenAI
-   - If multiple are set, you must explicitly specify with `--llm-provider`
+   - `AWS_ACCESS_KEY_ID` → AWS Bedrock
+   - `OPENROUTER_API_KEY` → OpenRouter
+   - `OPENAI_API_KEY` → OpenAI
+2. **AWS Default Credentials** → Bedrock
+3. **Claude Code CLI** (`claude` on PATH) → Claude Code
+4. **Ollama Server** (localhost:11434) → Ollama
 
-2. **AWS Default Credentials**: Checks for boto3 default profile → Uses Bedrock
+#### Provider Setup
 
-3. **Claude Code CLI**: Checks if `claude` command is on PATH → Uses Claude Code
+| Provider | Required | Notes |
+|----------|----------|-------|
+| `openai` | `OPENAI_API_KEY` | [Get key](https://platform.openai.com/api-keys) |
+| `openrouter` | `OPENROUTER_API_KEY` | [Get key](https://openrouter.ai/settings/keys) — free models available |
+| `ollama` | Ollama running locally | Default: `http://127.0.0.1:11434/v1` |
+| `bedrock` | AWS credentials | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` |
+| `claude-code` | `claude` CLI on PATH | [Install](https://www.claude.com/product/claude-code) |
+| `kiro-cli` | Kiro IDE running | Used within Kiro sessions |
 
-4. **Ollama Server**: Checks if Ollama is running on `localhost:11434` → Uses Ollama
-
-5. **Error**: If none found, shows error message with setup instructions
-
-#### OpenAI Provider
-
-Use OpenAI's GPT models for AI recommendations:
-
-**Required Environment Variables:**
-- `OPENAI_API_KEY`: (required) Your OpenAI API key
-- Create one at https://platform.openai.com/api-keys -- Add credit before using
-
-**Example Configuration:**
-```bash
-# Basic OpenAI setup
-export OPENAI_API_KEY=sk-proj-...
-
-./run.sh --llm-provider openai prompt ~/projects/myapp "AppExpert" "How to implement auth?"
-```
-
-#### OpenRouter Provider
-
-Use OpenRouter to access multiple LLM providers through a single API:
-
-**Required Environment Variables:**
-- `OPENROUTER_API_KEY`: (required) Your OpenRouter API key
-- Get one for free at https://openrouter.ai/settings/keys -- Improved rate limits with one-time $10
-
-**Base URL:** `https://openrouter.ai/api/v1`
-
-**Supported Models:**
-- Use `--promptgen-model` and `--expert-model` to select the LLM models to invoke
-- Suitable free models are used by default: meta-llama/llama-3.3-70b-instruct:free, minimax/minimax-m2:free
-- See more available models at [openrouter.ai/models](https://openrouter.ai/models)
-
-**Example Configuration:**
-```bash
-# Basic OpenRouter setup
-export OPENROUTER_API_KEY=sk-or-v1-...
-
-./run.sh --llm-provider openrouter prompt ~/projects/myapp "AppExpert" "Optimize database queries"
-```
-
-#### Ollama Provider
-
-Use Ollama for local LLM inference with an OpenAI-compatible API:
-
-**Installation:**
-
-1. Download and install Ollama from [https://ollama.com/download](https://ollama.com/download)
-
-2. Install the default models from settings.py:
-   ```bash
-   # Install the expert model (for main recommendations)
-   ollama pull deepseek-coder-v2:16b
-   
-   # Install the promptgen model (for generating prompts from diffs)
-   ollama pull qwen2.5-coder:7b
-   ```
-
-3. Start the Ollama server (usually starts automatically after installation):
-   ```bash
-   ollama serve
-   ```
-
-**Configuration:**
-
-**Default Endpoint:** `http://127.0.0.1:11434/v1` (no configuration needed)
-
-**Override Endpoint:** Use `--base-url-override` flag if Ollama is running on a different host/port
-
-**Example Configurations:**
-
-```bash
-# Use default endpoint (recommended)
-./run.sh --llm-provider ollama prompt ~/projects/myapp "AppExpert" "Add caching layer"
-
-# Use custom endpoint (if Ollama is on a different host)
-./run.sh --llm-provider ollama --base-url-override http://192.168.1.100:11434/v1 \
-    prompt ~/projects/myapp "AppExpert" "Add caching layer"
-
-# Use with specific models
-./run.sh --llm-provider ollama \
-    --expert-model devstral:24b \
-    --promptgen-model llama3:8b \
-    prompt ~/projects/myapp "AppExpert" "Implement authentication"
-
-# Override endpoint for any OpenAI-compatible local LLM
-./run.sh --llm-provider openai --base-url-override http://localhost:8080/v1 \
-    prompt ~/projects/myapp "AppExpert" "Add feature"
-```
-
-**Supported Models:** See available models at [ollama.com/library](https://ollama.com/library)
-
-#### AWS Bedrock Provider
-
-Use AWS Bedrock's managed LLM services:
-
-**Requirements:**
-- Credentials from a billing-enabled AWS credentials and Bedrock access
-- Additional steps in the AWS Bedrock console may be required to opt into certain models
-
-**Required Environment Variables:**
-AWS credentials are required (configured via AWS CLI or environment variables):
-- `AWS_ACCESS_KEY_ID`: Your AWS access key
-- `AWS_SECRET_ACCESS_KEY`: Your AWS secret key
-- `AWS_REGION`: AWS region (e.g., `us-east-1`)
-
-**Example Configuration:**
-```bash
-export AWS_ACCESS_KEY_ID=your_access_key
-export AWS_SECRET_ACCESS_KEY=your_secret_key
-export AWS_REGION=us-east-1
-
-./run.sh --llm-provider bedrock prompt ~/projects/myapp "AppExpert" "Implement retry logic"
-```
-
-**Default Models:**
+**Default Models (Bedrock):**
 - **Prompt Generation**: `us.amazon.nova-lite-v1:0`
 - **Expert Analysis**: `global.anthropic.claude-sonnet-4-5-20250929-v1:0`
-- Use `--promptgen-model` and `--expert-model` to select diferent LLM models
 
-#### Claude Code Provider
-
-Use a Claude Pro/Max subscription for inference via Anthropic's CLI interface:
-
-**Requirements:**
-- Claude Code CLI must be installed and configured separately
-- The `claude` command must be available in your system PATH
-- https://www.claude.com/product/claude-code
-
-**Usage:**
-```bash
-# Confirm Claude CLI is available
-which claude
-
-./run.sh --llm-provider claude-code prompt /path/to/repo MyExpert "your question"
-```
-
-**Note:** This provider is primarily for users who already have the Claude Code CLI set up. Most users should prefer the other LLM providers.
-
-### Limits and Defaults
-
-- **Max commits**: 10,000 (configurable with `--max-commits`)
-- **Max diff size**: 100KB (larger diffs are truncated)
-- **Max embedding text**: 30KB
-- **AWS Region**: us-east-1 (configurable via `AWS_REGION` environment variable)
-
-### Filtering Options
-
-When indexing with subdirectories:
-```bash
-./run.sh populate /path/to/repo MyExpert src/main/ src/resources/
-```
-
-Only commits affecting files in those subdirectories will be indexed.
-
-When searching, filter by:
-- **Authors**: `--users john,jane` (comma-separated list)
-- **Files**: `--files src/main.py,tests/` (comma-separated paths/patterns)
-- **Max results**: `--max-changes 20` (number of results to return)
-
-## Architecture
-
-Expert Among Us uses a sophisticated multi-layered approach:
-
-1. **Dual-Source Indexing**: Seamlessly combines full commit history with current codebase state
-2. **AI-Powered Search**: Cross-encoder reranking dramatically improves result relevance
-3. **Smart Text Processing**: Automatic sanitization removes noise while preserving meaning
-4. **Multi-Collection Vector Database**: Separate collections for metadata, diffs, and files for optimal performance
-5. **Metadata Filtering**: Fast filtering by author, files, and timestamps using SQLite
-6. **Incremental Updates**: Only new commits are processed on subsequent runs
-7. **Diff Processing**: Code diffs are embedded for semantic code change search
+Use `--promptgen-model` and `--expert-model` to override.
 
 ## MCP Integration
 
-Expert Among Us provides a fully implemented MCP (Model Context Protocol) server, allowing AI assistants like Claude Desktop to query your codebase history directly. The MCP server gives AI assistants access to your expert indexes through four powerful tools.
+Expert Among Us provides a fully implemented MCP (Model Context Protocol) server, allowing AI assistants to query your codebase history directly.
 
 ### Available MCP Tools
 
-1. **list** - List all available experts with metadata (commit counts, time ranges, workspace paths)
-2. **import** - Import external experts via symlink (useful for team-shared or network-stored experts)
-3. **query** - Get raw commit details for manual analysis (complete messages, diffs, files, authors)
-4. **prompt** - Get AI-powered recommendations based on expert's historical patterns (recommended)
+1. **experts-list** - List all available experts with metadata
+2. **experts-import** - Import external experts via symlink
+3. **expert-query** - Get raw commit details for manual analysis
+4. **expert-prompt** - Get AI-powered recommendations based on expert's historical patterns
 
-### Setup Instructions
+### Starting the MCP Server
 
-#### Starting the MCP Server
-
-Use the provided run scripts to start the MCP server:
-
-**Linux/macOS:**
 ```bash
-./run-mcp.sh
+# With uvx (no install needed)
+uvx expert-among-us mcp
+
+# From a local clone
+uv run expert-among-us mcp
+
+# With options
+uvx expert-among-us --debug mcp --impostor
 ```
 
-**Windows (PowerShell):**
-```powershell
-.\run-mcp.ps1
-```
+### MCP Server CLI Arguments
 
-**Auto-Installation Feature:**
-The run scripts automatically check for the virtual environment. If `.venv` doesn't exist, they will run the GPU installation script (`install-gpu.sh` or `install-gpu.ps1`) to set up dependencies automatically.
+- `--data-dir`: Custom data directory location
+- `--impostor`: Enable impostor mode for all queries
+- `--debug`: Enable debug logging
+- `--llm-provider`: Choose LLM provider
+- `--embedding-provider`: Choose embedding provider (default: local)
+- `--max-response-tokens`: Maximum tokens for expert response (default: 4096)
+- `--prompt-timeout-seconds`: Maximum seconds for expert-prompt operations (default: no timeout)
 
 ### Configuration for MCP Clients
 
-Add Expert Among Us to your MCP client configuration. Use **absolute paths** for the command.
+#### Example: Claude Desktop (Linux/macOS)
 
-#### MCP Server CLI Arguments
-
-The MCP server supports optional CLI arguments that affect all queries:
-
-- `--data-dir`: Custom data directory location
-- `--impostor`: Enable impostor mode for all queries. Use this for repositories with poor commit message quality.
-- `--debug`: Enable debug logging to troubleshoot issues (writes logs to `~/.expert-among-us/logs/`)
-- `--llm-provider`: Choose LLM provider (auto-detects by default)
-- `--embedding-provider`: Choose embedding provider (default: local)
-- `--max-response-tokens`: Maximum tokens for expert response (default: 4096). Reduce to avoid MCP timeouts on slow connections.
-- `--prompt-timeout-seconds`: Maximum seconds for expert-prompt operations, including DB queries and LLM streaming (default: no timeout). Enforces hard time limits and returns partial responses with truncation message if exceeded.
-
-#### Example: Claude Desktop (Linux/macOS) + OpenAI
-
-Configuration file location: `~/Library/Application Support/Claude/claude_desktop_config.json`
+Config: `~/Library/Application Support/Claude/claude_desktop_config.json`
 
 ```json
 {
   "mcpServers": {
     "expert-among-us": {
-      "command": "/absolute/path/to/expert-among-us/run-mcp.sh",
+      "command": "uvx",
+      "args": ["expert-among-us", "mcp"],
       "timeout": 120,
-      "alwaysAllow":["list","prompt","query"],
+      "alwaysAllow": ["experts-list", "expert-prompt", "expert-query"],
       "env": {
         "OPENAI_API_KEY": "your-key-here"
       }
@@ -761,17 +483,18 @@ Configuration file location: `~/Library/Application Support/Claude/claude_deskto
 }
 ```
 
-#### Example: Claude Desktop (Windows) + AWS profile + debug logs
+#### Example: Claude Desktop (Windows)
 
-Configuration file location: `%APPDATA%\Claude\claude_desktop_config.json`
+Config: `%APPDATA%\Claude\claude_desktop_config.json`
 
 ```json
 {
   "mcpServers": {
     "expert-among-us": {
-      "command": "powershell -file C:\\absolute\\path\\to\\expert-among-us\\run-mcp.ps1 --debug",
+      "command": "uvx",
+      "args": ["expert-among-us", "--debug", "mcp"],
       "timeout": 120,
-      "alwaysAllow":["list","prompt","query"],
+      "alwaysAllow": ["experts-list", "expert-prompt", "expert-query"],
       "env": {
         "AWS_PROFILE": "your-profile-here"
       }
@@ -780,17 +503,16 @@ Configuration file location: `%APPDATA%\Claude\claude_desktop_config.json`
 }
 ```
 
-#### Example: With Impostor Mode Enabled
-
-For repositories with poor commit message quality, enable impostor mode:
+#### Example: With Impostor Mode
 
 ```json
 {
   "mcpServers": {
     "expert-among-us": {
-      "command": "/absolute/path/to/expert-among-us/run-mcp.sh --impostor",
+      "command": "uvx",
+      "args": ["expert-among-us", "mcp", "--impostor"],
       "timeout": 120,
-      "alwaysAllow":["list","prompt","query"],
+      "alwaysAllow": ["experts-list", "expert-prompt", "expert-query"],
       "env": {
         "OPENAI_API_KEY": "your-key-here"
       }
@@ -799,10 +521,29 @@ For repositories with poor commit message quality, enable impostor mode:
 }
 ```
 
+#### Example: Kiro MCP Configuration
+
+`.kiro/settings/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "expert-among-us": {
+      "command": "uvx",
+      "args": ["expert-among-us", "--data-dir", "/path/to/shared/experts", "mcp"],
+      "timeout": 120,
+      "autoApprove": ["experts-list", "expert-query", "expert-prompt"],
+      "env": {
+        "AWS_PROFILE": "your-profile-here"
+      }
+    }
+  }
+}
+```
+
 **Important Notes:**
-- Always use absolute paths in the `command` field
+- `uvx` handles Python installation and dependencies automatically
 - Set required environment variables in the `env` section
-- Add CLI arguments to the command as needed (e.g., `--debug`, `--impostor`)
 - Restart your MCP client after updating the configuration
 
 ## Development
@@ -810,24 +551,23 @@ For repositories with poor commit message quality, enable impostor mode:
 ### Running Tests
 
 ```bash
-# Run all tests
-pytest
+uv run pytest
 
-# Run with coverage
-pytest --cov=expert_among_us --cov-report=html
+# With coverage
+uv run pytest --cov=expert_among_us --cov-report=html
 ```
 
 ### Code Quality
 
 ```bash
 # Format code
-black src/ tests/
+uv run black src/ tests/
 
 # Lint
-ruff check src/ tests/
+uv run ruff check src/ tests/
 
 # Type checking
-mypy src/
+uv run mypy src/
 ```
 
 ## License
