@@ -125,7 +125,7 @@ def invalid_project_names(draw):
 
 
 # Strategy for workspace paths (as strings for DB tests)
-workspace_paths = st.text(
+project_roots = st.text(
     alphabet="abcdefghijklmnopqrstuvwxyz0123456789/_-.",
     min_size=1,
     max_size=100,
@@ -133,17 +133,6 @@ workspace_paths = st.text(
 
 # Strategy for VCS types
 vcs_types = st.sampled_from(["git", "p4"])
-
-# Strategy for subdirectory lists
-subdirs_strategy = st.lists(
-    st.text(
-        alphabet="abcdefghijklmnopqrstuvwxyz0123456789/_-.",
-        min_size=1,
-        max_size=30,
-    ),
-    min_size=0,
-    max_size=5,
-)
 
 
 # --- Property 3: Project Name Validation (simple unit tests) ---
@@ -160,7 +149,7 @@ class TestProperty3ProjectNameValidation:
 
     def test_valid_names_accepted(self):
         """Valid names are accepted."""
-        for name in ["my-project", "_sharpmake_", "Repo123", "a", "-leading", "under_score"]:
+        for name in ["my-project", "_module_", "Repo123", "a", "-leading", "under_score"]:
             result = _validate_identifier_name(name, "Project name")
             assert result == name
 
@@ -186,8 +175,8 @@ class TestProperty14CompositePKUniqueness:
 
     @given(
         project_name=valid_project_names(),
-        workspace1=workspace_paths,
-        workspace2=workspace_paths,
+        workspace1=project_roots,
+        workspace2=project_roots,
         vcs1=vcs_types,
         vcs2=vcs_types,
     )
@@ -201,8 +190,7 @@ class TestProperty14CompositePKUniqueness:
         db.create_project(
             expert_name="prop_test_expert",
             project_name=project_name,
-            workspace_path=workspace1,
-            subdirs=[],
+            project_root=workspace1,
             vcs_type=vcs1,
         )
 
@@ -210,8 +198,7 @@ class TestProperty14CompositePKUniqueness:
         db.create_project(
             expert_name="prop_test_expert",
             project_name=project_name,
-            workspace_path=workspace2,
-            subdirs=["src"],
+            project_root=workspace2,
             vcs_type=vcs2,
         )
 
@@ -219,14 +206,14 @@ class TestProperty14CompositePKUniqueness:
         project = db.get_project("prop_test_expert", project_name)
         assert project is not None
         assert project["name"] == project_name
-        assert project["workspace_path"] == workspace1
+        assert project["project_root"] == workspace1
         assert project["vcs_type"] == vcs1
 
     @given(
         name1=valid_project_names(),
         name2=valid_project_names(),
-        workspace1=workspace_paths,
-        workspace2=workspace_paths,
+        workspace1=project_roots,
+        workspace2=project_roots,
         vcs1=vcs_types,
         vcs2=vcs_types,
     )
@@ -241,15 +228,13 @@ class TestProperty14CompositePKUniqueness:
         db.create_project(
             expert_name="prop_test_expert",
             project_name=name1,
-            workspace_path=workspace1,
-            subdirs=[],
+            project_root=workspace1,
             vcs_type=vcs1,
         )
         db.create_project(
             expert_name="prop_test_expert",
             project_name=name2,
-            workspace_path=workspace2,
-            subdirs=[],
+            project_root=workspace2,
             vcs_type=vcs2,
         )
 
@@ -268,8 +253,8 @@ class TestProperty15ProjectCRUDRoundTrip:
     """
     Property 15: Project CRUD Round-Trip
 
-    For any valid project configuration (name, expert_name, workspace_path,
-    subdirs, vcs_type), creating the project and then retrieving it should
+    For any valid project configuration (name, expert_name, project_root,
+    vcs_type), creating the project and then retrieving it should
     return all stored fields with their original values.
 
     **Validates: Requirements 1.3, 7.2, 7.3**
@@ -277,25 +262,19 @@ class TestProperty15ProjectCRUDRoundTrip:
 
     @given(
         project_name=valid_project_names(),
-        workspace_path=workspace_paths,
-        subdirs=subdirs_strategy,
+        project_root=project_roots,
         vcs_type=vcs_types,
     )
     @settings(max_examples=50)
-    def test_create_then_retrieve_matches(self, project_name, workspace_path, subdirs, vcs_type):
+    def test_create_then_retrieve_matches(self, project_name, project_root, vcs_type):
         """Creating a project then retrieving it returns the same values."""
-        # Filter out subdirs with commas since they're stored comma-separated
-        # and would be split incorrectly on retrieval
-        subdirs = [s for s in subdirs if "," not in s]
-
         db = _get_shared_db()
         _reset_db(db)
 
         db.create_project(
             expert_name="prop_test_expert",
             project_name=project_name,
-            workspace_path=workspace_path,
-            subdirs=subdirs,
+            project_root=project_root,
             vcs_type=vcs_type,
         )
 
@@ -304,12 +283,8 @@ class TestProperty15ProjectCRUDRoundTrip:
         assert retrieved is not None
         assert retrieved["name"] == project_name
         assert retrieved["expert_name"] == "prop_test_expert"
-        assert retrieved["workspace_path"] == workspace_path
+        assert retrieved["project_root"] == project_root
         assert retrieved["vcs_type"] == vcs_type
-        # subdirs round-trip: stored as comma-separated, retrieved as list
-        # Empty strings in subdirs get filtered out on retrieval
-        expected_subdirs = [s.strip() for s in subdirs if s.strip()]
-        assert retrieved["subdirs"] == expected_subdirs
         # Default values
         assert retrieved["has_vector_metadata"] is True
         assert retrieved["last_processed_commit_hash"] is None

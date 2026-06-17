@@ -29,27 +29,26 @@ class Git(VCSProvider):
         # Design:
         # - _hash_cache: ordered list of commit hashes (oldest → newest)
         # - _hash_index: mapping commit_hash → index in _hash_cache
-        # - _hash_cache_key: (workspace_path, subdirs_tuple)
+        # - _hash_cache_key: project_root
         #
         # get_commits_after() becomes stateless w.r.t. position:
         # - Indexer (or caller) provides after_hash as the cursor
         # - We look up after_hash in _hash_index to find the next slice
         self._hash_cache: list[str] | None = None
         self._hash_index: dict[str, int] | None = None
-        self._hash_cache_key: tuple | None = None  # (workspace_path, subdirs_tuple)
+        self._hash_cache_key: str | None = None  # project_root
     
     @staticmethod
-    def detect(workspace_path: str) -> bool:
-        """Detect if this workspace uses Git."""
-        git_dir = Path(workspace_path) / ".git"
+    def detect(project_root: str) -> bool:
+        """Detect if this project uses Git."""
+        git_dir = Path(project_root) / ".git"
         return git_dir.exists() and git_dir.is_dir()
     
     def get_commits_after(
         self,
-        workspace_path: str,
+        project_root: str,
         after_hash: str | None,
         batch_size: int,
-        subdirs: Optional[list[str]] = None,
         progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> list[Changelist]:
         """Get commits after a specific hash in chronological order (oldest → newest).
@@ -57,8 +56,8 @@ class Git(VCSProvider):
         This is the primary commit traversal method used by the unified indexer.
 
         The implementation uses a two-phase strategy for efficiency and correctness:
-        - Phase 1 (once per (workspace_path, after_hash, subdirs) tuple): fetch all
-          matching commit hashes in chronological order and cache them.
+        - Phase 1 (once per project_root): fetch all matching commit hashes in
+          chronological order and cache them.
         - Phase 2 (per call): slice the next `batch_size` hashes from the cache and
           fetch full commit details only for those hashes.
 
@@ -68,16 +67,14 @@ class Git(VCSProvider):
         if batch_size == 0:
             return []
 
-        # Normalize subdirs for cache key (after_hash is NOT part of the key;
+        # The cache is keyed by project_root (after_hash is NOT part of the key;
         # it is treated as a cursor into the global ordered sequence).
-        subdirs_tuple = tuple(sorted(subdirs)) if subdirs else None
-        cache_key = (workspace_path, subdirs_tuple)
+        cache_key = project_root
 
         # (Re)build cache if it does not exist or the parameters changed
         if self._hash_cache is None or self._hash_cache_key != cache_key:
             self._hash_cache = self._fetch_all_hashes(
-                workspace_path=workspace_path,
-                subdirs=subdirs,
+                project_root=project_root,
             )
             # Build index for O(1) lookup of positions
             self._hash_index = {
@@ -89,19 +86,19 @@ class Git(VCSProvider):
                 from expert_among_us.utils.progress import console as progress_console
                 progress_console.print(
                     f"[dim]Git.get_commits_after: cached {len(self._hash_cache)} commits "
-                    f"(after={after_hash or 'START'}, subdirs={subdirs_tuple})[/dim]"
+                    f"(after={after_hash or 'START'})[/dim]"
                 )
 
         # Determine starting index based on after_hash cursor
         if after_hash:
-            # If after_hash is unknown for this (workspace_path, subdirs) view,
+            # If after_hash is unknown for this project_root view,
             # validate whether it's a real commit or truly invalid.
             if not self._hash_index:
                 return []
             start_idx = self._hash_index.get(after_hash)
             if start_idx is None:
                 # Hash not in our cache - validate it's a real commit to catch user errors
-                validate_cmd = ["git", "-C", workspace_path, "cat-file", "-e", after_hash]
+                validate_cmd = ["git", "-C", project_root, "cat-file", "-e", after_hash]
                 validate_result = subprocess.run(
                     validate_cmd,
                     capture_output=True,
@@ -135,9 +132,8 @@ class Git(VCSProvider):
         # Fetch full commit details for this batch only
         # Progress callback is handled inside _fetch_commits_by_hashes via sub-batching
         changelists = self._fetch_commits_by_hashes(
-            workspace_path=workspace_path,
+            project_root=project_root,
             hashes=batch_hashes,
-            subdirs=subdirs,
             progress_callback=progress_callback,
         )
 
@@ -151,11 +147,10 @@ class Git(VCSProvider):
 
     def _fetch_all_hashes(
         self,
-        workspace_path: str,
-        subdirs: Optional[list[str]] = None,
+        project_root: str,
     ) -> list[str]:
         """Fetch all commit hashes in chronological order (oldest → newest) for the
-        given workspace/subdir filter.
+        given project root.
 
         This is a lightweight operation (hashes only) and is used to build a stable,
         contiguous commit sequence for pagination.
@@ -163,16 +158,12 @@ class Git(VCSProvider):
         cmd = [
             "git",
             "-C",
-            workspace_path,
+            project_root,
             "log",
             "--no-merges",
             "--reverse",
             "--format=%H",
         ]
-
-        if subdirs:
-            cmd.append("--")
-            cmd.extend(subdirs)
 
         if DebugLogger.is_enabled():
             cmd_str = " ".join(str(part) for part in cmd)
@@ -205,9 +196,8 @@ class Git(VCSProvider):
 
     def _fetch_commits_by_hashes(
         self,
-        workspace_path: str,
+        project_root: str,
         hashes: list[str],
-        subdirs: Optional[list[str]] = None,
         progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> list[Changelist]:
         """Fetch full commit details using sub-batching for stability.
@@ -216,9 +206,8 @@ class Git(VCSProvider):
         timeouts and memory issues with large commit sets.
         
         Args:
-            workspace_path: Path to git repository
+            project_root: Path to git repository
             hashes: List of commit hashes to fetch
-            subdirs: Optional subdirectories to filter by
             progress_callback: Optional callback(current, total) for progress updates
             
         Returns:
@@ -237,9 +226,8 @@ class Git(VCSProvider):
             
             try:
                 batch_changelists = self._fetch_single_commit_batch(
-                    workspace_path=workspace_path,
+                    project_root=project_root,
                     hashes=batch_hashes,
-                    subdirs=subdirs,
                     embed_diffs=self._settings.embed_diffs,
                 )
                 all_changelists.extend(batch_changelists)
@@ -263,9 +251,8 @@ class Git(VCSProvider):
     
     def _fetch_single_commit_batch(
         self,
-        workspace_path: str,
+        project_root: str,
         hashes: list[str],
-        subdirs: Optional[list[str]] = None,
         embed_diffs: bool = True,
     ) -> list[Changelist]:
         """Fetch full commit details for a single batch of commits.
@@ -286,7 +273,7 @@ class Git(VCSProvider):
         meta_cmd = [
             "git",
             "-C",
-            workspace_path,
+            project_root,
             "log",
             "--no-merges",
             "--pretty=format:%H|%an|%ae|%at|%s",
@@ -332,17 +319,13 @@ class Git(VCSProvider):
             diff_cmd = [
                 "git",
                 "-C",
-                workspace_path,
+                project_root,
                 "show",
                 "--no-merges",
                 "--format=commit %H",
                 "--patch",
             ]
             diff_cmd.extend(hashes)
-            
-            # Filter diffs to only include files in subdirs (if specified)
-            if subdirs:
-                diff_cmd.extend(["--"] + subdirs)
 
             if DebugLogger.is_enabled():
                 from expert_among_us.utils.progress import console as progress_console
@@ -387,17 +370,13 @@ class Git(VCSProvider):
         files_cmd = [
             "git",
             "-C",
-            workspace_path,
+            project_root,
             "show",
             "--no-merges",
             "--name-status",
             "--format=commit %H",
         ]
         files_cmd.extend(hashes)
-        
-        # Filter files to only include those in subdirs (if specified)
-        if subdirs:
-            files_cmd.extend(["--"] + subdirs)
 
         if DebugLogger.is_enabled():
             from expert_among_us.utils.progress import console as progress_console
@@ -507,15 +486,10 @@ class Git(VCSProvider):
     
     def get_latest_commit_time(
         self,
-        workspace_path: str,
-        subdirs: Optional[list[str]] = None,
+        project_root: str,
     ) -> Optional[datetime]:
         """Get the timestamp of the most recent commit."""
-        cmd = ["git", "-C", workspace_path, "log", "-1", "--format=%at"]
-        
-        if subdirs:
-            cmd.append("--")
-            cmd.extend(subdirs)
+        cmd = ["git", "-C", project_root, "log", "-1", "--format=%at"]
         
         # Use errors='replace' to handle non-UTF-8 characters gracefully
         result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
@@ -528,29 +502,23 @@ class Git(VCSProvider):
 
     def get_total_commit_count(
         self,
-        workspace_path: str,
-        subdirs: Optional[list[str]] = None,
+        project_root: str,
     ) -> int:
         """Return total number of non-merge commits considered by this provider.
 
         Semantics:
         - Matches get_commits_after(): excludes merge commits via --no-merges.
-        - When subdirs is provided, restricts to commits that touch those paths.
         - Returns 0 on any git error.
         """
         cmd = [
             "git",
             "-C",
-            workspace_path,
+            project_root,
             "rev-list",
             "--all",
             "--no-merges",
             "--count",
         ]
-
-        if subdirs:
-            cmd.append("--")
-            cmd.extend(subdirs)
 
         result = subprocess.run(
             cmd,
@@ -570,7 +538,7 @@ class Git(VCSProvider):
     
     def get_file_content_at_commit(
         self,
-        workspace_path: str,
+        project_root: str,
         file_path: str,
         commit_hash: str,
     ) -> Optional[str]:
@@ -580,7 +548,7 @@ class Git(VCSProvider):
         for backward compatibility and to preserve existing semantics.
 
         Args:
-            workspace_path: Path to git repository
+            project_root: Path to git repository
             file_path: Relative path to file
             commit_hash: Git commit hash
 
@@ -588,7 +556,7 @@ class Git(VCSProvider):
             File content as string, or None if file doesn't exist or is binary
         """
         results = self.get_files_content_at_commit(
-            workspace_path=workspace_path,
+            project_root=project_root,
             file_paths=[file_path],
             commit_hash=commit_hash,
         )
@@ -596,7 +564,7 @@ class Git(VCSProvider):
 
     def get_files_content_at_commit(
         self,
-        workspace_path: str,
+        project_root: str,
         file_paths: list[str],
         commit_hash: str,
         progress_callback: Optional[Callable[[int, int], None]] = None,
@@ -639,7 +607,7 @@ class Git(VCSProvider):
         refs: list[str] = [f"{commit_hash}:{p}" for p in unique_paths]
 
         # Start git cat-file --batch once; use binary mode to faithfully handle all content.
-        cmd = ["git", "-C", workspace_path, "cat-file", "--batch"]
+        cmd = ["git", "-C", project_root, "cat-file", "--batch"]
 
         if DebugLogger.is_enabled():
             from expert_among_us.utils.progress import console as progress_console
@@ -772,25 +740,19 @@ class Git(VCSProvider):
     
     def get_tracked_files_at_commit(
         self,
-        workspace_path: str,
+        project_root: str,
         commit_hash: str,
-        subdirs: Optional[list[str]] = None,
     ) -> list[str]:
         """Get list of tracked files at a specific commit.
 
         Args:
-            workspace_path: Path to git repository.
+            project_root: Path to git repository.
             commit_hash: Git commit hash.
-            subdirs: Optional subdirectories to filter by.
 
         Returns:
-            List of file paths (relative to workspace root) tracked at the commit.
+            List of file paths (relative to the project root) tracked at the commit.
         """
-        cmd = ["git", "-C", workspace_path, "ls-tree", "-r", "--name-only", commit_hash]
-
-        if subdirs:
-            cmd.append("--")
-            cmd.extend(subdirs)
+        cmd = ["git", "-C", project_root, "ls-tree", "-r", "--name-only", commit_hash]
 
         if DebugLogger.is_enabled():
             from expert_among_us.utils.progress import console as progress_console

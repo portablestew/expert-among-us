@@ -22,33 +22,31 @@ class VCSProvider(ABC):
 
     @staticmethod
     @abstractmethod
-    def detect(workspace_path: str) -> bool:
-        """Detect if this VCS is used in the given workspace.
+    def detect(project_root: str) -> bool:
+        """Detect if this VCS is used at the given project root.
         
         Args:
-            workspace_path: Path to the workspace directory to check
+            project_root: Path to the project root directory to check
             
         Returns:
-            True if this VCS is detected in the workspace, False otherwise
+            True if this VCS is detected at the project root, False otherwise
         """
         pass
 
     @abstractmethod
     def get_commits_after(
         self,
-        workspace_path: str,
+        project_root: str,
         after_hash: str | None,
         batch_size: int,
-        subdirs: Optional[list[str]] = None,
         progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> list[Changelist]:
         """Get commits after a specific hash in chronological order (oldest → newest).
 
         Args:
-            workspace_path: Path to the workspace/repository
+            project_root: Path to the project root (the indexed directory)
             after_hash: Get commits after this hash (None = from beginning)
             batch_size: Maximum number of commits to return
-            subdirs: Optional list of subdirectories to filter commits by
             progress_callback: Optional callback(current, total) called during fetch.
                               For batched operations, called after each sub-batch.
                               For fast operations, called once at completion.
@@ -61,33 +59,31 @@ class VCSProvider(ABC):
     @abstractmethod
     def get_tracked_files_at_commit(
         self,
-        workspace_path: str,
+        project_root: str,
         commit_hash: str,
-        subdirs: Optional[list[str]] = None,
     ) -> list[str]:
         """Get list of tracked files at a specific commit.
 
         Args:
-            workspace_path: Path to the workspace/repository
+            project_root: Path to the project root (the indexed directory)
             commit_hash: Commit hash to inspect
-            subdirs: Optional list of subdirectories to filter by
 
         Returns:
-            List of file paths (relative to workspace root) tracked at the commit
+            List of file paths (relative to the project root) tracked at the commit
         """
         pass
 
     @abstractmethod
     def get_file_content_at_commit(
         self,
-        workspace_path: str,
+        project_root: str,
         file_path: str,
         commit_hash: str,
     ) -> Optional[str]:
         """Get file content at a specific commit.
 
         Args:
-            workspace_path: Path to the workspace/repository
+            project_root: Path to the project root (the indexed directory)
             file_path: Relative path to file
             commit_hash: Commit hash to read from
 
@@ -99,7 +95,7 @@ class VCSProvider(ABC):
     @abstractmethod
     def get_files_content_at_commit(
         self,
-        workspace_path: str,
+        project_root: str,
         file_paths: list[str],
         commit_hash: str,
         progress_callback: Optional[Callable[[int, int], None]] = None,
@@ -107,7 +103,7 @@ class VCSProvider(ABC):
         """Get content for multiple files at a specific commit (batched operation).
 
         Args:
-            workspace_path: Path to the workspace/repository
+            project_root: Path to the project root (the indexed directory)
             file_paths: List of relative file paths to fetch
             commit_hash: Commit hash to read from
             progress_callback: Optional callback(current, total) called after each batch.
@@ -128,15 +124,12 @@ class VCSProvider(ABC):
     @abstractmethod
     def get_latest_commit_time(
         self,
-        workspace_path: str,
-        subdirs: Optional[list[str]] = None,
+        project_root: str,
     ) -> Optional[datetime]:
         """Get the timestamp of the most recent commit.
         
         Args:
-            workspace_path: Path to the workspace/repository
-            subdirs: Optional list of subdirectories to filter commits by.
-                    Only commits that touched files in these directories will be considered.
+            project_root: Path to the project root (the indexed directory)
             
         Returns:
             Datetime of the most recent commit, or None if no commits found
@@ -146,19 +139,17 @@ class VCSProvider(ABC):
     @abstractmethod
     def get_total_commit_count(
         self,
-        workspace_path: str,
-        subdirs: Optional[list[str]] = None,
+        project_root: str,
     ) -> int:
         """Return the total number of commits to consider for indexing.
 
         Implementations should:
         - Count only commits that match the same semantics as get_commits_after()
-          (e.g. exclude merges, respect subdir filters if supported).
+          (e.g. exclude merges).
         - Return 0 if the repository has no matching commits or cannot be read.
 
         Args:
-            workspace_path: Path to the workspace / repository root.
-            subdirs: Optional list of subdirectories to filter by.
+            project_root: Path to the project root (the indexed directory).
 
         Returns:
             Integer count of commits.

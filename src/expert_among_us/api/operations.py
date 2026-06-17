@@ -257,7 +257,7 @@ def list_experts(
                     project_infos.append(ProjectInfo(
                         name=proj['name'],
                         vcs_type=proj['vcs_type'],
-                        workspace_path=proj['workspace_path'],
+                        project_root=proj['project_root'],
                         commit_count=commit_count,
                         last_indexed_at=proj_indexed_at,
                         first_processed_commit_hash=proj.get('first_processed_commit_hash'),

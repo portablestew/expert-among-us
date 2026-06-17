@@ -38,11 +38,11 @@ def mock_vcs():
                 DummyCommit("c3", base + datetime.timedelta(days=2), ["file3.py"], diff="diff3"),
             ]
 
-        def get_total_commit_count(self, workspace_path, subdirs=None):
+        def get_total_commit_count(self, project_root):
             """Return total commits for progress estimation (used by Indexer.index_unified)."""
             return len(self._commits)
 
-        def get_commits_after(self, workspace_path, after_hash, batch_size, subdirs=None, progress_callback=None):
+        def get_commits_after(self, project_root, after_hash, batch_size, progress_callback=None):
             if after_hash is None:
                 start_idx = 0
             else:
@@ -57,18 +57,18 @@ def mock_vcs():
             
             return batch
 
-        def get_tracked_files_at_commit(self, workspace_path, revision_id, subdirs=None):
+        def get_tracked_files_at_commit(self, project_root, revision_id):
             # All files reported by the matching commit exist
             for c in self._commits:
                 if c.id == revision_id:
                     return c.files
             return []
 
-        def get_file_content_at_commit(self, workspace_path, file_path, revision_id):
+        def get_file_content_at_commit(self, project_root, file_path, revision_id):
             # Simple deterministic content to avoid being treated as binary
             return f"# {revision_id}::{file_path}\nprint('ok')\n"
 
-        def get_files_content_at_commit(self, workspace_path, file_paths, commit_hash, progress_callback=None):
+        def get_files_content_at_commit(self, project_root, file_paths, commit_hash, progress_callback=None):
             """Mock implementation of batched file reading method."""
             # Return mock content for each requested file
             results = {}
@@ -131,7 +131,7 @@ def mock_embedder():
 def expert_config(tmp_path):
     return {
         "name": "TestExpert",
-        "workspace_path": str(tmp_path),
+        "project_root": str(tmp_path),
         "max_commits": 10,
     }
 
@@ -142,8 +142,7 @@ def indexer(expert_config, mock_vcs, mock_metadata_db, mock_vector_db, mock_embe
     project_config = {
         "name": "test-project",
         "expert_name": "TestExpert",
-        "workspace_path": expert_config["workspace_path"],
-        "subdirs": [],
+        "project_root": expert_config["project_root"],
         "vcs_type": "git",
         "has_vector_metadata": True,
     }

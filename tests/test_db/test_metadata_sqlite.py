@@ -36,9 +36,9 @@ def temp_db():
             db.create_expert("test_expert")
             cursor = db.conn.cursor()
             cursor.execute("""
-                INSERT OR IGNORE INTO projects (expert_name, name, workspace_path, subdirs, vcs_type)
-                VALUES (?, ?, ?, ?, ?)
-            """, ("test_expert", "test-project", "/path/to/repo", "", "git"))
+                INSERT OR IGNORE INTO projects (expert_name, name, project_root, vcs_type)
+                VALUES (?, ?, ?, ?)
+            """, ("test_expert", "test-project", "/path/to/repo", "git"))
             db.conn.commit()
             yield db
 
@@ -392,13 +392,13 @@ class TestQueryOperations:
         # Create additional projects needed for this test
         cursor = temp_db.conn.cursor()
         cursor.execute("""
-            INSERT OR IGNORE INTO projects (expert_name, name, workspace_path, subdirs, vcs_type)
-            VALUES (?, ?, ?, ?, ?)
-        """, ("test_expert", "payment-service", "/path/to/payment", "", "git"))
+            INSERT OR IGNORE INTO projects (expert_name, name, project_root, vcs_type)
+            VALUES (?, ?, ?, ?)
+        """, ("test_expert", "payment-service", "/path/to/payment", "git"))
         cursor.execute("""
-            INSERT OR IGNORE INTO projects (expert_name, name, workspace_path, subdirs, vcs_type)
-            VALUES (?, ?, ?, ?, ?)
-        """, ("test_expert", "user-service", "/path/to/users", "", "git"))
+            INSERT OR IGNORE INTO projects (expert_name, name, project_root, vcs_type)
+            VALUES (?, ?, ?, ?)
+        """, ("test_expert", "user-service", "/path/to/users", "git"))
         temp_db.conn.commit()
 
         changelists = [
@@ -526,8 +526,7 @@ class TestProjectOperations:
         temp_db.create_project(
             expert_name="test_expert",
             project_name="my-project",
-            workspace_path="/repos/my-project",
-            subdirs=["src", "tests"],
+            project_root="/repos/my-project",
             vcs_type="git"
         )
         
@@ -535,26 +534,23 @@ class TestProjectOperations:
         assert project is not None
         assert project["name"] == "my-project"
         assert project["expert_name"] == "test_expert"
-        assert project["workspace_path"] == "/repos/my-project"
-        assert project["subdirs"] == ["src", "tests"]
+        assert project["project_root"] == "/repos/my-project"
         assert project["vcs_type"] == "git"
         assert project["has_vector_metadata"] is True
         assert project["last_processed_commit_hash"] is None
         assert project["first_processed_commit_hash"] is None
 
-    def test_create_project_empty_subdirs(self, temp_db):
-        """Verify that a project with no subdirs is handled correctly."""
+    def test_create_project_p4(self, temp_db):
+        """Verify that a p4 project can be created and stored."""
         temp_db.create_project(
             expert_name="test_expert",
-            project_name="no-subdirs",
-            workspace_path="/repos/no-subdirs",
-            subdirs=[],
+            project_name="p4-project",
+            project_root="/repos/p4-project",
             vcs_type="p4"
         )
         
-        project = temp_db.get_project("test_expert", "no-subdirs")
+        project = temp_db.get_project("test_expert", "p4-project")
         assert project is not None
-        assert project["subdirs"] == []
         assert project["vcs_type"] == "p4"
 
     def test_create_project_idempotent(self, temp_db):
@@ -562,23 +558,21 @@ class TestProjectOperations:
         temp_db.create_project(
             expert_name="test_expert",
             project_name="idempotent-proj",
-            workspace_path="/repos/first",
-            subdirs=[],
+            project_root="/repos/first",
             vcs_type="git"
         )
         # Second creation with different path should be ignored
         temp_db.create_project(
             expert_name="test_expert",
             project_name="idempotent-proj",
-            workspace_path="/repos/second",
-            subdirs=["new-dir"],
+            project_root="/repos/second",
             vcs_type="p4"
         )
         
         project = temp_db.get_project("test_expert", "idempotent-proj")
         assert project is not None
         # Original values preserved due to INSERT OR IGNORE
-        assert project["workspace_path"] == "/repos/first"
+        assert project["project_root"] == "/repos/first"
         assert project["vcs_type"] == "git"
 
     def test_get_project_nonexistent(self, temp_db):
@@ -591,8 +585,7 @@ class TestProjectOperations:
         temp_db.create_project(
             expert_name="test_expert",
             project_name="scoped-proj",
-            workspace_path="/repos/scoped",
-            subdirs=[],
+            project_root="/repos/scoped",
             vcs_type="git"
         )
         # Different expert should not find this project
@@ -607,9 +600,9 @@ class TestProjectOperations:
 
     def test_list_projects_multiple(self, temp_db):
         """Verify that list_projects returns all projects for an expert."""
-        temp_db.create_project("test_expert", "alpha", "/repos/alpha", [], "git")
-        temp_db.create_project("test_expert", "beta", "/repos/beta", ["src"], "p4")
-        temp_db.create_project("test_expert", "gamma", "/repos/gamma", [], "git")
+        temp_db.create_project("test_expert", "alpha", "/repos/alpha", "git")
+        temp_db.create_project("test_expert", "beta", "/repos/beta", "p4")
+        temp_db.create_project("test_expert", "gamma", "/repos/gamma", "git")
         
         projects = temp_db.list_projects("test_expert")
         # Should include the fixture project + 3 new ones
@@ -620,8 +613,8 @@ class TestProjectOperations:
 
     def test_list_projects_ordered_by_name(self, temp_db):
         """Verify that list_projects returns projects in alphabetical order."""
-        temp_db.create_project("test_expert", "zebra", "/repos/z", [], "git")
-        temp_db.create_project("test_expert", "apple", "/repos/a", [], "git")
+        temp_db.create_project("test_expert", "zebra", "/repos/z", "git")
+        temp_db.create_project("test_expert", "apple", "/repos/a", "git")
         
         projects = temp_db.list_projects("test_expert")
         names = [p["name"] for p in projects]
@@ -629,7 +622,7 @@ class TestProjectOperations:
 
     def test_update_project_last_processed(self, temp_db):
         """Verify that update_project_last_processed updates commit hash and timestamps."""
-        temp_db.create_project("test_expert", "indexed-proj", "/repos/indexed", [], "git")
+        temp_db.create_project("test_expert", "indexed-proj", "/repos/indexed", "git")
         
         temp_db.update_project_last_processed("test_expert", "indexed-proj", "abc123")
         
@@ -640,7 +633,7 @@ class TestProjectOperations:
 
     def test_update_project_last_processed_preserves_first_hash(self, temp_db):
         """Verify that first_processed_commit_hash is only set once."""
-        temp_db.create_project("test_expert", "multi-index", "/repos/multi", [], "git")
+        temp_db.create_project("test_expert", "multi-index", "/repos/multi", "git")
         
         temp_db.update_project_last_processed("test_expert", "multi-index", "first_hash")
         temp_db.update_project_last_processed("test_expert", "multi-index", "second_hash")
@@ -651,7 +644,7 @@ class TestProjectOperations:
 
     def test_get_project_commit_count_empty(self, temp_db):
         """Verify that commit count is 0 for a project with no changelists."""
-        temp_db.create_project("test_expert", "empty-proj", "/repos/empty", [], "git")
+        temp_db.create_project("test_expert", "empty-proj", "/repos/empty", "git")
         
         count = temp_db.get_project_commit_count("test_expert", "empty-proj")
         assert count == 0
@@ -679,8 +672,8 @@ class TestProjectOperations:
 
     def test_get_project_commit_count_scoped_to_project(self, temp_db):
         """Verify that commit count is scoped to the specific project."""
-        temp_db.create_project("test_expert", "proj-a", "/repos/a", [], "git")
-        temp_db.create_project("test_expert", "proj-b", "/repos/b", [], "git")
+        temp_db.create_project("test_expert", "proj-a", "/repos/a", "git")
+        temp_db.create_project("test_expert", "proj-b", "/repos/b", "git")
         
         changelists_a = [
             Changelist(
@@ -716,7 +709,7 @@ class TestProjectOperations:
 
     def test_delete_project(self, temp_db):
         """Verify that deleting a project removes it from the database."""
-        temp_db.create_project("test_expert", "to-delete", "/repos/del", [], "git")
+        temp_db.create_project("test_expert", "to-delete", "/repos/del", "git")
         
         temp_db.delete_project("test_expert", "to-delete")
         
@@ -725,7 +718,7 @@ class TestProjectOperations:
 
     def test_delete_project_cascades_changelists(self, temp_db):
         """Verify that deleting a project removes its changelists."""
-        temp_db.create_project("test_expert", "cascade-proj", "/repos/cascade", [], "git")
+        temp_db.create_project("test_expert", "cascade-proj", "/repos/cascade", "git")
         
         changelists = [
             Changelist(
@@ -754,8 +747,8 @@ class TestProjectOperations:
 
     def test_delete_project_isolation(self, temp_db):
         """Verify that deleting a project does not affect other projects."""
-        temp_db.create_project("test_expert", "keep-proj", "/repos/keep", [], "git")
-        temp_db.create_project("test_expert", "delete-proj", "/repos/del", [], "git")
+        temp_db.create_project("test_expert", "keep-proj", "/repos/keep", "git")
+        temp_db.create_project("test_expert", "delete-proj", "/repos/del", "git")
         
         keep_cl = Changelist(
             id="keep_cl",

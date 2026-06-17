@@ -57,7 +57,7 @@ class Perforce(VCSProvider):
     Architecture:
     - Changelist cache (_cl_cache): ordered list of CL numbers (oldest → newest)
     - Index (_cl_index): mapping CL number → position in cache
-    - Cache key (_cl_cache_key): (workspace_path, subdirs_tuple) for invalidation
+    - Cache key (_cl_cache_key): project_root for invalidation
     
     This mirrors the Git provider's caching strategy for efficient pagination.
     """
@@ -75,18 +75,23 @@ class Perforce(VCSProvider):
         # Design matches Git._hash_cache pattern:
         # - _cl_cache: ordered list of CL numbers (oldest → newest)
         # - _cl_index: mapping cl_number → index in _cl_cache
-        # - _cl_cache_key: (workspace_path, subdirs_tuple)
+        # - _cl_cache_key: project_root
         self._cl_cache: list[str] | None = None
         self._cl_index: dict[str, int] | None = None
-        self._cl_cache_key: tuple | None = None
+        self._cl_cache_key: str | None = None
         
         # Cache for all user workspaces (shared between detect() and _get_workspace_mapping())
         # List of dicts with keys: host, root, client, depot_root
         self._user_workspaces: list[dict] | None = None
         
-        # Cache for depot root → local root mapping (workspace_path → (depot_root, local_root))
+        # Cache for depot root → local root mapping (project_root → (depot_root, local_root))
         # This avoids calling p4 where for every file conversion
         self._workspace_mapping_cache: dict[str, tuple[str, str]] = {}
+
+        # Cache for the depot prefix corresponding to a project_root
+        # (project_root → "//depot/.../<project-subpath>"). Used to convert
+        # depot paths into project-root-relative paths without recomputing per file.
+        self._project_depot_prefix_cache: dict[str, Optional[str]] = {}
         
         # Circuit breaker for consecutive corrupt changelists
         self._consecutive_corrupt_cls = 0
@@ -104,9 +109,9 @@ class Perforce(VCSProvider):
             Example: [
                 {
                     "host": "my-machine",
-                    "root": "C:\\Depot\\mainline",
-                    "client": "user_mainline",
-                    "depot_root": "//javelin/mainline"
+                    "root": "C:\\work\\depot\\main",
+                    "client": "user_main",
+                    "depot_root": "//depot/main"
                 }
             ]
         """
@@ -164,16 +169,16 @@ class Perforce(VCSProvider):
         
         Example View:
             View:
-                //javelin/mainline/... //client/...
-                -//javelin/mainline/dev/Assets/... //client/dev/Assets/...
+                //depot/main/... //client/...
+                -//depot/main/dev/Assets/... //client/dev/Assets/...
         
-        Returns: "//javelin/mainline" (shortest positive mapping, /... stripped)
+        Returns: "//depot/main" (shortest positive mapping, /... stripped)
         
         Args:
             client_name: Name of the Perforce client
             
         Returns:
-            Depot root path (e.g., "//javelin/mainline"), or empty string if not found
+            Depot root path (e.g., "//depot/main"), or empty string if not found
         """
         try:
             result = subprocess.run(
@@ -227,7 +232,7 @@ class Perforce(VCSProvider):
     def _run_subprocess_with_retry(
         self,
         cmd: list[str],
-        workspace_path: str,
+        project_root: str,
         max_retries: int = 5,
         operation_name: str = "subprocess",
         timeout: Optional[int] = None,
@@ -241,7 +246,7 @@ class Perforce(VCSProvider):
         
         Args:
             cmd: Command and arguments to execute
-            workspace_path: Working directory for the command
+            project_root: Working directory for the command
             max_retries: Maximum number of retry attempts (default: 5)
             operation_name: Description of operation for error messages
             timeout: Optional timeout in seconds
@@ -260,7 +265,7 @@ class Perforce(VCSProvider):
             try:
                 result = subprocess.run(
                     cmd,
-                    cwd=workspace_path,
+                    cwd=project_root,
                     capture_output=True,
                     timeout=timeout,
                     **subprocess_kwargs
@@ -314,7 +319,7 @@ class Perforce(VCSProvider):
         raise RuntimeError(f"Unexpected state in _run_subprocess_with_retry for {operation_name}")
     
     @staticmethod
-    def detect(workspace_path: str) -> bool:
+    def detect(project_root: str) -> bool:
         """Detect if workspace is a Perforce client workspace.
         
         Uses `p4 clients --me` to find all user workspaces and matches by hostname
@@ -322,7 +327,7 @@ class Perforce(VCSProvider):
         unlike `p4 info` which uses the default client when P4CLIENT is not set.
         
         Args:
-            workspace_path: Path to the workspace directory to check
+            project_root: Path to the project root directory to check
             
         Returns:
             True if Perforce is detected and workspace is valid, False otherwise
@@ -343,10 +348,10 @@ class Perforce(VCSProvider):
             # Get current hostname for matching
             current_host = socket.gethostname().lower()
             
-            # Normalize workspace_path for comparison
-            workspace_normalized = str(Path(workspace_path).resolve())
+            # Normalize project_root for comparison
+            workspace_normalized = str(Path(project_root).resolve())
             
-            # Check if workspace_path matches any user workspace
+            # Check if project_root matches any user workspace
             for ws in workspaces:
                 # Match by hostname (case-insensitive)
                 if ws["host"].lower() == current_host:
@@ -354,12 +359,12 @@ class Perforce(VCSProvider):
                     try:
                         root_normalized = str(Path(ws["root"]).resolve())
                         
-                        # Check if workspace_path is within or equal to root
+                        # Check if project_root is within or equal to root
                         # This allows subdirectories of a client workspace to be detected
                         Path(workspace_normalized).relative_to(root_normalized)
                         return True
                     except (ValueError, OSError):
-                        # workspace_path is not under root, or invalid path
+                        # project_root is not under root, or invalid path
                         continue
             
             return False
@@ -369,10 +374,9 @@ class Perforce(VCSProvider):
     
     def get_commits_after(
         self,
-        workspace_path: str,
+        project_root: str,
         after_hash: str | None,
         batch_size: int,
-        subdirs: Optional[list[str]] = None,
         progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> list[Changelist]:
         """Get changelists after a specific CL number in chronological order (oldest → newest).
@@ -380,16 +384,15 @@ class Perforce(VCSProvider):
         This is the primary changelist traversal method used by the unified indexer.
         
         The implementation uses a two-phase strategy matching Git:
-        - Phase 1 (once per (workspace_path, subdirs) tuple): fetch all
-          matching CL numbers in chronological order and cache them.
+        - Phase 1 (once per project_root): fetch all matching CL numbers in
+          chronological order and cache them.
         - Phase 2 (per call): slice the next `batch_size` CLs from the cache and
           fetch full changelist details only for those CLs.
         
         Args:
-            workspace_path: Path to the workspace/repository
+            project_root: Path to the project root (the indexed directory)
             after_hash: Get changelists after this CL number (None = from beginning)
             batch_size: Maximum number of changelists to return
-            subdirs: Optional list of subdirectories to filter changelists by
             progress_callback: Optional callback(current, total) called after each sub-batch
             
         Returns:
@@ -400,21 +403,19 @@ class Perforce(VCSProvider):
         
         # Fetch CL numbers (will use cache if available)
         cl_numbers = self._fetch_all_changelist_numbers(
-            workspace_path=workspace_path,
-            subdirs=subdirs,
+            project_root=project_root,
         )
         
         if DebugLogger.is_enabled():
-            subdirs_tuple = tuple(sorted(subdirs)) if subdirs else None
             from expert_among_us.utils.progress import console as progress_console
             progress_console.print(
                 f"[dim]Perforce.get_commits_after: using {len(cl_numbers)} cached changelists "
-                f"(after={after_hash or 'START'}, subdirs={subdirs_tuple})[/dim]"
+                f"(after={after_hash or 'START'})[/dim]"
             )
         
         # Determine starting index based on after_hash cursor
         if after_hash:
-            # If after_hash is unknown for this (workspace_path, subdirs) view,
+            # If after_hash is unknown for this project_root view,
             # validate whether it's a real CL or truly invalid.
             if not self._cl_index:
                 return []
@@ -424,7 +425,7 @@ class Perforce(VCSProvider):
                 validate_cmd = ["p4", "changes", "-m", "1", f"@={after_hash}"]
                 validate_result = subprocess.run(
                     validate_cmd,
-                    cwd=workspace_path,
+                    cwd=project_root,
                     capture_output=True,
                     text=True,
                     encoding="utf-8",
@@ -457,9 +458,8 @@ class Perforce(VCSProvider):
         
         # Fetch full changelist details for this batch only
         changelists = self._fetch_changelists_by_numbers(
-            workspace_path=workspace_path,
+            project_root=project_root,
             cl_numbers=batch_cl_numbers,
-            subdirs=subdirs,
             progress_callback=progress_callback,
         )
         
@@ -473,27 +473,24 @@ class Perforce(VCSProvider):
     
     def _fetch_all_changelist_numbers(
         self,
-        workspace_path: str,
-        subdirs: Optional[list[str]] = None,
+        project_root: str,
     ) -> list[str]:
-        """Fetch all CL numbers matching filters (with caching).
+        """Fetch all CL numbers under the project root (with caching).
         
-        Caches results keyed by (workspace_path, subdirs_tuple) to avoid
-        redundant p4 calls. Returns cached results when available.
+        Caches results keyed by project_root to avoid redundant p4 calls.
+        Returns cached results when available.
         
-        Uses `p4 changes -s submitted [paths...]` to get all submitted changelists.
+        Uses `p4 changes -s submitted [path...]` to get all submitted changelists.
         Perforce returns newest first, so we reverse to get oldest → newest order.
         
         Args:
-            workspace_path: Path to the workspace
-            subdirs: Optional list of subdirectories to filter by
+            project_root: Path to the project root (the indexed directory)
             
         Returns:
             List of CL numbers as strings, ordered oldest → newest
         """
         # Check cache first
-        subdirs_tuple = tuple(sorted(subdirs)) if subdirs else None
-        cache_key = (workspace_path, subdirs_tuple)
+        cache_key = project_root
         
         if self._cl_cache is not None and self._cl_cache_key == cache_key:
             return self._cl_cache
@@ -507,15 +504,9 @@ class Perforce(VCSProvider):
             for user_pattern in EXCLUDED_AUTOMATED_USERS:
                 cmd.append(f"-u-{user_pattern}")
         
-        if subdirs:
-            # Convert local paths to depot paths
-            for subdir in subdirs:
-                depot_path = self._local_to_depot_path(workspace_path, subdir)
-                cmd.append(depot_path)
-        else:
-            # Query all submitted changelists
-            depot_path = self._local_to_depot_path(workspace_path, None)
-            cmd.append(depot_path)
+        # Query all submitted changelists under the project root
+        depot_path = self._local_to_depot_path(project_root, None)
+        cmd.append(depot_path)
         
         if DebugLogger.is_enabled():
             cmd_str = " ".join(str(part) for part in cmd)
@@ -524,7 +515,7 @@ class Perforce(VCSProvider):
         
         result = subprocess.run(
             cmd,
-            cwd=workspace_path,
+            cwd=project_root,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -571,9 +562,8 @@ class Perforce(VCSProvider):
     
     def _fetch_changelists_by_numbers(
         self,
-        workspace_path: str,
+        project_root: str,
         cl_numbers: list[str],
-        subdirs: Optional[list[str]] = None,
         progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> list[Changelist]:
         """Fetch full details for specific CLs (batched with sub-batching).
@@ -582,9 +572,8 @@ class Perforce(VCSProvider):
         Processes in sub-batches to avoid timeouts with large changelist sets.
         
         Args:
-            workspace_path: Path to the workspace
+            project_root: Path to the project root (the indexed directory)
             cl_numbers: List of CL numbers to fetch
-            subdirs: Optional subdirectories (for filtering files, if needed)
             progress_callback: Optional callback(current, total) called after each sub-batch
             
         Returns:
@@ -593,24 +582,10 @@ class Perforce(VCSProvider):
         if not cl_numbers:
             return []
         
-        # Convert subdirs to depot path prefixes once for all sub-batches
-        # ALWAYS create depot_prefixes to filter files:
-        # - If subdirs provided: use those as filters (explicit control)
-        # - If subdirs None: use workspace_path as filter boundary (intuitive default)
-        if subdirs:
-            # Explicit subdirectories provided - filter by those
-            depot_prefixes = []
-            for subdir in subdirs:
-                depot_path = self._local_to_depot_path(workspace_path, subdir)
-                # Remove trailing /... to get prefix for matching
-                prefix = depot_path.rstrip("/...")
-                depot_prefixes.append(prefix)
-        else:
-            # No subdirs - use workspace_path as the filtering boundary
-            # This ensures commits only include files within workspace_path
-            depot_path = self._local_to_depot_path(workspace_path, None)
-            prefix = depot_path.rstrip("/...")
-            depot_prefixes = [prefix]
+        # Restrict indexed files to those under the project root. The depot
+        # prefix for the project root is the single filtering boundary.
+        depot_path = self._local_to_depot_path(project_root, None)
+        depot_prefixes = [depot_path.rstrip("/...")]
         
         # Process in sub-batches to avoid timeouts
         SUB_BATCH_SIZE = 50
@@ -623,7 +598,7 @@ class Perforce(VCSProvider):
             
             # Fetch this sub-batch
             sub_changelists = self._fetch_single_describe_batch(
-                workspace_path=workspace_path,
+                project_root=project_root,
                 cl_numbers=sub_batch,
                 depot_prefixes=depot_prefixes,
                 timeout=SUB_BATCH_TIMEOUT,
@@ -645,7 +620,7 @@ class Perforce(VCSProvider):
     
     def _fetch_single_describe_batch(
         self,
-        workspace_path: str,
+        project_root: str,
         cl_numbers: list[str],
         depot_prefixes: Optional[list[str]],
         timeout: int,
@@ -659,7 +634,7 @@ class Perforce(VCSProvider):
         or uses binary search to split the batch (multiple CLs).
         
         Args:
-            workspace_path: Path to the workspace
+            project_root: Path to the project root (the indexed directory)
             cl_numbers: List of CL numbers to fetch (sub-batch)
             depot_prefixes: Optional depot path prefixes for filtering
             timeout: Timeout in seconds for the p4 describe command
@@ -679,13 +654,13 @@ class Perforce(VCSProvider):
         
         # Try batch with size limit
         output, result = self._run_describe_with_size_limit(
-            workspace_path, cl_numbers, timeout, max_output_bytes, embed_diffs
+            project_root, cl_numbers, timeout, max_output_bytes, embed_diffs
         )
         
         if result == DescribeResult.SUCCESS:
             # Success - parse normally
             parsed = self._parse_describe_output(
-                output, workspace_path, depot_prefixes, embed_diffs
+                output, project_root, depot_prefixes, embed_diffs
             )
             # Explicit cleanup after large describe operation
             del output
@@ -719,7 +694,7 @@ class Perforce(VCSProvider):
             else:
                 # SIZE_LIMIT: Use truncated output (acceptable per existing behavior)
                 parsed = self._parse_describe_output(
-                    output, workspace_path, depot_prefixes, embed_diffs
+                    output, project_root, depot_prefixes, embed_diffs
                 )
                 del output
                 gc.collect()
@@ -729,13 +704,13 @@ class Perforce(VCSProvider):
         del output
         gc.collect()
         return self._fetch_with_binary_search(
-            workspace_path, cl_numbers, depot_prefixes,
+            project_root, cl_numbers, depot_prefixes,
             timeout, max_output_bytes, embed_diffs
         )
     
     def _run_describe_with_size_limit(
         self,
-        workspace_path: str,
+        project_root: str,
         cl_numbers: list[str],
         timeout: int,
         max_bytes: int = MAX_DESCRIBE_OUTPUT_BYTES,
@@ -748,7 +723,7 @@ class Perforce(VCSProvider):
         when limit is exceeded.
         
         Args:
-            workspace_path: Path to workspace
+            project_root: Path to the project root (the indexed directory)
             cl_numbers: List of CL numbers to describe
             timeout: Command timeout in seconds
             max_bytes: Maximum output size in bytes (default 10 MB)
@@ -773,7 +748,7 @@ class Perforce(VCSProvider):
         
         process = subprocess.Popen(
             cmd,
-            cwd=workspace_path,
+            cwd=project_root,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -857,7 +832,7 @@ class Perforce(VCSProvider):
     
     def _fetch_with_binary_search(
         self,
-        workspace_path: str,
+        project_root: str,
         cl_numbers: list[str],
         depot_prefixes: Optional[list[str]],
         timeout: int,
@@ -870,7 +845,7 @@ class Perforce(VCSProvider):
         Base case (single CL) is handled by caller which accepts truncation.
         
         Args:
-            workspace_path: Path to workspace
+            project_root: Path to the project root (the indexed directory)
             cl_numbers: List of CL numbers (must be > 1)
             depot_prefixes: Optional depot path prefixes for filtering
             timeout: Command timeout in seconds
@@ -883,7 +858,7 @@ class Perforce(VCSProvider):
         if len(cl_numbers) <= 1:
             # Base case - caller handles single CL truncation
             return self._fetch_single_describe_batch(
-                workspace_path, cl_numbers, depot_prefixes,
+                project_root, cl_numbers, depot_prefixes,
                 timeout, max_output_bytes, embed_diffs
             )
         
@@ -896,13 +871,13 @@ class Perforce(VCSProvider):
         results = []
         results.extend(
             self._fetch_single_describe_batch(
-                workspace_path, first_half, depot_prefixes,
+                project_root, first_half, depot_prefixes,
                 timeout, max_output_bytes, embed_diffs
             )
         )
         results.extend(
             self._fetch_single_describe_batch(
-                workspace_path, second_half, depot_prefixes,
+                project_root, second_half, depot_prefixes,
                 timeout, max_output_bytes, embed_diffs
             )
         )
@@ -912,7 +887,7 @@ class Perforce(VCSProvider):
     def _parse_describe_output(
         self,
         output: str,
-        workspace_path: str,
+        project_root: str,
         depot_prefixes: Optional[list[str]] = None,
         embed_diffs: bool = True,
     ) -> list[Changelist]:
@@ -942,7 +917,7 @@ class Perforce(VCSProvider):
         
         Args:
             output: Raw output from p4 describe command
-            workspace_path: Path to workspace (for context)
+            project_root: Path to the project root (for context)
             depot_prefixes: Optional list of depot path prefixes to filter files
             
         Returns:
@@ -1035,10 +1010,10 @@ class Perforce(VCSProvider):
                                 i += 1
                                 continue
                             
-                            # Convert to local path
-                            local_path = self._depot_to_local_path(workspace_path, depot_path)
-                            if local_path:
-                                files.append(local_path)
+                            # Convert to project-root-relative path
+                            relative_path = self._depot_to_relative_path(project_root, depot_path)
+                            if relative_path:
+                                files.append(relative_path)
                         i += 1
                     else:
                         break
@@ -1135,24 +1110,24 @@ class Perforce(VCSProvider):
         
         return changelists
     
-    def _local_to_depot_path(self, workspace_path: str, local_subdir: str) -> str:
-        """Convert local path to depot path syntax using cached workspace mapping.
+    def _local_to_depot_path(self, project_root: str, local_subdir: str) -> str:
+        """Convert a local path to depot path syntax using the cached client mapping.
         
-        Fast string substitution approach - only calls p4 once per workspace.
-        Uses the cached workspace mapping in reverse (local → depot).
+        Fast string substitution approach - only calls p4 once per project root.
+        Uses the cached Perforce client workspace mapping in reverse (local → depot).
         
         Args:
-            workspace_path: Path to workspace
-            local_subdir: Local subdirectory relative to workspace
+            project_root: Path to the project root (the indexed directory)
+            local_subdir: Subdirectory relative to project_root (None for the root itself)
             
         Returns:
             Depot path with recursive wildcard (e.g., "//depot/src/engine/...")
         """
-        depot_root, local_root = self._get_workspace_mapping(workspace_path)
+        depot_root, local_root = self._get_workspace_mapping(project_root)
         
         if depot_root and local_root:
             # Build full local path
-            local_path = Path(workspace_path) / local_subdir if local_subdir else Path(workspace_path)
+            local_path = Path(project_root) / local_subdir if local_subdir else Path(project_root)
             local_path_normalized = str(local_path.resolve())
             
             # Try to get relative path from local_root
@@ -1173,7 +1148,7 @@ class Perforce(VCSProvider):
         # Fallback: assume standard depot mapping
         return f"//depot/{local_subdir}/..."
     
-    def _get_workspace_mapping(self, workspace_path: str) -> tuple[str, str]:
+    def _get_workspace_mapping(self, project_root: str) -> tuple[str, str]:
         """Get depot root and local root mapping for workspace (cached).
         
         Uses cached workspace data from `_get_all_user_workspaces()` to find the
@@ -1181,13 +1156,13 @@ class Perforce(VCSProvider):
         conversion. This avoids calling `p4 where` which fails on workspace roots.
         
         Args:
-            workspace_path: Path to workspace
+            project_root: Path to the project root (the indexed directory)
             
         Returns:
             Tuple of (depot_root, local_root) for string substitution
         """
-        if workspace_path in self._workspace_mapping_cache:
-            return self._workspace_mapping_cache[workspace_path]
+        if project_root in self._workspace_mapping_cache:
+            return self._workspace_mapping_cache[project_root]
         
         try:
             # Get all user workspaces with depot mappings
@@ -1195,14 +1170,14 @@ class Perforce(VCSProvider):
             
             if not workspaces:
                 # Fallback: no workspaces found
-                self._workspace_mapping_cache[workspace_path] = ("", workspace_path)
-                return ("", workspace_path)
+                self._workspace_mapping_cache[project_root] = ("", project_root)
+                return ("", project_root)
             
             # Get current hostname for matching
             current_host = socket.gethostname().lower()
             
-            # Normalize workspace_path for comparison
-            workspace_normalized = str(Path(workspace_path).resolve())
+            # Normalize project_root for comparison
+            workspace_normalized = str(Path(project_root).resolve())
             
             # Find matching workspace
             for ws in workspaces:
@@ -1212,12 +1187,12 @@ class Perforce(VCSProvider):
                         # Normalize root path
                         root_normalized = str(Path(ws["root"]).resolve())
                         
-                        # Check if workspace_path is within or equal to this workspace root
+                        # Check if project_root is within or equal to this workspace root
                         Path(workspace_normalized).relative_to(root_normalized)
                         
                         # Found matching workspace - cache and return
                         mapping = (ws["depot_root"], ws["root"])
-                        self._workspace_mapping_cache[workspace_path] = mapping
+                        self._workspace_mapping_cache[project_root] = mapping
                         
                         if DebugLogger.is_enabled():
                             from expert_among_us.utils.progress import console as progress_console
@@ -1228,44 +1203,72 @@ class Perforce(VCSProvider):
                         
                         return mapping
                     except (ValueError, OSError):
-                        # workspace_path is not under this root
+                        # project_root is not under this root
                         continue
             
             # No matching workspace found - fallback
-            self._workspace_mapping_cache[workspace_path] = ("", workspace_path)
-            return ("", workspace_path)
+            self._workspace_mapping_cache[project_root] = ("", project_root)
+            return ("", project_root)
             
         except Exception:
             # Fallback on any error
-            self._workspace_mapping_cache[workspace_path] = ("", workspace_path)
-            return ("", workspace_path)
+            self._workspace_mapping_cache[project_root] = ("", project_root)
+            return ("", project_root)
     
-    def _depot_to_local_path(self, workspace_path: str, depot_path: str) -> str:
-        r"""Convert depot path to local path using cached workspace mapping.
-        
-        Fast string substitution approach - only calls p4 once per workspace.
-        
+    def _get_project_depot_prefix(self, project_root: str) -> Optional[str]:
+        """Return the depot path prefix corresponding to ``project_root``.
+
+        This is the depot path that maps to the indexed project root, e.g.
+        ``//depot/main/my-project``. Depot paths are made relative to this
+        prefix so that stored paths are relative to the project root, not to
+        the broader Perforce client workspace.
+
+        The result is memoized per project_root.
+
         Args:
-            workspace_path: Path to workspace
-            depot_path: Depot path (e.g., "//javelin/mainline/dev/GameCode/Game/VersionTrack.h")
-            
+            project_root: Path to the project root (the indexed directory)
+
         Returns:
-            Full local path (e.g., "C:\Perforce\Javelin\mainline\dev\GameCode\Game\VersionTrack.h")
+            Depot prefix without a trailing wildcard, or None if it cannot be
+            determined.
         """
-        depot_root, local_root = self._get_workspace_mapping(workspace_path)
-        
-        if depot_root and depot_path.startswith(depot_root):
-            # String substitution: replace depot root with local root
-            relative_path = depot_path[len(depot_root):].lstrip("/")
-            return str(Path(local_root) / relative_path)
-        
+        if project_root in self._project_depot_prefix_cache:
+            return self._project_depot_prefix_cache[project_root]
+
+        depot_path = self._local_to_depot_path(project_root, None)
+        # _local_to_depot_path appends a recursive wildcard ("/...").
+        prefix = depot_path.rstrip("/...") if depot_path else None
+        self._project_depot_prefix_cache[project_root] = prefix
+        return prefix
+
+    def _depot_to_relative_path(self, project_root: str, depot_path: str) -> Optional[str]:
+        r"""Convert a depot path to a path relative to ``project_root``.
+
+        Honors the VCSProvider contract that file paths are relative to the
+        project root (the indexed directory), not the broader Perforce client
+        workspace. Uses the cached project→depot prefix and a fast string strip.
+
+        Args:
+            project_root: Path to the project root (the indexed directory)
+            depot_path: Depot path (e.g., "//depot/main/my-project/src/module/File.cpp")
+
+        Returns:
+            Project-root-relative path with forward slashes
+            (e.g., "src/module/File.cpp"), or None if the depot path is outside
+            the project root.
+        """
+        project_depot_prefix = self._get_project_depot_prefix(project_root)
+
+        if project_depot_prefix and depot_path.startswith(project_depot_prefix):
+            relative_path = depot_path[len(project_depot_prefix):].lstrip("/")
+            return relative_path.replace("\\", "/")
+
         return None
     
     def get_tracked_files_at_commit(
         self,
-        workspace_path: str,
+        project_root: str,
         commit_hash: str,
-        subdirs: Optional[list[str]] = None,
     ) -> list[str]:
         """Get list of tracked files at a specific changelist.
         
@@ -1274,27 +1277,18 @@ class Perforce(VCSProvider):
         files modified in that specific changelist.
         
         Args:
-            workspace_path: Path to the workspace/repository
+            project_root: Path to the project root (the indexed directory)
             commit_hash: Changelist number
-            subdirs: Optional list of subdirectories to filter by
             
         Returns:
-            List of file paths (relative to workspace root) tracked at the changelist
+            List of file paths (relative to the project root) tracked at the changelist
         """
         cmd = ["p4", "files"]
         
-        if subdirs:
-            # Query specific subdirectories
-            for subdir in subdirs:
-                depot_path = self._local_to_depot_path(workspace_path, subdir)
-                # Remove trailing /... for the @ syntax
-                depot_path = depot_path.rstrip("/...")
-                cmd.append(f"{depot_path}/...@{commit_hash}")
-        else:
-            # Query all files
-            depot_path = self._local_to_depot_path(workspace_path, None)
-            cmd.append(depot_path)
-            cmd.append(f"{depot_path}@{commit_hash}")
+        # Query all files under the project root
+        depot_path = self._local_to_depot_path(project_root, None)
+        cmd.append(depot_path)
+        cmd.append(f"{depot_path}@{commit_hash}")
         
         if DebugLogger.is_enabled():
             from expert_among_us.utils.progress import console as progress_console
@@ -1305,7 +1299,7 @@ class Perforce(VCSProvider):
         # Re-raise on failure - returning empty list would cause indexer to delete all file chunks
         result = self._run_subprocess_with_retry(
             cmd=cmd,
-            workspace_path=workspace_path,
+            project_root=project_root,
             operation_name=f"p4 files at commit {commit_hash}",
             text=True,
             encoding="utf-8",
@@ -1320,15 +1314,15 @@ class Perforce(VCSProvider):
                 parts = line.split("#", 1)
                 if parts:
                     depot_path = parts[0]
-                    local_path = self._depot_to_local_path(workspace_path, depot_path)
-                    if local_path:
-                        files.append(local_path)
+                    relative_path = self._depot_to_relative_path(project_root, depot_path)
+                    if relative_path:
+                        files.append(relative_path)
         
         return files
     
     def get_file_content_at_commit(
         self,
-        workspace_path: str,
+        project_root: str,
         file_path: str,
         commit_hash: str,
     ) -> Optional[str]:
@@ -1338,7 +1332,7 @@ class Perforce(VCSProvider):
         for backward compatibility.
         
         Args:
-            workspace_path: Path to workspace
+            project_root: Path to the project root (the indexed directory)
             file_path: Relative path to file
             commit_hash: Changelist number
             
@@ -1346,7 +1340,7 @@ class Perforce(VCSProvider):
             File content as string, or None if file doesn't exist or is binary
         """
         results = self.get_files_content_at_commit(
-            workspace_path=workspace_path,
+            project_root=project_root,
             file_paths=[file_path],
             commit_hash=commit_hash,
         )
@@ -1354,7 +1348,7 @@ class Perforce(VCSProvider):
     
     def get_files_content_at_commit(
         self,
-        workspace_path: str,
+        project_root: str,
         file_paths: list[str],
         commit_hash: str,
         progress_callback: Optional[Callable[[int, int], None]] = None,
@@ -1364,7 +1358,7 @@ class Perforce(VCSProvider):
         Uses `p4 print -q` to fetch file contents in batches.
         
         Args:
-            workspace_path: Path to the workspace/repository
+            project_root: Path to the project root (the indexed directory)
             file_paths: List of relative file paths to fetch
             commit_hash: Changelist number to read from
             progress_callback: Optional callback(current, total) called after each batch.
@@ -1397,8 +1391,8 @@ class Perforce(VCSProvider):
             # Build p4 print command with depot paths
             cmd = ["p4", "print"]
             depot_specs = []
-            for local_path in batch_paths:
-                depot_path = self._local_to_depot_path(workspace_path, local_path)
+            for relative_path in batch_paths:
+                depot_path = self._local_to_depot_path(project_root, relative_path)
                 # Remove /... suffix for specific file
                 depot_path = depot_path.rstrip("/...")
                 depot_specs.append(f"{depot_path}@{commit_hash}")
@@ -1416,14 +1410,14 @@ class Perforce(VCSProvider):
             try:
                 result = self._run_subprocess_with_retry(
                     cmd=cmd,
-                    workspace_path=workspace_path,
+                    project_root=project_root,
                     operation_name=f"p4 print batch ({len(batch_paths)} files)",
                     encoding="utf-8",
                     errors="replace",
                 )
                 
                 # Parse output
-                self._parse_print_output(result.stdout, batch_paths, results, workspace_path)
+                self._parse_print_output(result.stdout, batch_paths, results, project_root)
                 
             except RuntimeError as e:
                 # Re-raise with more context about which files failed
@@ -1446,7 +1440,7 @@ class Perforce(VCSProvider):
         output: str,
         batch_paths: list[str],
         results: dict[str, Optional[str]],
-        workspace_path: str,
+        project_root: str,
     ) -> None:
         """Parse output from `p4 print -q` command.
         
@@ -1454,9 +1448,9 @@ class Perforce(VCSProvider):
         
         Args:
             output: Raw output from p4 print
-            batch_paths: List of local paths that were queried
+            batch_paths: List of project-root-relative paths that were queried
             results: Results dictionary to update
-            workspace_path: Workspace path for path conversion
+            project_root: Project root for path conversion
         """
         lines = output.split("\n")
         i = 0
@@ -1466,8 +1460,8 @@ class Perforce(VCSProvider):
             
             # Look for file header: "//depot/path/file.cpp#42 - edit change 12345 (text)"
             # It will match the cached depot root path
-            local_path = self._parse_local_path_line(workspace_path, line)
-            if local_path:
+            relative_path = self._parse_relative_path_line(project_root, line)
+            if relative_path:
                 i += 1
 
                 # Check for binary marker (case-insensitive to be safe)
@@ -1475,10 +1469,10 @@ class Perforce(VCSProvider):
                     # Binary file, skip content and save bandwidth
                     if DebugLogger.is_enabled():
                         from expert_among_us.utils.progress import console as progress_console
-                        progress_console.print(f"[dim]Perforce: Skipping binary file {local_path}[/dim]")
+                        progress_console.print(f"[dim]Perforce: Skipping binary file {relative_path}[/dim]")
                     i += 1
                     # Skip until next file header or EOF
-                    while i < len(lines) and not self._parse_local_path_line(workspace_path, lines[i]):
+                    while i < len(lines) and not self._parse_relative_path_line(project_root, lines[i]):
                         i += 1
                     continue
                 
@@ -1489,7 +1483,7 @@ class Perforce(VCSProvider):
                 # Collect file content until next file header or EOF
                 content_lines = []
                 while i < len(lines):
-                    if self._parse_local_path_line(workspace_path, lines[i]):
+                    if self._parse_relative_path_line(project_root, lines[i]):
                         # Start of next file
                         break
                     content_lines.append(lines[i])
@@ -1507,46 +1501,39 @@ class Perforce(VCSProvider):
                     # Error during binary check, leave as None
                     continue
                 
-                # Store content for matching local path
-                if local_path in results:
-                    results[local_path] = content
+                # Store content for matching relative path
+                if relative_path in results:
+                    results[relative_path] = content
             else:
                 i += 1
     
-    def _parse_local_path_line(self, workspace_path: str, line: str):
-        """Returns local path if the line contains a depot path, else return None"""
+    def _parse_relative_path_line(self, project_root: str, line: str) -> Optional[str]:
+        """Return the project-root-relative path if the line contains a depot path, else None."""
         depot_path = line.split("#")[0] if "#" in line else None
-        return self._depot_to_local_path(workspace_path, depot_path) if depot_path else None
+        return self._depot_to_relative_path(project_root, depot_path) if depot_path else None
     
     def get_latest_commit_time(
         self,
-        workspace_path: str,
-        subdirs: Optional[list[str]] = None,
+        project_root: str,
     ) -> Optional[datetime]:
         """Get the timestamp of the most recent changelist.
         
-        Uses `p4 changes -m 1 -s submitted [paths...]` to get the latest CL.
+        Uses `p4 changes -m 1 -s submitted [path...]` to get the latest CL.
         
         Args:
-            workspace_path: Path to the workspace/repository
-            subdirs: Optional list of subdirectories to filter changelists by
+            project_root: Path to the project root (the indexed directory)
             
         Returns:
             Datetime of the most recent changelist, or None if no changelists found
         """
         cmd = ["p4", "changes", "-m", "1", "-s", "submitted"]
         
-        if subdirs:
-            for subdir in subdirs:
-                depot_path = self._local_to_depot_path(workspace_path, subdir)
-                cmd.append(depot_path)
-        else:
-            depot_path = self._local_to_depot_path(workspace_path, None)
-            cmd.append(depot_path)
+        depot_path = self._local_to_depot_path(project_root, None)
+        cmd.append(depot_path)
         
         result = subprocess.run(
             cmd,
-            cwd=workspace_path,
+            cwd=project_root,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -1577,23 +1564,20 @@ class Perforce(VCSProvider):
     
     def get_total_commit_count(
         self,
-        workspace_path: str,
-        subdirs: Optional[list[str]] = None,
+        project_root: str,
     ) -> int:
         """Return the total number of changelists to consider for indexing.
         
         Uses _fetch_all_changelist_numbers() which caches results.
         
         Args:
-            workspace_path: Path to the workspace / repository root.
-            subdirs: Optional list of subdirectories to filter by.
+            project_root: Path to the project root (the indexed directory).
             
         Returns:
             Integer count of changelists (deduplicated).
         """
         cl_numbers = self._fetch_all_changelist_numbers(
-            workspace_path=workspace_path,
-            subdirs=subdirs,
+            project_root=project_root,
         )
         return len(cl_numbers)
     

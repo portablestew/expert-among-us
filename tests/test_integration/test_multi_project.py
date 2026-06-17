@@ -131,15 +131,13 @@ def populated_dbs(metadata_db, vector_db, embedder, expert_name):
     metadata_db.create_project(
         expert_name=expert_name,
         project_name="payment-service",
-        workspace_path="/repos/payment",
-        subdirs=[],
+        project_root="/repos/payment",
         vcs_type="git",
     )
     metadata_db.create_project(
         expert_name=expert_name,
         project_name="user-service",
-        workspace_path="/repos/users",
-        subdirs=[],
+        project_root="/repos/users",
         vcs_type="git",
     )
 
@@ -383,8 +381,7 @@ class TestLegacyExpert:
         meta_db.create_project(
             expert_name=expert_name,
             project_name="legacy-project",
-            workspace_path="/repos/legacy",
-            subdirs=[],
+            project_root="/repos/legacy",
             vcs_type="git",
         )
         # Manually set has_vector_metadata=False to simulate migrated project

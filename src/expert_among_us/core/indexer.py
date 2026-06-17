@@ -41,7 +41,7 @@ class Indexer:
             settings: Settings instance.
             max_commits: Maximum commits to index (default: 10000).
             project_config: Project configuration dict with keys:
-                name, workspace_path, subdirs, vcs_type, has_vector_metadata.
+                name, project_root, vcs_type, has_vector_metadata.
                 Enables path prefixing, project metadata on vectors,
                 and per-project state tracking.
         """
@@ -115,7 +115,7 @@ class Indexer:
         Returns:
             True if more commits remain to be indexed (hit batch limit), False otherwise
         """
-        workspace_path = self.project_config["workspace_path"]
+        project_root = self.project_config["project_root"]
         
         project_name = self.project_config["name"]
         
@@ -137,8 +137,7 @@ class Indexer:
         # overrun or show misleading progress when there are fewer commits than the cap.
         # IMPORTANT: Call this BEFORE get_commit_position() to ensure VCS cache is loaded
         total_available = self.vcs.get_total_commit_count(
-            workspace_path=workspace_path,
-            subdirs=self.project_config.get("subdirs"),
+            project_root=project_root,
         )
 
         # Get position in VCS sequence for accurate progress tracking
@@ -170,7 +169,7 @@ class Indexer:
         with self.progress:
             # Create persistent progress tasks
             self._overall_task = self.progress.add_task(
-                f"[green]Indexing commits: {workspace_path}",
+                f"[green]Indexing commits: {project_root}",
                 total=max_commits,
                 completed=commits_considered
             )
@@ -258,10 +257,9 @@ class Indexer:
                 
                 # Fetch next batch of commits with progress
                 batch = self.vcs.get_commits_after(
-                    workspace_path=workspace_path,
+                    project_root=project_root,
                     after_hash=last_processed_id,
                     batch_size=batch_size,
-                    subdirs=self.project_config.get('subdirs'),
                     progress_callback=update_cl_progress,
                 )
                 
@@ -327,7 +325,8 @@ class Indexer:
 
                     if missing:
                         for file_path in missing:
-                            self._delete_file_chunks(file_path)
+                            stored_path = self.to_stored_path(self.project_config["name"], file_path)
+                            self._delete_file_chunks(stored_path)
 
                 # Index commits with batched embeddings + progress
                 self._index_commit_batch(batch)
@@ -372,9 +371,8 @@ class Indexer:
         """Check which files exist at the specified revision."""
         
         tracked_files = set(self.vcs.get_tracked_files_at_commit(
-            self.project_config['workspace_path'],
+            self.project_config['project_root'],
             revision_id,
-            subdirs=self.project_config.get('subdirs')
         ))
         
         existing = file_paths & tracked_files
@@ -427,7 +425,7 @@ class Indexer:
 
         # Batched read from VCS with progress tracking
         contents_by_path = self.vcs.get_files_content_at_commit(
-            workspace_path=self.project_config["workspace_path"],
+            project_root=self.project_config["project_root"],
             file_paths=list(file_paths),
             commit_hash=revision_id,
             progress_callback=update_file_progress,
@@ -471,12 +469,15 @@ class Indexer:
             return
 
         # Build FileChunk objects (CPU-only, relatively fast)
+        # File paths are project-relative; prefix with project name for storage.
+        proj_name = self.project_config["name"]
         all_chunks: list[FileChunk] = []
         for file_path, chunks in file_chunks_map.items():
+            stored_path = self.to_stored_path(proj_name, file_path)
             for idx, (text, line_start, line_end) in enumerate(chunks):
                 all_chunks.append(
                     FileChunk(
-                        file_path=file_path,
+                        file_path=stored_path,
                         chunk_index=idx,
                         content=text,
                         line_start=line_start,
@@ -681,7 +682,7 @@ class Indexer:
 
             # Apply project-aware transformations
             proj_name = self.project_config["name"]
-            # Prefix file paths with project name
+            # Prefix project-relative file paths with the project name
             commit.files = self.prefix_file_paths(commit.files, proj_name)
             # Rewrite diff paths with project prefix
             commit.diff = self.rewrite_diff_paths(commit.diff, proj_name)
@@ -707,17 +708,36 @@ class Indexer:
         self.progress.stop_task(self._commit_store_task)
 
     @staticmethod
-    def prefix_file_paths(files: list[str], project_name: str) -> list[str]:
-        """Prepend project_name/ to every file path.
+    def to_stored_path(project_name: str, relative_path: str) -> str:
+        """Build the canonical stored path for a project-relative file path.
+
+        Normalizes separators to forward slashes and prepends ``project_name/``.
 
         Args:
-            files: List of relative file paths.
+            project_name: Non-empty project identifier.
+            relative_path: Workspace-relative file path.
+
+        Returns:
+            Path formatted as ``project_name/relative_path``.
+        """
+        normalized = relative_path.replace("\\", "/")
+        return f"{project_name}/{normalized}"
+
+    @staticmethod
+    def prefix_file_paths(files: list[str], project_name: str) -> list[str]:
+        """Prepend ``project_name/`` to every (project-relative) file path.
+
+        VCS providers emit project-relative paths (forward slashes), so this
+        is a pure prefix (with defensive separator normalization).
+
+        Args:
+            files: List of project-relative file paths.
             project_name: Non-empty project identifier (alphanumeric, hyphens, underscores).
 
         Returns:
-            List of paths with project_name/ prepended.
+            List of paths formatted as ``project_name/relative_path``.
         """
-        return [f"{project_name}/{f}" for f in files]
+        return [Indexer.to_stored_path(project_name, f) for f in files]
 
     @staticmethod
     def rewrite_diff_paths(diff: str, project_name: str) -> str:
@@ -727,6 +747,7 @@ class Indexer:
           - '--- a/X' → '--- a/{project_name}/X'
           - '+++ b/X' → '+++ b/{project_name}/X'
           - '/dev/null' lines are left unchanged.
+          - Perforce ==== headers are left unchanged (depot paths are already readable).
           - All other lines pass through unmodified.
 
         The output always has the same number of lines as the input.

@@ -41,7 +41,7 @@ class MetadataDB(ABC):
         """Create a new expert entry.
         
         In the multi-project schema, experts are logical groupings.
-        Workspace path, subdirs, and VCS type are stored per-project.
+        Project root and VCS type are stored per-project.
         
         Args:
             name: Unique identifier for the expert

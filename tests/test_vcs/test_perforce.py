@@ -232,10 +232,9 @@ Differences ...
             mock_subprocess_popen.return_value = create_mock_popen_process(describe_output)
             
             changelists = perforce_provider.get_commits_after(
-                workspace_path=str(tmp_path),
+                project_root=str(tmp_path),
                 after_hash=None,
                 batch_size=2,
-                subdirs=None
             )
             
             # Verify results
@@ -272,10 +271,9 @@ Differences ...
             mock_subprocess_popen.return_value = create_mock_popen_process(describe_output)
             
             changelists = perforce_provider.get_commits_after(
-                workspace_path=str(tmp_path),
+                project_root=str(tmp_path),
                 after_hash=None,
                 batch_size=1,
-                subdirs=None
             )
             
             # Should return only 1 changelist
@@ -321,10 +319,9 @@ Differences ...
         mock_subprocess_popen.return_value = create_mock_popen_process(describe_output)
         
         changelists = perforce_provider.get_commits_after(
-            workspace_path=str(tmp_path),
+            project_root=str(tmp_path),
             after_hash=None,
             batch_size=1,
-            subdirs=None
         )
         
         assert len(changelists) == 1
@@ -387,10 +384,9 @@ Differences ...
             
             # Get CLs after 12345
             changelists = perforce_provider.get_commits_after(
-                workspace_path=str(tmp_path),
+                project_root=str(tmp_path),
                 after_hash="12345",
                 batch_size=10,
-                subdirs=None
             )
             
             # Should return CLs after 12345 (i.e., 12346 and 12347)
@@ -404,10 +400,9 @@ Differences ...
         mock_subprocess_run.return_value = Mock(returncode=0, stdout="")
         
         changelists = perforce_provider.get_commits_after(
-            workspace_path=str(tmp_path),
+            project_root=str(tmp_path),
             after_hash=None,
             batch_size=10,
-            subdirs=None
         )
         
         assert changelists == []
@@ -421,8 +416,7 @@ Change 12345 on 2024/01/15 14:00:00 by user@client 'First'"""
         mock_subprocess_run.return_value = Mock(returncode=0, stdout=changes_output)
         
         cl_numbers = perforce_provider._fetch_all_changelist_numbers(
-            workspace_path=str(tmp_path),
-            subdirs=None
+            project_root=str(tmp_path),
         )
         
         # Should have 3 CLs
@@ -441,8 +435,7 @@ Change 12345 on 2024/01/15 14:00:00 by user@client"""
         mock_subprocess_run.return_value = Mock(returncode=0, stdout=changes_output)
         
         cl_numbers = perforce_provider._fetch_all_changelist_numbers(
-            workspace_path=str(tmp_path),
-            subdirs=None
+            project_root=str(tmp_path),
         )
         
         # P4 returns newest first, should be reversed to oldest→newest
@@ -482,9 +475,8 @@ Differences ...
             mock_subprocess_popen.return_value = create_mock_popen_process(describe_output)
             
             changelists = perforce_provider._fetch_changelists_by_numbers(
-                workspace_path=str(tmp_path),
+                project_root=str(tmp_path),
                 cl_numbers=["12345"],
-                subdirs=None
             )
             
             assert len(changelists) == 1
@@ -642,9 +634,8 @@ class TestFileOperations:
             ]
             
             files = perforce_provider.get_tracked_files_at_commit(
-                workspace_path=str(tmp_path),
+                project_root=str(tmp_path),
                 commit_hash="12345",
-                subdirs=None
             )
             
             assert len(files) == 3
@@ -660,7 +651,7 @@ class TestFileOperations:
             assert any("@12345" in str(arg) for arg in args)
 
     def test_get_files_content_at_commit_batched(self, mock_subprocess_run, perforce_provider, tmp_path):
-        """Verify p4 print -q fetches multiple files in single call."""
+        """Verify p4 print -q fetches multiple files and maps content to relative keys."""
         print_output = """//depot/src/file1.cpp#42 - edit change 12345 (text)
 
 int main() { return 0; }
@@ -669,29 +660,23 @@ int main() { return 0; }
 
 void foo() {}"""
         
-        # Workspace mapping for both local_to_depot and depot_to_local conversions
-        where_output_workspace = f"//depot //client {tmp_path}"
+        # Pre-cache workspace mapping (depot //depot → local tmp_path)
+        perforce_provider._workspace_mapping_cache[str(tmp_path)] = ("//depot", str(tmp_path))
         
         mock_subprocess_run.side_effect = [
-            Mock(returncode=0, stdout=where_output_workspace),  # p4 where for workspace mapping (local_to_depot_path)
             Mock(returncode=0, stdout=print_output),  # p4 print
-            Mock(returncode=0, stdout=where_output_workspace),  # p4 where for workspace mapping (depot_to_local_path) - may be cached
         ]
         
         result = perforce_provider.get_files_content_at_commit(
-            workspace_path=str(tmp_path),
+            project_root=str(tmp_path),
             file_paths=["src/file1.cpp", "src/file2.cpp"],
             commit_hash="12345"
         )
         
-        # Results preserve the input keys (relative paths in this case)
+        # Relative input keys now match the relative paths parsed from output
         assert len(result) == 2
-        assert "src/file1.cpp" in result
-        assert "src/file2.cpp" in result
-        # Content should be None because depot-to-local path mapping returns absolute paths
-        # which don't match the relative path keys in the results dict
-        assert result["src/file1.cpp"] is None
-        assert result["src/file2.cpp"] is None
+        assert "int main()" in result["src/file1.cpp"]
+        assert "void foo()" in result["src/file2.cpp"]
 
     def test_get_files_content_binary_handling(self, mock_subprocess_run, perforce_provider, tmp_path):
         """Verify binary files return None."""
@@ -707,7 +692,7 @@ void foo() {}"""
         ]
         
         result = perforce_provider.get_files_content_at_commit(
-            workspace_path=str(tmp_path),
+            project_root=str(tmp_path),
             file_paths=["src/image.png"],
             commit_hash="12345"
         )
@@ -716,29 +701,27 @@ void foo() {}"""
         assert result["src/image.png"] is None
 
     def test_get_file_content_at_commit_single(self, mock_subprocess_run, perforce_provider, tmp_path):
-        """Test single-file wrapper delegates to batched method."""
+        """Test single-file wrapper delegates to batched method and returns content."""
         print_output = """//depot/src/file.cpp#42 - edit change 12345 (text)
 
 int main() {}"""
         
-        # Workspace mapping for both local_to_depot and depot_to_local conversions
-        where_output_workspace = f"//depot //client {tmp_path}"
+        # Pre-cache workspace mapping (depot //depot → local tmp_path)
+        perforce_provider._workspace_mapping_cache[str(tmp_path)] = ("//depot", str(tmp_path))
         
         mock_subprocess_run.side_effect = [
-            Mock(returncode=0, stdout=where_output_workspace),  # p4 where for workspace mapping (local_to_depot_path)
             Mock(returncode=0, stdout=print_output),  # p4 print
-            Mock(returncode=0, stdout=where_output_workspace),  # p4 where for workspace mapping (depot_to_local_path) - may be cached
         ]
         
         content = perforce_provider.get_file_content_at_commit(
-            workspace_path=str(tmp_path),
+            project_root=str(tmp_path),
             file_path="src/file.cpp",
             commit_hash="12345"
         )
         
-        # get_file_content_at_commit returns None because the absolute path key doesn't match the relative input
-        # This is expected behavior - the method works at a lower level and expects proper path handling
-        assert content is None or (content is not None and "main()" in content)
+        # The relative input key matches the parsed relative path, so content is returned
+        assert content is not None
+        assert "main()" in content
 
     def test_parse_print_output_multiple_files(self, mock_subprocess_run, perforce_provider, tmp_path):
         """Test p4 print output parsing extracts multiple file contents."""
@@ -759,9 +742,9 @@ with multiple lines"""
             # Pre-cache the workspace mapping to ensure it's available
             perforce_provider._get_workspace_mapping(str(tmp_path))
             
-            # Use absolute paths as keys since depot-to-local conversion produces absolute paths
-            file1_path = str(Path(tmp_path) / "src/file1.cpp")
-            file2_path = str(Path(tmp_path) / "src/file2.cpp")
+            # Keys are workspace-relative paths (the depot root //depot is stripped)
+            file1_path = "src/file1.cpp"
+            file2_path = "src/file2.cpp"
             results = {file1_path: None, file2_path: None}
             
             perforce_provider._parse_print_output(
@@ -825,29 +808,6 @@ Change 12345 on 2024/01/15 14:00:00 by user@client"""
         
         assert count == 3
 
-    def test_get_total_commit_count_with_subdirs(self, mock_subprocess_run, perforce_provider, tmp_path):
-        """Verify depot paths included in command for subdirectory filtering."""
-        changes_output = "Change 12345 on 2024/01/15 14:00:00 by user@client"
-        
-        where_output = "//depot/src/engine/... //client/src/engine/... /local/src/engine/..."
-        
-        mock_subprocess_run.side_effect = [
-            *create_workspace_discovery_mocks(tmp_path, depot_root="//depot/src/engine"),
-            Mock(returncode=0, stdout=changes_output),
-        ]
-        
-        count = perforce_provider.get_total_commit_count(
-            str(tmp_path),
-            subdirs=["src/engine"]
-        )
-        
-        assert count == 1
-        
-        # Verify command includes depot path (index 2 after workspace discovery)
-        changes_call = mock_subprocess_run.call_args_list[2]
-        args = changes_call[0][0]
-        assert any("//depot/src/engine" in str(arg) for arg in args)
-
 
 class TestHelperMethods:
     """Tests for helper path conversion methods."""
@@ -902,12 +862,12 @@ class TestDepotToLocalPathMapping:
     def test_get_workspace_mapping_caches_result(self, mock_subprocess_run, perforce_provider, tmp_path):
         """Verify workspace mapping is cached after first call."""
         with patch('socket.gethostname', return_value='test-host'):
-            mock_subprocess_run.side_effect = create_workspace_discovery_mocks(tmp_path, depot_root="//javelin/mainline/dev")
+            mock_subprocess_run.side_effect = create_workspace_discovery_mocks(tmp_path, depot_root="//depot/main")
             
             # First call should invoke p4 clients and p4 client -o
             depot_root, local_root = perforce_provider._get_workspace_mapping(str(tmp_path))
             
-            assert depot_root == "//javelin/mainline/dev"
+            assert depot_root == "//depot/main"
             assert local_root == str(tmp_path)
             assert mock_subprocess_run.call_count == 2
             
@@ -946,72 +906,72 @@ View:
         assert depot_root == ""
         assert local_root == str(tmp_path)
     
-    def test_depot_to_local_path_with_cached_mapping(self, mock_subprocess_run, perforce_provider, tmp_path):
+    def test_depot_to_relative_path_with_cached_mapping(self, mock_subprocess_run, perforce_provider, tmp_path):
         """Verify depot path conversion uses cached workspace mapping."""
         with patch('socket.gethostname', return_value='test-host'):
-            mock_subprocess_run.side_effect = create_workspace_discovery_mocks(tmp_path, depot_root="//javelin/mainline/dev")
+            mock_subprocess_run.side_effect = create_workspace_discovery_mocks(tmp_path, depot_root="//depot/main")
             
-            depot_path = "//javelin/mainline/dev/GameCode/Game/VersionTrack.h"
-            local_path = perforce_provider._depot_to_local_path(str(tmp_path), depot_path)
+            depot_path = "//depot/main/src/app/Version.h"
+            relative_path = perforce_provider._depot_to_relative_path(str(tmp_path), depot_path)
             
-            # Should produce full local path
-            expected = str(Path(tmp_path) / "GameCode/Game/VersionTrack.h")
-            assert local_path == expected
+            # Should produce a workspace-relative path with forward slashes
+            assert relative_path == "src/app/Version.h"
             
             # Verify p4 clients and p4 client -o were called
             assert mock_subprocess_run.call_count == 2
     
-    def test_depot_to_local_path_with_multiple_files(self, mock_subprocess_run, perforce_provider, tmp_path):
+    def test_depot_to_relative_path_with_multiple_files(self, mock_subprocess_run, perforce_provider, tmp_path):
         """Verify multiple file conversions use cached mapping (performance test)."""
         with patch('socket.gethostname', return_value='test-host'):
-            mock_subprocess_run.side_effect = create_workspace_discovery_mocks(tmp_path, depot_root="//javelin/mainline/dev")
+            mock_subprocess_run.side_effect = create_workspace_discovery_mocks(tmp_path, depot_root="//depot/main")
             
             # Convert multiple depot paths
             depot_paths = [
-                "//javelin/mainline/dev/GameCode/Game/VersionTrack.h",
-                "//javelin/mainline/dev/GameCode/Engine/Core.cpp",
-                "//javelin/mainline/dev/Content/Maps/Level1.umap",
+                "//depot/main/src/app/Version.h",
+                "//depot/main/src/engine/Core.cpp",
+                "//depot/main/assets/maps/Level1.dat",
             ]
             
-            local_paths = [
-                perforce_provider._depot_to_local_path(str(tmp_path), dp)
+            relative_paths = [
+                perforce_provider._depot_to_relative_path(str(tmp_path), dp)
                 for dp in depot_paths
             ]
             
-            # Verify all paths were converted correctly
-            assert len(local_paths) == 3
-            assert all(str(tmp_path) in lp for lp in local_paths)
-            assert "VersionTrack.h" in local_paths[0]
-            assert "Core.cpp" in local_paths[1]
-            assert "Level1.umap" in local_paths[2]
+            # Verify all paths were converted to workspace-relative form
+            assert relative_paths == [
+                "src/app/Version.h",
+                "src/engine/Core.cpp",
+                "assets/maps/Level1.dat",
+            ]
             
             # Critical: Only TWO calls (p4 clients + p4 client -o) should have been made for all conversions
             assert mock_subprocess_run.call_count == 2
     
-    def test_depot_to_local_path_returns_none_for_unmapped_paths(self, mock_subprocess_run, perforce_provider, tmp_path):
+    def test_depot_to_relative_path_returns_none_for_unmapped_paths(self, mock_subprocess_run, perforce_provider, tmp_path):
         """Verify that depot paths outside workspace mapping return None."""
-        where_output = "//javelin/mainline/dev //client/mainline/dev C:\\Perforce\\Javelin\\mainline\\dev"
+        where_output = "//depot/main //client/main C:\\work\\depot\\main"
         
         mock_subprocess_run.return_value = Mock(returncode=0, stdout=where_output)
         
         # Path from different depot branch - no fallback, should return None
         depot_path = "//different-depot/branch/file.cpp"
-        local_path = perforce_provider._depot_to_local_path(str(tmp_path), depot_path)
+        relative_path = perforce_provider._depot_to_relative_path(str(tmp_path), depot_path)
         
         # Correct behavior: return None for unmapped paths
-        assert local_path is None
+        assert relative_path is None
     
-    def test_depot_to_local_path_windows_path_separators(self, mock_subprocess_run, perforce_provider, tmp_path):
-        """Verify proper handling of Windows path separators."""
+    def test_depot_to_relative_path_uses_forward_slashes(self, mock_subprocess_run, perforce_provider, tmp_path):
+        """Verify the relative path uses forward slashes and excludes the workspace root."""
         with patch('socket.gethostname', return_value='test-host'):
-            mock_subprocess_run.side_effect = create_workspace_discovery_mocks(tmp_path, depot_root="//javelin/mainline/dev")
+            mock_subprocess_run.side_effect = create_workspace_discovery_mocks(tmp_path, depot_root="//depot/main")
             
-            depot_path = "//javelin/mainline/dev/GameCode/Game/VersionTrack.h"
-            local_path = perforce_provider._depot_to_local_path(str(tmp_path), depot_path)
+            depot_path = "//depot/main/src/app/Version.h"
+            relative_path = perforce_provider._depot_to_relative_path(str(tmp_path), depot_path)
             
-            # Path object should handle separators correctly for the platform
-            assert "GameCode" in local_path
-            assert "VersionTrack.h" in local_path
+            # Relative path should not contain the workspace root and uses '/'
+            assert relative_path == "src/app/Version.h"
+            assert "\\" not in relative_path
+            assert str(tmp_path) not in relative_path
 
 
 class TestEdgeCases:
@@ -1032,19 +992,17 @@ class TestEdgeCases:
             
             with pytest.raises(subprocess.CalledProcessError):
                 perforce_provider.get_commits_after(
-                    workspace_path=str(tmp_path),
+                    project_root=str(tmp_path),
                     after_hash="99999",  # Invalid CL not in cache
                     batch_size=10,
-                    subdirs=None
                 )
 
     def test_get_commits_after_zero_batch_size(self, mock_subprocess_run, perforce_provider, tmp_path):
         """Verify empty result for batch_size=0."""
         changelists = perforce_provider.get_commits_after(
-            workspace_path=str(tmp_path),
+            project_root=str(tmp_path),
             after_hash=None,
             batch_size=0,
-            subdirs=None
         )
         
         assert changelists == []
@@ -1057,8 +1015,7 @@ class TestEdgeCases:
         
         with pytest.raises(subprocess.CalledProcessError):
             perforce_provider._fetch_all_changelist_numbers(
-                workspace_path=str(tmp_path),
-                subdirs=None
+                project_root=str(tmp_path),
             )
 
     def test_malformed_command_output(self, mock_subprocess_run, perforce_provider, tmp_path):
@@ -1072,8 +1029,7 @@ Change 12346 on incomplete
         mock_subprocess_run.return_value = Mock(returncode=0, stdout=changes_output)
         
         cl_numbers = perforce_provider._fetch_all_changelist_numbers(
-            workspace_path=str(tmp_path),
-            subdirs=None
+            project_root=str(tmp_path),
         )
         
         # Should extract CLs with valid format (reversed for oldest→newest)
@@ -1104,7 +1060,7 @@ Differences ...
         mock_subprocess_popen.return_value = create_mock_popen_process(small_output)
         
         output, result = perforce_provider._run_describe_with_size_limit(
-            workspace_path=str(tmp_path),
+            project_root=str(tmp_path),
             cl_numbers=["12345"],
             timeout=60,
             max_bytes=10 * 1024 * 1024  # 10 MB
@@ -1136,7 +1092,7 @@ Differences ...
         mock_subprocess_popen.return_value = mock_process
         
         output, result = perforce_provider._run_describe_with_size_limit(
-            workspace_path=str(tmp_path),
+            project_root=str(tmp_path),
             cl_numbers=["12345"],
             timeout=60,
             max_bytes=1024  # 1 KB limit
@@ -1171,7 +1127,7 @@ Differences ...
         mock_subprocess_popen.return_value = create_mock_popen_process(large_output)
         
         changelists = perforce_provider._fetch_single_describe_batch(
-            workspace_path=str(tmp_path),
+            project_root=str(tmp_path),
             cl_numbers=["12345"],
             depot_prefixes=None,
             timeout=60,
@@ -1254,7 +1210,7 @@ Differences ...
         ]
         
         changelists = perforce_provider._fetch_single_describe_batch(
-            workspace_path=str(tmp_path),
+            project_root=str(tmp_path),
             cl_numbers=["12345", "12346"],
             depot_prefixes=None,
             timeout=60,
@@ -1343,7 +1299,7 @@ Differences ...
         ]
         
         changelists = perforce_provider._fetch_with_binary_search(
-            workspace_path=str(tmp_path),
+            project_root=str(tmp_path),
             cl_numbers=["12345", "12346", "12347", "12348"],
             depot_prefixes=None,
             timeout=60,
@@ -1377,7 +1333,7 @@ Differences ...
         
         # Should not raise error despite negative returncode
         output, result = perforce_provider._run_describe_with_size_limit(
-            workspace_path=str(tmp_path),
+            project_root=str(tmp_path),
             cl_numbers=["12345"],
             timeout=60,
             max_bytes=1024

@@ -102,7 +102,7 @@ async def list_tools() -> list[Tool]:
                     lines.append(f"  spanning {first_hash[:8]} to {last_hash[:8]}")
                 # Show per-project details
                 for proj in expert.projects:
-                    lines.append(f"  \u2022 {proj.name} ({proj.vcs_type}) - {proj.workspace_path} -- {proj.commit_count} commits")
+                    lines.append(f"  \u2022 {proj.name} ({proj.vcs_type}) - {proj.project_root} -- {proj.commit_count} commits")
             expert_list = "\n".join(lines)
     except Exception as e:
         expert_list = f"\n\n**Currently Available Experts:** Error loading: {str(e)}"
@@ -315,7 +315,7 @@ async def handle_list() -> list[TextContent]:
                 lines.append("")
                 lines.append("**Projects:**")
                 for proj in expert.projects:
-                    proj_line = f"  \u2022 **{proj.name}** ({proj.vcs_type}) - {proj.workspace_path} -- {proj.commit_count} commits"
+                    proj_line = f"  \u2022 **{proj.name}** ({proj.vcs_type}) - {proj.project_root} -- {proj.commit_count} commits"
                     lines.append(proj_line)
                     if proj.first_processed_commit_hash and proj.last_processed_commit_hash:
                         lines.append(f"    spanning {proj.first_processed_commit_hash[:8]} to {proj.last_processed_commit_hash[:8]}")

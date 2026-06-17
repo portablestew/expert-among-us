@@ -1,7 +1,7 @@
 """
 Comprehensive tests for Git provider covering:
 - VCS detection (positive and negative cases)
-- Commit retrieval with various filters (subdirs, max_commits, since)
+- Commit retrieval (pagination, max_commits)
 - Latest commit time retrieval
 - Edge cases (empty repositories, no commits)
 
@@ -118,30 +118,27 @@ class TestCommitRetrieval:
     def test_get_commits_after_basic(self, git_provider, repo_with_commits):
         """Verify that commits can be retrieved via unified get_commits_after API."""
         commits = git_provider.get_commits_after(
-            workspace_path=str(repo_with_commits),
+            project_root=str(repo_with_commits),
             after_hash=None,
             batch_size=10,
-            subdirs=None,
         )
         assert len(commits) > 0
 
     def test_get_commits_after_respects_batch_size(self, git_provider, repo_with_commits):
         """Verify that batch_size parameter limits results."""
         commits = git_provider.get_commits_after(
-            workspace_path=str(repo_with_commits),
+            project_root=str(repo_with_commits),
             after_hash=None,
             batch_size=2,
-            subdirs=None,
         )
         assert len(commits) <= 2
 
     def test_get_commits_after_returns_changelist_objects(self, git_provider, repo_with_commits):
         """Verify that commits have required attributes."""
         commits = git_provider.get_commits_after(
-            workspace_path=str(repo_with_commits),
+            project_root=str(repo_with_commits),
             after_hash=None,
             batch_size=1,
-            subdirs=None,
         )
         
         assert len(commits) > 0
@@ -156,72 +153,20 @@ class TestCommitRetrieval:
     def test_get_commits_after_with_after_hash_filter(self, git_provider, repo_with_commits):
         """Verify that after_hash filter works correctly."""
         all_commits = git_provider.get_commits_after(
-            workspace_path=str(repo_with_commits),
+            project_root=str(repo_with_commits),
             after_hash=None,
             batch_size=10,
-            subdirs=None,
         )
         if len(all_commits) > 1:
             boundary = all_commits[0].id
             newer = git_provider.get_commits_after(
-                workspace_path=str(repo_with_commits),
+                project_root=str(repo_with_commits),
                 after_hash=boundary,
                 batch_size=10,
-                subdirs=None,
             )
             # All returned commits should be strictly after the boundary in chronological order
             assert all(c.id != boundary for c in newer)
 
-    def test_get_commits_page_with_subdirectory_filter(self, temp_repo_path, git_provider):
-        """Verify that subdirectory filter works."""
-        repo_path = temp_repo_path
-        
-        # Create subdirectories with different files
-        src_dir = repo_path / "src"
-        src_dir.mkdir()
-        test_dir = repo_path / "tests"
-        test_dir.mkdir()
-        
-        # Create and commit src file
-        (src_dir / "main.py").write_text("print('hello')")
-        subprocess.run(
-            ["git", "add", "src/main.py"],
-            cwd=repo_path,
-            capture_output=True,
-            check=True
-        )
-        subprocess.run(
-            ["git", "commit", "-m", "Add main"],
-            cwd=repo_path,
-            capture_output=True,
-            check=True
-        )
-        
-        # Create and commit test file
-        (test_dir / "test_main.py").write_text("# tests")
-        subprocess.run(
-            ["git", "add", "tests/test_main.py"],
-            cwd=repo_path,
-            capture_output=True,
-            check=True
-        )
-        subprocess.run(
-            ["git", "commit", "-m", "Add tests"],
-            cwd=repo_path,
-            capture_output=True,
-            check=True
-        )
-        
-        # Get commits for src directory
-        src_commits = git_provider.get_commits_after(
-            workspace_path=str(repo_path),
-            after_hash=None,
-            batch_size=10,
-            subdirs=["src"],
-        )
-        
-        # Should have at least one commit touching src
-        assert len(src_commits) > 0
 
     def test_get_commits_page_empty_repository(self, git_provider):
         """Empty Git repository should cause git log to fail with an error."""
@@ -236,19 +181,17 @@ class TestCommitRetrieval:
 
             with pytest.raises(subprocess.CalledProcessError):
                 git_provider.get_commits_after(
-                    workspace_path=str(repo_path),
+                    project_root=str(repo_path),
                     after_hash=None,
                     batch_size=10,
-                    subdirs=None,
                 )
 
     def test_get_commits_after_message_preserved(self, git_provider, repo_with_commits):
         """Verify that commit messages are preserved correctly."""
         commits = git_provider.get_commits_after(
-            workspace_path=str(repo_with_commits),
+            project_root=str(repo_with_commits),
             after_hash=None,
             batch_size=10,
-            subdirs=None,
         )
         
         messages = [c.message for c in commits]
@@ -257,10 +200,9 @@ class TestCommitRetrieval:
     def test_get_commits_after_author_preserved(self, git_provider, repo_with_commits):
         """Verify that commit authors are preserved correctly."""
         commits = git_provider.get_commits_after(
-            workspace_path=str(repo_with_commits),
+            project_root=str(repo_with_commits),
             after_hash=None,
             batch_size=10,
-            subdirs=None,
         )
         
         authors = [c.author for c in commits]
@@ -269,10 +211,9 @@ class TestCommitRetrieval:
     def test_get_commits_after_timestamp_format(self, git_provider, repo_with_commits):
         """Verify that commit timestamps are datetime objects."""
         commits = git_provider.get_commits_after(
-            workspace_path=str(repo_with_commits),
+            project_root=str(repo_with_commits),
             after_hash=None,
             batch_size=1,
-            subdirs=None,
         )
         
         if commits:
@@ -300,19 +241,17 @@ class TestCommitRetrieval:
         
         # Get first batch
         first_page = git_provider.get_commits_after(
-            workspace_path=str(repo_path),
+            project_root=str(repo_path),
             after_hash=None,
             batch_size=1,
-            subdirs=None,
         )
         
         # Get second page using first commit as boundary
         if first_page:
             second_page = git_provider.get_commits_after(
-                workspace_path=str(repo_path),
+                project_root=str(repo_path),
                 after_hash=first_page[0].id,
                 batch_size=1,
-                subdirs=None,
             )
             
             # If there are more commits, pages should be different
@@ -324,10 +263,9 @@ class TestCommitRetrieval:
     def test_get_commits_after_contains_diff(self, git_provider, repo_with_commits):
         """Verify that commits contain diff information."""
         commits = git_provider.get_commits_after(
-            workspace_path=str(repo_with_commits),
+            project_root=str(repo_with_commits),
             after_hash=None,
             batch_size=1,
-            subdirs=None,
         )
         
         if commits:
@@ -337,10 +275,9 @@ class TestCommitRetrieval:
     def test_get_commits_after_contains_files(self, git_provider, repo_with_commits):
         """Verify that commits contain file information."""
         commits = git_provider.get_commits_after(
-            workspace_path=str(repo_with_commits),
+            project_root=str(repo_with_commits),
             after_hash=None,
             batch_size=1,
-            subdirs=None,
         )
         
         if commits:
@@ -426,32 +363,6 @@ class TestLatestCommitTime:
         # Second time should be >= first time
         assert time2 >= time1
 
-    def test_latest_commit_time_with_subdirs(self, temp_repo_path, git_provider):
-        """Verify that latest commit time respects subdirs filter."""
-        repo_path = temp_repo_path
-        
-        # Create src directory with file
-        src_dir = repo_path / "src"
-        src_dir.mkdir()
-        (src_dir / "main.py").write_text("code")
-        subprocess.run(
-            ["git", "add", "src/main.py"],
-            cwd=repo_path,
-            capture_output=True,
-            check=True
-        )
-        subprocess.run(
-            ["git", "commit", "-m", "Add src"],
-            cwd=repo_path,
-            capture_output=True,
-            check=True
-        )
-        
-        # Get latest commit time for src directory
-        latest_time = git_provider.get_latest_commit_time(str(repo_path), subdirs=["src"])
-        
-        assert latest_time is not None
-
 
 class TestEdgeCases:
     """Tests for edge cases and boundary conditions with pagination API."""
@@ -460,10 +371,9 @@ class TestEdgeCases:
         """Nonexistent workspace path should raise an error."""
         with pytest.raises(subprocess.CalledProcessError):
             git_provider.get_commits_after(
-                workspace_path="/nonexistent/path",
+                project_root="/nonexistent/path",
                 after_hash=None,
                 batch_size=10,
-                subdirs=None,
             )
 
     def test_get_commits_page_with_special_characters_in_messages(self, temp_repo_path, git_provider):
@@ -485,10 +395,9 @@ class TestEdgeCases:
         )
         
         commits = git_provider.get_commits_after(
-            workspace_path=str(repo_path),
+            project_root=str(repo_path),
             after_hash=None,
             batch_size=1,
-            subdirs=None,
         )
         
         assert len(commits) == 1
@@ -520,10 +429,9 @@ class TestEdgeCases:
         )
         
         commits = git_provider.get_commits_after(
-            workspace_path=str(repo_path),
+            project_root=str(repo_path),
             after_hash=None,
             batch_size=1,
-            subdirs=None,
         )
         
         assert len(commits) == 1
@@ -532,10 +440,9 @@ class TestEdgeCases:
     def test_get_commits_page_with_zero_page_size(self, git_provider, repo_with_commits):
         """Verify that page_size=0 returns empty."""
         commits = git_provider.get_commits_after(
-            workspace_path=str(repo_with_commits),
+            project_root=str(repo_with_commits),
             after_hash=None,
             batch_size=0,
-            subdirs=None,
         )
         
         # Should return empty list
@@ -548,28 +455,25 @@ class TestEdgeCases:
 
         with pytest.raises(subprocess.CalledProcessError):
             git_provider.get_commits_after(
-                workspace_path=str(repo_with_commits),
+                project_root=str(repo_with_commits),
                 after_hash=fake_hash,
                 batch_size=10,
-                subdirs=None,
             )
 
     def test_get_commits_page_with_valid_since_hash(self, git_provider, repo_with_commits):
         """Verify that since_hash with valid hash filters correctly."""
         all_commits = git_provider.get_commits_after(
-            workspace_path=str(repo_with_commits),
+            project_root=str(repo_with_commits),
             after_hash=None,
             batch_size=10,
-            subdirs=None,
         )
         
         if len(all_commits) > 1:
             oldest_hash = all_commits[0].id
             recent_commits = git_provider.get_commits_after(
-                workspace_path=str(repo_with_commits),
+                project_root=str(repo_with_commits),
                 after_hash=oldest_hash,
                 batch_size=10,
-                subdirs=None,
             )
             # Should return commits strictly after the boundary
             assert all(c.id != oldest_hash for c in recent_commits)
@@ -594,33 +498,20 @@ class TestEdgeCases:
             )
         
         commits = git_provider.get_commits_after(
-            workspace_path=str(repo_path),
+            project_root=str(repo_path),
             after_hash=None,
             batch_size=10,
-            subdirs=None,
         )
         
         assert len(commits) == 3
 
-    def test_get_commits_page_with_empty_subdirs_list(self, git_provider, repo_with_commits):
-        """Verify that empty subdirs list is handled."""
-        commits = git_provider.get_commits_after(
-            workspace_path=str(repo_with_commits),
-            after_hash=None,
-            batch_size=10,
-            subdirs=[],
-        )
-        
-        # Empty list should be equivalent to no filter
-        assert len(commits) > 0
 
     def test_commit_id_is_valid_hash(self, git_provider, repo_with_commits):
         """Verify that commit IDs are valid Git hashes."""
         commits = git_provider.get_commits_after(
-            workspace_path=str(repo_with_commits),
+            project_root=str(repo_with_commits),
             after_hash=None,
             batch_size=1,
-            subdirs=None,
         )
         
         if commits:
@@ -684,7 +575,7 @@ class TestGetFilesContentAtCommit:
         repo_path, files, commit_hash = self._init_repo_with_files(temp_repo_path)
 
         result = git_provider.get_files_content_at_commit(
-            workspace_path=repo_path,
+            project_root=repo_path,
             file_paths=list(files.keys()),
             commit_hash=commit_hash,
         )
@@ -731,7 +622,7 @@ class TestGetFilesContentAtCommit:
         )
 
         result = git_provider.get_files_content_at_commit(
-            workspace_path=str(repo_path),
+            project_root=str(repo_path),
             file_paths=["text.txt", "image.bin"],
             commit_hash=commit_hash,
         )
@@ -748,7 +639,7 @@ class TestGetFilesContentAtCommit:
         requested = list(files.keys()) + ["missing.txt", "dir/none.py"]
 
         result = git_provider.get_files_content_at_commit(
-            workspace_path=repo_path,
+            project_root=repo_path,
             file_paths=requested,
             commit_hash=commit_hash,
         )
@@ -770,7 +661,7 @@ class TestGetFilesContentAtCommit:
 
         # No need to create commits; API should handle empty input early.
         result = git_provider.get_files_content_at_commit(
-            workspace_path=repo_path,
+            project_root=repo_path,
             file_paths=[],
             commit_hash="HEAD",
         )
@@ -816,7 +707,7 @@ class TestGetFilesContentAtCommit:
         requested = ["x.txt", "y.txt", "bin.dat", "missing1", "missing/also"]
 
         result = git_provider.get_files_content_at_commit(
-            workspace_path=str(repo_path),
+            project_root=str(repo_path),
             file_paths=requested,
             commit_hash=commit_hash,
         )
@@ -865,12 +756,12 @@ class TestGetFilesContentAtCommit:
         )
 
         batched = git_provider.get_files_content_at_commit(
-            workspace_path=str(repo_path),
+            project_root=str(repo_path),
             file_paths=["file.txt"],
             commit_hash=commit_hash,
         )
         single = git_provider.get_file_content_at_commit(
-            workspace_path=str(repo_path),
+            project_root=str(repo_path),
             file_path="file.txt",
             commit_hash=commit_hash,
         )
@@ -917,7 +808,7 @@ class TestGetFilesContentAtCommit:
         )
 
         result = git_provider.get_files_content_at_commit(
-            workspace_path=str(repo_path),
+            project_root=str(repo_path),
             file_paths=file_paths,
             commit_hash=commit_hash,
         )

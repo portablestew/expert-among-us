@@ -65,8 +65,7 @@ class SQLiteMetadataDB(MetadataDB):
             CREATE TABLE IF NOT EXISTS projects (
                 expert_name TEXT NOT NULL,
                 name TEXT NOT NULL,
-                workspace_path TEXT NOT NULL,
-                subdirs TEXT,
+                project_root TEXT NOT NULL,
                 vcs_type TEXT NOT NULL,
                 last_indexed_at TIMESTAMP,
                 last_processed_commit_hash TEXT,
@@ -148,13 +147,13 @@ class SQLiteMetadataDB(MetadataDB):
         """Create a new expert entry.
         
         In the multi-project schema, experts are logical groupings without
-        workspace_path, subdirs, or vcs_type (those are on projects now).
+        project_root or vcs_type (those are on projects now).
         
         Args:
             name: Unique identifier for the expert
             description: Optional human-readable description
-            **kwargs: Accepts but ignores legacy parameters (workspace_path, subdirs, vcs_type)
-                      for backwards compatibility during migration
+            **kwargs: Accepts but ignores legacy parameters (project_root, vcs_type)
+                      for backwards compatibility
         """
         self._connect()
         cursor = self.conn.cursor()
@@ -239,7 +238,7 @@ class SQLiteMetadataDB(MetadataDB):
         return experts
     
     def create_project(self, expert_name: str, project_name: str,
-                       workspace_path: str, subdirs: list[str],
+                       project_root: str,
                        vcs_type: str) -> None:
         """Create a new project within an expert.
         
@@ -249,17 +248,15 @@ class SQLiteMetadataDB(MetadataDB):
         Args:
             expert_name: Parent expert identifier
             project_name: Unique project name within the expert
-            workspace_path: Filesystem path to the repository
-            subdirs: List of subdirectory filters (stored as comma-separated)
+            project_root: Filesystem path to the repository (the indexed root)
             vcs_type: Version control system type ('git' or 'p4')
         """
         self._connect()
         cursor = self.conn.cursor()
-        subdirs_str = ",".join(subdirs) if subdirs else ""
         cursor.execute("""
-            INSERT OR IGNORE INTO projects (expert_name, name, workspace_path, subdirs, vcs_type)
-            VALUES (?, ?, ?, ?, ?)
-        """, (expert_name, project_name, workspace_path, subdirs_str, vcs_type))
+            INSERT OR IGNORE INTO projects (expert_name, name, project_root, vcs_type)
+            VALUES (?, ?, ?, ?)
+        """, (expert_name, project_name, project_root, vcs_type))
         self.conn.commit()
 
     def get_project(self, expert_name: str, project_name: str) -> Optional[dict]:
@@ -275,7 +272,7 @@ class SQLiteMetadataDB(MetadataDB):
         self._connect()
         cursor = self.conn.cursor()
         cursor.execute("""
-            SELECT expert_name, name, workspace_path, subdirs, vcs_type,
+            SELECT expert_name, name, project_root, vcs_type,
                    last_indexed_at, last_processed_commit_hash,
                    first_processed_commit_hash, has_vector_metadata, created_at
             FROM projects
@@ -297,14 +294,10 @@ class SQLiteMetadataDB(MetadataDB):
                 except (ValueError, TypeError):
                     pass
 
-            subdirs_str = row['subdirs'] or ""
-            subdirs = [s.strip() for s in subdirs_str.split(",") if s.strip()]
-
             return {
                 'expert_name': row['expert_name'],
                 'name': row['name'],
-                'workspace_path': row['workspace_path'],
-                'subdirs': subdirs,
+                'project_root': row['project_root'],
                 'vcs_type': row['vcs_type'],
                 'last_indexed_at': last_indexed_at,
                 'last_processed_commit_hash': row['last_processed_commit_hash'],
@@ -326,7 +319,7 @@ class SQLiteMetadataDB(MetadataDB):
         self._connect()
         cursor = self.conn.cursor()
         cursor.execute("""
-            SELECT expert_name, name, workspace_path, subdirs, vcs_type,
+            SELECT expert_name, name, project_root, vcs_type,
                    last_indexed_at, last_processed_commit_hash,
                    first_processed_commit_hash, has_vector_metadata, created_at
             FROM projects
@@ -351,14 +344,10 @@ class SQLiteMetadataDB(MetadataDB):
                 except (ValueError, TypeError):
                     pass
 
-            subdirs_str = row['subdirs'] or ""
-            subdirs = [s.strip() for s in subdirs_str.split(",") if s.strip()]
-
             projects.append({
                 'expert_name': row['expert_name'],
                 'name': row['name'],
-                'workspace_path': row['workspace_path'],
-                'subdirs': subdirs,
+                'project_root': row['project_root'],
                 'vcs_type': row['vcs_type'],
                 'last_indexed_at': last_indexed_at,
                 'last_processed_commit_hash': row['last_processed_commit_hash'],

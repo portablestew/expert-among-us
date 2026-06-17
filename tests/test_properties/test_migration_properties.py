@@ -1,7 +1,7 @@
 """
-Property-based tests for migration, project indexing independence, and populate idempotency.
+Property-based tests for project indexing independence and populate idempotency.
 
-Tests Properties 10, 12, and 13 from the design document using Hypothesis.
+Tests Properties 10 and 12 from the design document using Hypothesis.
 
 **Validates: Requirements 9.2, 9.3, 9.7, 10.3, 12.1, 12.2, 13.2, 14.1, 14.2, 14.3**
 """
@@ -17,7 +17,6 @@ from hypothesis import given, assume, settings, HealthCheck
 from hypothesis import strategies as st
 
 from expert_among_us.db.metadata.sqlite import SQLiteMetadataDB
-from expert_among_us.db.metadata.migration import migrate_to_multi_project
 from expert_among_us.models.changelist import Changelist
 
 
@@ -54,79 +53,6 @@ def _reset_db(db):
     db.conn.commit()
 
 
-def _create_old_schema_db(db_path: str, expert_name: str,
-                          workspace_path: str, subdirs: str,
-                          vcs_type: str,
-                          changelists: list[dict] | None = None,
-                          last_processed: str | None = None,
-                          first_processed: str | None = None) -> None:
-    """Create a database with the OLD single-project schema for migration testing.
-
-    Old schema has experts table with workspace_path, subdirs, vcs_type,
-    last_processed_commit_hash, and first_processed_commit_hash columns.
-    Changelists table has no project_name column.
-    """
-    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    # Old experts table with workspace/VCS fields
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS experts (
-            name TEXT PRIMARY KEY,
-            workspace_path TEXT,
-            subdirs TEXT,
-            vcs_type TEXT,
-            last_processed_commit_hash TEXT,
-            first_processed_commit_hash TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            last_indexed_at TIMESTAMP
-        );
-    """)
-
-    # Old changelists table without project_name
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS changelists (
-            id TEXT PRIMARY KEY,
-            expert_name TEXT NOT NULL,
-            timestamp TIMESTAMP NOT NULL,
-            author TEXT NOT NULL,
-            message TEXT NOT NULL,
-            diff BLOB NOT NULL,
-            files TEXT NOT NULL,
-            review_comments TEXT,
-            generated_prompt TEXT
-        );
-    """)
-
-    # Insert expert
-    cursor.execute("""
-        INSERT OR IGNORE INTO experts (name, workspace_path, subdirs, vcs_type,
-                                       last_processed_commit_hash, first_processed_commit_hash)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (expert_name, workspace_path, subdirs, vcs_type, last_processed, first_processed))
-
-    # Insert changelists if provided
-    if changelists:
-        for cl in changelists:
-            cursor.execute("""
-                INSERT OR IGNORE INTO changelists (id, expert_name, timestamp, author,
-                                                   message, diff, files)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                cl["id"],
-                expert_name,
-                cl.get("timestamp", datetime.now(timezone.utc).isoformat()),
-                cl.get("author", "test-author"),
-                cl.get("message", "test commit"),
-                cl.get("diff", b"test diff"),
-                cl.get("files", "file1.py,file2.py"),
-            ))
-
-    conn.commit()
-    conn.close()
-
-
 # --- Strategies ---
 
 valid_name_start = st.sampled_from(
@@ -155,7 +81,7 @@ commit_hashes = st.text(
 )
 
 # Strategy for workspace paths
-workspace_paths = st.text(
+project_roots = st.text(
     alphabet="abcdefghijklmnopqrstuvwxyz0123456789/_-.",
     min_size=1,
     max_size=80,
@@ -163,13 +89,6 @@ workspace_paths = st.text(
 
 # Strategy for VCS types
 vcs_types = st.sampled_from(["git", "p4"])
-
-# Strategy for subdirs (comma-separated string for old schema)
-subdirs_strings = st.text(
-    alphabet="abcdefghijklmnopqrstuvwxyz0123456789/_-.",
-    min_size=0,
-    max_size=50,
-)
 
 # Strategy for changelist counts (keep small for speed)
 changelist_counts = st.integers(min_value=0, max_value=5)
@@ -220,8 +139,8 @@ class TestProperty10ProjectIndexingIndependence:
         project_a=valid_project_names(),
         project_b=valid_project_names(),
         commit_hash_a=commit_hashes,
-        workspace_a=workspace_paths,
-        workspace_b=workspace_paths,
+        workspace_a=project_roots,
+        workspace_b=project_roots,
         vcs_a=vcs_types,
         vcs_b=vcs_types,
     )
@@ -236,8 +155,8 @@ class TestProperty10ProjectIndexingIndependence:
         _reset_db(db)
 
         # Create two projects
-        db.create_project("prop_test_expert", project_a, workspace_a, [], vcs_a)
-        db.create_project("prop_test_expert", project_b, workspace_b, [], vcs_b)
+        db.create_project("prop_test_expert", project_a, workspace_a, vcs_a)
+        db.create_project("prop_test_expert", project_b, workspace_b, vcs_b)
 
         # Record project B's initial state
         proj_b_before = db.get_project("prop_test_expert", project_b)
@@ -258,8 +177,8 @@ class TestProperty10ProjectIndexingIndependence:
         commit_hash_a1=commit_hashes,
         commit_hash_a2=commit_hashes,
         commit_hash_b=commit_hashes,
-        workspace_a=workspace_paths,
-        workspace_b=workspace_paths,
+        workspace_a=project_roots,
+        workspace_b=project_roots,
     )
     @settings(max_examples=50, suppress_health_check=[HealthCheck.too_slow])
     def test_multiple_updates_to_a_still_leave_b_independent(
@@ -272,8 +191,8 @@ class TestProperty10ProjectIndexingIndependence:
         db = _get_shared_db()
         _reset_db(db)
 
-        db.create_project("prop_test_expert", project_a, workspace_a, [], "git")
-        db.create_project("prop_test_expert", project_b, workspace_b, [], "git")
+        db.create_project("prop_test_expert", project_a, workspace_a, "git")
+        db.create_project("prop_test_expert", project_b, workspace_b, "git")
 
         # Update project B once
         db.update_project_last_processed("prop_test_expert", project_b, commit_hash_b)
@@ -304,7 +223,7 @@ class TestProperty12PopulateIdempotency:
 
     @given(
         project_name=valid_project_names(),
-        workspace=workspace_paths,
+        workspace=project_roots,
         vcs_type=vcs_types,
         num_changelists=st.integers(min_value=1, max_value=5),
     )
@@ -316,7 +235,7 @@ class TestProperty12PopulateIdempotency:
         db = _get_shared_db()
         _reset_db(db)
 
-        db.create_project("prop_test_expert", project_name, workspace, [], vcs_type)
+        db.create_project("prop_test_expert", project_name, workspace, vcs_type)
 
         # Create changelists
         changelists = []
@@ -355,7 +274,7 @@ class TestProperty12PopulateIdempotency:
 
     @given(
         project_name=valid_project_names(),
-        workspace=workspace_paths,
+        workspace=project_roots,
         commit_hash=commit_hashes,
         num_changelists=st.integers(min_value=1, max_value=3),
     )
@@ -367,7 +286,7 @@ class TestProperty12PopulateIdempotency:
         db = _get_shared_db()
         _reset_db(db)
 
-        db.create_project("prop_test_expert", project_name, workspace, [], "git")
+        db.create_project("prop_test_expert", project_name, workspace, "git")
 
         # Insert changelists and update state
         changelists = []
@@ -402,279 +321,3 @@ class TestProperty12PopulateIdempotency:
         # Commit count unchanged
         count = db.get_project_commit_count("prop_test_expert", project_name)
         assert count == num_changelists
-
-
-# --- Property 13: Migration Data Preservation ---
-
-class TestProperty13MigrationDataPreservation:
-    """
-    Property 13: Migration Data Preservation
-
-    For any existing expert in the old schema, after migration:
-    (a) a project with the expert's name should exist with inherited
-        workspace_path, subdirs, and vcs_type,
-    (b) all changelists should have project_name set to the expert name,
-    (c) has_vector_metadata should be False, and
-    (d) running migration again should produce no changes.
-
-    **Validates: Requirements 9.2, 9.3, 9.7, 10.3**
-    """
-
-    @given(
-        expert_name=valid_project_names(),
-        workspace_path=workspace_paths,
-        subdirs=subdirs_strings,
-        vcs_type=vcs_types,
-        num_changelists=changelist_counts,
-    )
-    @settings(max_examples=50, suppress_health_check=[HealthCheck.too_slow])
-    def test_migration_creates_project_with_inherited_fields(
-        self, expert_name, workspace_path, subdirs, vcs_type, num_changelists
-    ):
-        """After migration, a project exists with name=expert_name and inherited fields."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = str(Path(tmpdir) / "metadata.db")
-
-            # Generate unique changelist IDs
-            changelists = []
-            for i in range(num_changelists):
-                changelists.append({
-                    "id": f"{expert_name}-cl-{i}-{uuid.uuid4().hex[:8]}",
-                    "author": "test-author",
-                    "message": f"commit {i}",
-                    "diff": b"diff content",
-                    "files": f"src/file{i}.py,lib/util{i}.py",
-                })
-
-            # Create old-schema DB
-            _create_old_schema_db(
-                db_path, expert_name, workspace_path, subdirs, vcs_type,
-                changelists=changelists,
-            )
-
-            # Run migration
-            migrate_to_multi_project(db_path)
-
-            # Verify: project exists with inherited fields
-            conn = sqlite3.connect(db_path)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-
-            cursor.execute(
-                "SELECT * FROM projects WHERE expert_name = ? AND name = ?",
-                (expert_name, expert_name)
-            )
-            project_row = cursor.fetchone()
-            assert project_row is not None, "Migration did not create project"
-            assert project_row["workspace_path"] == workspace_path
-            assert project_row["subdirs"] == subdirs
-            assert project_row["vcs_type"] == vcs_type
-
-            conn.close()
-
-    @given(
-        expert_name=valid_project_names(),
-        workspace_path=workspace_paths,
-        vcs_type=vcs_types,
-        num_changelists=st.integers(min_value=1, max_value=5),
-    )
-    @settings(max_examples=50, suppress_health_check=[HealthCheck.too_slow])
-    def test_migration_sets_project_name_on_changelists(
-        self, expert_name, workspace_path, vcs_type, num_changelists
-    ):
-        """After migration, all changelists have project_name = expert_name."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = str(Path(tmpdir) / "metadata.db")
-
-            changelists = []
-            for i in range(num_changelists):
-                changelists.append({
-                    "id": f"{expert_name}-cl-{i}-{uuid.uuid4().hex[:8]}",
-                    "author": "author",
-                    "message": f"msg {i}",
-                    "diff": b"diff",
-                    "files": f"file{i}.py",
-                })
-
-            _create_old_schema_db(
-                db_path, expert_name, workspace_path, "", vcs_type,
-                changelists=changelists,
-            )
-
-            migrate_to_multi_project(db_path)
-
-            conn = sqlite3.connect(db_path)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-
-            cursor.execute(
-                "SELECT id, project_name FROM changelists WHERE expert_name = ?",
-                (expert_name,)
-            )
-            rows = cursor.fetchall()
-            assert len(rows) == num_changelists
-
-            for row in rows:
-                assert row["project_name"] == expert_name, (
-                    f"Changelist {row['id']} has project_name={row['project_name']}, "
-                    f"expected {expert_name}"
-                )
-
-            conn.close()
-
-    @given(
-        expert_name=valid_project_names(),
-        workspace_path=workspace_paths,
-        vcs_type=vcs_types,
-    )
-    @settings(max_examples=50, suppress_health_check=[HealthCheck.too_slow])
-    def test_migration_sets_has_vector_metadata_false(
-        self, expert_name, workspace_path, vcs_type
-    ):
-        """After migration, has_vector_metadata is False for migrated projects."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = str(Path(tmpdir) / "metadata.db")
-
-            _create_old_schema_db(
-                db_path, expert_name, workspace_path, "", vcs_type,
-            )
-
-            migrate_to_multi_project(db_path)
-
-            conn = sqlite3.connect(db_path)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-
-            cursor.execute(
-                "SELECT has_vector_metadata FROM projects WHERE expert_name = ? AND name = ?",
-                (expert_name, expert_name)
-            )
-            row = cursor.fetchone()
-            assert row is not None
-            assert row["has_vector_metadata"] == 0, (
-                f"Expected has_vector_metadata=0 (False), got {row['has_vector_metadata']}"
-            )
-
-            conn.close()
-
-    @given(
-        expert_name=valid_project_names(),
-        workspace_path=workspace_paths,
-        subdirs=subdirs_strings,
-        vcs_type=vcs_types,
-        num_changelists=changelist_counts,
-    )
-    @settings(max_examples=50, suppress_health_check=[HealthCheck.too_slow])
-    def test_migration_is_idempotent(
-        self, expert_name, workspace_path, subdirs, vcs_type, num_changelists
-    ):
-        """Running migration twice produces the same result as running it once (no-op on second run)."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = str(Path(tmpdir) / "metadata.db")
-
-            changelists = []
-            for i in range(num_changelists):
-                changelists.append({
-                    "id": f"{expert_name}-cl-{i}-{uuid.uuid4().hex[:8]}",
-                    "author": "author",
-                    "message": f"msg {i}",
-                    "diff": b"diff",
-                    "files": f"file{i}.py",
-                })
-
-            _create_old_schema_db(
-                db_path, expert_name, workspace_path, subdirs, vcs_type,
-                changelists=changelists,
-            )
-
-            # First migration
-            migrate_to_multi_project(db_path)
-
-            # Capture state after first migration
-            conn = sqlite3.connect(db_path)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-
-            cursor.execute("SELECT * FROM projects WHERE expert_name = ?", (expert_name,))
-            projects_after_first = [dict(row) for row in cursor.fetchall()]
-
-            cursor.execute("SELECT * FROM changelists WHERE expert_name = ?", (expert_name,))
-            changelists_after_first = [dict(row) for row in cursor.fetchall()]
-
-            cursor.execute("SELECT * FROM experts WHERE name = ?", (expert_name,))
-            experts_after_first = [dict(row) for row in cursor.fetchall()]
-
-            conn.close()
-
-            # Second migration (should be a no-op)
-            migrate_to_multi_project(db_path)
-
-            # Capture state after second migration
-            conn = sqlite3.connect(db_path)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-
-            cursor.execute("SELECT * FROM projects WHERE expert_name = ?", (expert_name,))
-            projects_after_second = [dict(row) for row in cursor.fetchall()]
-
-            cursor.execute("SELECT * FROM changelists WHERE expert_name = ?", (expert_name,))
-            changelists_after_second = [dict(row) for row in cursor.fetchall()]
-
-            cursor.execute("SELECT * FROM experts WHERE name = ?", (expert_name,))
-            experts_after_second = [dict(row) for row in cursor.fetchall()]
-
-            conn.close()
-
-            # Assert no changes
-            assert len(projects_after_second) == len(projects_after_first)
-            assert len(changelists_after_second) == len(changelists_after_first)
-            assert len(experts_after_second) == len(experts_after_first)
-
-            # Compare individual project rows
-            for p1, p2 in zip(projects_after_first, projects_after_second):
-                assert p1["name"] == p2["name"]
-                assert p1["workspace_path"] == p2["workspace_path"]
-                assert p1["subdirs"] == p2["subdirs"]
-                assert p1["vcs_type"] == p2["vcs_type"]
-                assert p1["has_vector_metadata"] == p2["has_vector_metadata"]
-
-            # Compare changelist rows
-            for c1, c2 in zip(changelists_after_first, changelists_after_second):
-                assert c1["id"] == c2["id"]
-                assert c1["project_name"] == c2["project_name"]
-
-    @given(
-        expert_name=valid_project_names(),
-        workspace_path=workspace_paths,
-        vcs_type=vcs_types,
-    )
-    @settings(max_examples=50, suppress_health_check=[HealthCheck.too_slow])
-    def test_migration_removes_workspace_fields_from_experts(
-        self, expert_name, workspace_path, vcs_type
-    ):
-        """After migration, experts table no longer has workspace_path, subdirs, vcs_type columns."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = str(Path(tmpdir) / "metadata.db")
-
-            _create_old_schema_db(
-                db_path, expert_name, workspace_path, "src,lib", vcs_type,
-            )
-
-            migrate_to_multi_project(db_path)
-
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-            cursor.execute("PRAGMA table_info(experts)")
-            columns = [row[1] for row in cursor.fetchall()]
-            conn.close()
-
-            # Old fields should be gone
-            assert "workspace_path" not in columns
-            assert "subdirs" not in columns
-            assert "vcs_type" not in columns
-            # New field should be present
-            assert "description" in columns
-            # Core fields preserved
-            assert "name" in columns
-            assert "created_at" in columns
-            assert "last_indexed_at" in columns

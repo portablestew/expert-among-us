@@ -19,7 +19,7 @@ VCS_PROVIDERS: list[type[VCSProvider]] = [
 ]
 
 
-def detect_vcs(workspace_path: str, settings) -> Optional[VCSProvider]:
+def detect_vcs(project_root: str, settings) -> Optional[VCSProvider]:
     """Automatically detect which VCS is in use and return a provider instance.
     
     This function tries each registered VCS provider's detect() method in order
@@ -27,7 +27,7 @@ def detect_vcs(workspace_path: str, settings) -> Optional[VCSProvider]:
     the VCS in the given workspace.
     
     Args:
-        workspace_path: Path to the workspace directory to check
+        project_root: Path to the project root directory to check
         settings: Settings instance (required)
         
     Returns:
@@ -43,11 +43,11 @@ def detect_vcs(workspace_path: str, settings) -> Optional[VCSProvider]:
         ...     print("No VCS detected")
     """
     # Validate path is not empty or whitespace-only
-    if not workspace_path or not workspace_path.strip():
+    if not project_root or not project_root.strip():
         return None
 
     for provider_class in VCS_PROVIDERS:
-        if provider_class.detect(workspace_path):
+        if provider_class.detect(project_root):
             # Instantiate provider with settings
             return provider_class(settings)
      

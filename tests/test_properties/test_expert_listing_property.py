@@ -36,7 +36,7 @@ def _create_expert_with_projects(data_dir: Path, expert_name: str, projects: lis
     Args:
         data_dir: Root data directory (list_experts expects data_dir/data/<expert>/metadata.db)
         expert_name: Name of the expert to create
-        projects: List of dicts with keys: name, commit_count, workspace_path, vcs_type
+        projects: List of dicts with keys: name, commit_count, project_root, vcs_type
     """
     # Ensure the directory structure exists for SQLite to create the DB file
     db_dir = data_dir / "data" / expert_name
@@ -50,8 +50,7 @@ def _create_expert_with_projects(data_dir: Path, expert_name: str, projects: lis
         db.create_project(
             expert_name=expert_name,
             project_name=proj["name"],
-            workspace_path=proj["workspace_path"],
-            subdirs=[],
+            project_root=proj["project_root"],
             vcs_type=proj["vcs_type"],
         )
 
@@ -113,7 +112,7 @@ def project_configs(draw):
     return {
         "name": name,
         "commit_count": commit_count,
-        "workspace_path": f"/repos/{name}",
+        "project_root": f"/repos/{name}",
         "vcs_type": vcs_type,
     }
 

@@ -1,7 +1,7 @@
-"""Tests for Perforce workspace-based file filtering.
+"""Tests for Perforce project-root-based file filtering.
 
-These tests verify that file filtering works correctly when subdirs is None,
-ensuring only files within the workspace_path are included in diffs.
+These tests verify that file filtering works correctly using the project root
+as the boundary, ensuring only files within the project root are included in diffs.
 """
 
 import pytest
@@ -43,10 +43,10 @@ def create_mock_popen_process(output: str, returncode: int = 0):
 
 
 class TestWorkspaceFiltering:
-    """Tests for automatic file filtering based on workspace_path."""
+    """Tests for automatic file filtering based on project_root."""
     
-    def test_depot_prefixes_created_when_subdirs_none(self, perforce_provider, tmp_path):
-        """Verify depot_prefixes is created from workspace_path when subdirs is None."""
+    def test_depot_prefixes_created_from_project_root(self, perforce_provider, tmp_path):
+        """Verify depot_prefixes is derived from project_root as the filter boundary."""
         with patch('socket.gethostname', return_value='test-host'):
             with patch('subprocess.run') as mock_run, patch('subprocess.Popen') as mock_popen:
                 # Mock workspace discovery
@@ -77,11 +77,9 @@ Differences ...
                 
                 mock_popen.return_value = create_mock_popen_process(describe_output)
                 
-                # Call with subdirs=None
                 changelists = perforce_provider._fetch_changelists_by_numbers(
-                    workspace_path=str(tmp_path),
+                    project_root=str(tmp_path),
                     cl_numbers=["12345"],
-                    subdirs=None  # Key: subdirs is None
                 )
                 
                 # Verify changelist was created
@@ -97,63 +95,6 @@ Differences ...
                 # Verify diff only contains localization file changes
                 assert "Hello" in cl.diff
                 assert "button" not in cl.diff
-    
-    def test_depot_prefixes_respects_explicit_subdirs(self, perforce_provider, tmp_path):
-        """Verify depot_prefixes uses explicit subdirs when provided."""
-        with patch('socket.gethostname', return_value='test-host'):
-            with patch('subprocess.run') as mock_run, patch('subprocess.Popen') as mock_popen:
-                # Mock workspace discovery
-                mock_run.side_effect = [
-                    Mock(returncode=0, stdout=f"test-host {tmp_path} test-client"),
-                    Mock(returncode=0, stdout="View:\n\t//depot/... //test-client/..."),
-                ]
-                
-                # Mock p4 describe with files in different subdirs
-                describe_output = """Change 12345 by user@client on 2024/01/15 14:00:00
-
-\tMulti-dir commit
-
-Affected files ...
-
-... //depot/game/player.cpp#1 edit
-... //depot/localization/strings.xml#1 edit
-... //depot/tools/build.sh#1 edit
-
-Differences ...
-
-==== //depot/game/player.cpp#1 (text) ====
-
-+void jump() {}
-
-==== //depot/localization/strings.xml#1 (text) ====
-
-+<string>Jump</string>
-
-==== //depot/tools/build.sh#1 (text) ====
-
-+make all"""
-                
-                mock_popen.return_value = create_mock_popen_process(describe_output)
-                
-                # Call with explicit subdirs
-                changelists = perforce_provider._fetch_changelists_by_numbers(
-                    workspace_path=str(tmp_path),
-                    cl_numbers=["12345"],
-                    subdirs=["game", "localization"]  # Only these subdirs
-                )
-                
-                # Verify both game and localization files are included, but not tools
-                assert len(changelists) == 1
-                cl = changelists[0]
-                assert len(cl.files) == 2
-                assert any("player.cpp" in f for f in cl.files)
-                assert any("strings.xml" in f for f in cl.files)
-                assert not any("build.sh" in f for f in cl.files)
-                
-                # Verify diff includes game and localization but not tools
-                assert "jump()" in cl.diff
-                assert "Jump" in cl.diff
-                assert "make all" not in cl.diff
     
     def test_filtering_prevents_cross_directory_pollution(self, perforce_provider, tmp_path):
         """Verify the fix prevents cross-directory file pollution in diffs."""
@@ -200,11 +141,10 @@ Differences ...
                 
                 mock_popen.return_value = create_mock_popen_process(describe_output)
                 
-                # Index with workspace_path = localization dir, subdirs = None
+                # Index with project_root = localization dir
                 changelists = perforce_provider._fetch_changelists_by_numbers(
-                    workspace_path=str(loc_path),
+                    project_root=str(loc_path),
                     cl_numbers=["1076268"],
-                    subdirs=None  # Should auto-filter by workspace_path
                 )
                 
                 assert len(changelists) == 1

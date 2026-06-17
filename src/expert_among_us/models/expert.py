@@ -3,7 +3,7 @@
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Literal, Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -57,8 +57,7 @@ class ProjectConfig(BaseModel):
     Attributes:
         name: Project identifier within the expert (unique per expert)
         expert_name: Parent expert name
-        workspace_path: Path to repository root
-        subdirs: Optional subdirectory filters for indexing
+        project_root: Path to the project root (the indexed directory)
         vcs_type: Version control system type ('git' or 'p4')
         last_indexed_at: Last successful index time for this project
         last_processed_commit_hash: Most recent commit hash indexed
@@ -69,10 +68,7 @@ class ProjectConfig(BaseModel):
 
     name: str = Field(..., description="Project identifier within expert")
     expert_name: str = Field(..., description="Parent expert name")
-    workspace_path: Path = Field(..., description="Path to repository")
-    subdirs: List[str] = Field(
-        default_factory=list, description="Optional subdir filters"
-    )
+    project_root: Path = Field(..., description="Path to the project root")
     vcs_type: Literal["git", "p4"] = Field(
         default="git", description="Version control system type"
     )
@@ -87,7 +83,7 @@ class ProjectConfig(BaseModel):
     )
     has_vector_metadata: bool = Field(
         default=True,
-        description="False for migrated projects without ChromaDB project metadata",
+        description="Whether ChromaDB vectors carry project metadata",
     )
     created_at: Optional[datetime] = Field(
         default_factory=lambda: datetime.now(timezone.utc),
@@ -99,8 +95,7 @@ class ProjectConfig(BaseModel):
             "example": {
                 "name": "payment-service",
                 "expert_name": "my-team",
-                "workspace_path": "/repos/payment",
-                "subdirs": ["src/"],
+                "project_root": "/repos/payment",
                 "vcs_type": "git",
             }
         }
@@ -142,13 +137,13 @@ class ProjectConfig(BaseModel):
         """
         return _validate_identifier_name(v, "Expert name")
 
-    @field_validator("workspace_path")
+    @field_validator("project_root")
     @classmethod
-    def validate_workspace(cls, v: Path) -> Path:
-        """Validate that workspace path exists and is a directory.
+    def validate_project_root(cls, v: Path) -> Path:
+        """Validate that the project root exists and is a directory.
 
         Args:
-            v: Workspace path to validate
+            v: Project root path to validate
 
         Returns:
             Validated path
@@ -157,10 +152,10 @@ class ProjectConfig(BaseModel):
             ValueError: If path does not exist or is not a directory
         """
         if not v.exists():
-            raise ValueError(f"Workspace path does not exist: {v}")
+            raise ValueError(f"Project root does not exist: {v}")
 
         if not v.is_dir():
-            raise ValueError(f"Workspace path is not a directory: {v}")
+            raise ValueError(f"Project root is not a directory: {v}")
 
         return v
 
@@ -169,8 +164,8 @@ class ExpertConfig(BaseModel):
     """Configuration for an expert (logical grouping of projects).
 
     An expert owns a ChromaDB vector space and contains one or more projects.
-    After the multi-project migration, workspace_path, subdirs, and vcs_type
-    are stored per-project in ProjectConfig rather than on the expert.
+    The project_root and vcs_type are stored per-project in ProjectConfig
+    rather than on the expert.
 
     Attributes:
         name: Expert identifier (unique, used as directory name)

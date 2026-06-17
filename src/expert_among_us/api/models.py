@@ -13,7 +13,7 @@ class ProjectInfo:
     Attributes:
         name: Unique name of the project within its expert
         vcs_type: Version control system type (e.g., "git", "p4")
-        workspace_path: Path to the repository workspace
+        project_root: Path to the project root (the indexed directory)
         commit_count: Number of commits indexed for this project
         last_indexed_at: Timestamp of last indexing operation for this project
         first_processed_commit_hash: Hash of the first processed commit (oldest)
@@ -21,7 +21,7 @@ class ProjectInfo:
     """
     name: str
     vcs_type: str
-    workspace_path: str
+    project_root: str
     commit_count: int
     last_indexed_at: Optional[datetime]
     first_processed_commit_hash: Optional[str] = None

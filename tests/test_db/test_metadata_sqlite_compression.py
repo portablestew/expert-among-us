@@ -32,9 +32,9 @@ def temp_db():
         db.create_expert("test_expert")
         cursor = db.conn.cursor()
         cursor.execute("""
-            INSERT OR IGNORE INTO projects (expert_name, name, workspace_path, subdirs, vcs_type)
-            VALUES (?, ?, ?, ?, ?)
-        """, ("test_expert", "test-project", "/path/to/repo", "", "git"))
+            INSERT OR IGNORE INTO projects (expert_name, name, project_root, vcs_type)
+            VALUES (?, ?, ?, ?)
+        """, ("test_expert", "test-project", "/path/to/repo", "git"))
         db.conn.commit()
         
         yield db

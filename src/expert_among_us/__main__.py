@@ -78,7 +78,7 @@ def main(ctx, debug: bool, data_dir: Optional[Path], llm_provider: str, base_url
 
 @main.command()
 @click.argument("expert_name", type=str)
-@click.argument("workspace_and_subdirs", nargs=-1, type=str)
+@click.argument("project_root_arg", required=False, type=str)
 @click.option("--project", type=str, required=True, help="Project name within the expert (required)")
 @click.option("--max-commits", default=60000, type=int, help="Maximum commits to index")
 @click.option("--max-batches", type=int, help="Maximum batches to run (returns exit code 2 if more remain)")
@@ -95,7 +95,7 @@ def main(ctx, debug: bool, data_dir: Optional[Path], llm_provider: str, base_url
 def populate(
     ctx,
     expert_name: str,
-    workspace_and_subdirs: tuple[str, ...],
+    project_root_arg: Optional[str],
     project: str,
     max_commits: int,
     max_batches: Optional[int],
@@ -108,11 +108,12 @@ def populate(
 ) -> None:
     """Build or update an expert index from a repository.
     
-    The VCS type (Git, Perforce, etc.) is automatically detected from the workspace.
+    The VCS type (Git, Perforce, etc.) is automatically detected from the project root.
     
     EXPERT_NAME: Unique name for this expert
     
-    [WORKSPACE] [SUBDIRS...]: Optional workspace path followed by subdirectories to filter
+    [PROJECT_ROOT]: Optional path to the project root (the directory to index).
+    Omit it to update an existing project (the root is looked up from the project).
     
     Examples:
     
@@ -121,12 +122,8 @@ def populate(
         $ expert-among-us populate MyExpert /path/to/repo --project my-project
         
         \b
-        # Update existing project - workspace optional (looks up from project)
+        # Update existing project - project root optional (looks up from project)
         $ expert-among-us populate MyExpert --project my-project
-        
-        \b
-        # Index specific subdirectories
-        $ expert-among-us populate MyExpert /path/to/repo --project my-project src/ lib/
         
         \b
         # Multi-project expert: add second project
@@ -153,22 +150,19 @@ def populate(
         log_error("Project name must contain only alphanumeric characters, hyphens, and underscores")
         sys.exit(1)
     
-    # Parse workspace_and_subdirs: first argument is workspace if it's an existing directory
-    workspace: Optional[Path] = None
-    subdirs_list: tuple[str, ...] = ()
+    # Parse the optional project root argument
+    project_root: Optional[Path] = None
     
-    if workspace_and_subdirs:
-        # Check if first argument is an existing directory (workspace)
-        potential_workspace = Path(workspace_and_subdirs[0])
-        if not potential_workspace.exists() or not potential_workspace.is_dir():
-            log_error(f"Invalid workspace path: {potential_workspace}")
+    if project_root_arg:
+        potential_root = Path(project_root_arg)
+        if not potential_root.exists() or not potential_root.is_dir():
+            log_error(f"Invalid project root path: {potential_root}")
             sys.exit(1)
-        workspace = potential_workspace
-        subdirs_list = workspace_and_subdirs[1:]
+        project_root = potential_root
     
-    # Step 0: Handle optional workspace - look up from existing project if not provided
-    if workspace is None:
-        log_info(f"Looking up workspace for existing project '{project}' in expert '{expert_name}'...")
+    # Step 0: Handle optional project root - look up from existing project if not provided
+    if project_root is None:
+        log_info(f"Looking up project root for existing project '{project}' in expert '{expert_name}'...")
         metadata_db_temp = SQLiteMetadataDB(expert_name, data_dir=data_dir)
         if metadata_db_temp.exists():
             metadata_db_temp.initialize()
@@ -178,15 +172,14 @@ def populate(
         metadata_db_temp.close()
         
         if existing_project:
-            workspace = Path(existing_project['workspace_path'])
-            subdirs_list = existing_project['subdirs'] or []
-            log_info(f"Found workspace: {workspace}")
+            project_root = Path(existing_project['project_root'])
+            log_info(f"Found project root: {project_root}")
         else:
-            log_error(f"Project '{project}' does not exist in expert '{expert_name}'. Workspace path is required for new projects.")
-            log_error(f"Usage: expert-among-us populate {expert_name} <workspace_path> --project {project}")
+            log_error(f"Project '{project}' does not exist in expert '{expert_name}'. Project root is required for new projects.")
+            log_error(f"Usage: expert-among-us populate {expert_name} <project_root> --project {project}")
             sys.exit(1)
     else:
-        # Workspace provided - allow create-if-missing semantics.
+        # Project root provided - allow create-if-missing semantics.
         # We only enforce a mismatch check if an existing project record is found.
         metadata_db_temp = SQLiteMetadataDB(expert_name, data_dir=data_dir)
         if metadata_db_temp.exists():
@@ -197,17 +190,15 @@ def populate(
         metadata_db_temp.close()
         
         if existing_project:
-            existing_workspace = Path(existing_project['workspace_path'])
-            if existing_workspace != workspace:
-                log_warning("Workspace path mismatch detected!")
-                log_warning(f"  Stored workspace: {existing_workspace}")
-                log_warning(f"  Provided workspace: {workspace}")
-                log_error("Cannot change workspace path for existing project. Use the original workspace path or create a new project.")
+            existing_root = Path(existing_project['project_root'])
+            if existing_root != project_root:
+                log_warning("Project root mismatch detected!")
+                log_warning(f"  Stored project root: {existing_root}")
+                log_warning(f"  Provided project root: {project_root}")
+                log_error("Cannot change project root for existing project. Use the original path or create a new project.")
                 sys.exit(1)
     
-    log_info(f"Populating expert '{expert_name}', project '{project}' from workspace: {workspace}")
-    if subdirs_list:
-        log_info(f"Filtering to subdirectories: {', '.join(subdirs_list)}")
+    log_info(f"Populating expert '{expert_name}', project '{project}' from project root: {project_root}")
     
     try:
         # Get global options from context
@@ -269,13 +260,13 @@ def populate(
             log_info(f"Using data directory: {data_dir}")
         
         # Step 2: Detect and initialize VCS provider (moved earlier)
-        log_info(f"Detecting version control system in {workspace}...")
+        log_info(f"Detecting version control system in {project_root}...")
  
         # Detect VCS directly; Git will consult DebugLogger.is_enabled() for its own debug output.
-        vcs_provider = detect_vcs(str(workspace), settings)
+        vcs_provider = detect_vcs(str(project_root), settings)
         
         if vcs_provider is None:
-            log_error(f"No supported VCS detected in {workspace}")
+            log_error(f"No supported VCS detected in {project_root}")
             log_error("Supported VCS: Git, Perforce")
             sys.exit(1)
         
@@ -293,7 +284,7 @@ def populate(
         # Initialize embedder using settings (provider/model come from Settings)
         embedder = create_embedder(settings)
         
-        # Create expert configuration (logical grouping only - no workspace/vcs fields)
+        # Create expert configuration (logical grouping only - no project/vcs fields)
         expert_config = ExpertConfig(
             name=expert_name,
             data_dir=data_dir or Path.home() / ".expert-among-us"
@@ -326,14 +317,13 @@ def populate(
                 log_info(f"Last processed commit: {last_processed[:8]}")
         else:
             log_info(f"Creating new project '{project}' in expert '{expert_name}'")
-            metadata_db.create_project(expert_name, project, str(workspace), list(subdirs_list), vcs_type)
+            metadata_db.create_project(expert_name, project, str(project_root), vcs_type)
         
         # Build project_config dict for the Indexer
         project_config = {
             'name': project,
             'expert_name': expert_name,
-            'workspace_path': str(workspace),
-            'subdirs': list(subdirs_list),
+            'project_root': str(project_root),
             'vcs_type': vcs_type,
             'has_vector_metadata': True,
         }
@@ -347,7 +337,7 @@ def populate(
             from expert_among_us.core.indexer import Indexer
 
             indexer = Indexer(
-                expert_config={**expert_config.model_dump(), 'workspace_path': str(workspace)},
+                expert_config={**expert_config.model_dump(), 'project_root': str(project_root)},
                 vcs=vcs_provider,
                 metadata_db=metadata_db,
                 vector_db=vector_db,
@@ -380,8 +370,7 @@ def populate(
             if not more_remain:
                 # Calculate and report skipped commits
                 total_available = vcs_provider.get_total_commit_count(
-                    workspace_path=str(workspace),
-                    subdirs=subdirs_list or None
+                    project_root=str(project_root),
                 )
                 skipped_commit_count = total_available - total_processed if isinstance(total_available, int) else 0
                 if skipped_commit_count > 0:
@@ -902,7 +891,7 @@ def prompt(
 def list_experts(ctx) -> None:
     """List all available experts and their information.
     
-    Displays a table showing each expert's name, workspace, VCS type,
+    Displays a table showing each expert's name, project root, VCS type,
     number of commits indexed, last indexed time, and commit time range.
     
     Examples:
@@ -927,7 +916,7 @@ def list_experts(ctx) -> None:
         # Display message if no experts found
         if not experts_info:
             log_info("No experts found.")
-            log_info("Run 'expert-among-us populate <workspace> <expert_name>' to create your first expert.")
+            log_info("Run 'expert-among-us populate <expert_name> <project_root> --project <name>' to create your first expert.")
             return
         
         # Create Rich table
@@ -1085,96 +1074,6 @@ def prewarm(ctx) -> None:
 
     elapsed = time.time() - start
     log_success(f"Prewarm complete in {elapsed:.1f}s")
-
-
-@main.command()
-@click.argument("expert_name", required=False, type=str)
-@click.option("--all", "migrate_all", is_flag=True, help="Migrate all expert databases in the data directory")
-@click.pass_context
-def migrate(ctx, expert_name: Optional[str], migrate_all: bool) -> None:
-    """Migrate expert database(s) to the multi-project schema.
-    
-    Transforms existing single-project expert databases into the new multi-project
-    schema. The migration is atomic and idempotent — safe to re-run.
-    
-    EXPERT_NAME: Name of a specific expert to migrate (optional if --all is used)
-    
-    Examples:
-    
-        \b
-        # Migrate a specific expert
-        $ expert-among-us migrate MyExpert
-        
-        \b
-        # Migrate all experts in the data directory
-        $ expert-among-us migrate --all
-        
-        \b
-        # Migrate with custom data directory
-        $ expert-among-us --data-dir /custom/location migrate --all
-    """
-    from expert_among_us.db.metadata.migration import migrate_to_multi_project
-
-    # Validate arguments
-    if not expert_name and not migrate_all:
-        log_error("Please specify an expert name or use --all to migrate all experts.")
-        sys.exit(1)
-
-    if expert_name and migrate_all:
-        log_error("Cannot specify both an expert name and --all. Choose one.")
-        sys.exit(1)
-
-    # Determine data directory
-    data_dir = ctx.obj.get('data_dir')
-    if data_dir is None:
-        data_dir = Path.home() / ".expert-among-us"
-
-    experts_dir = data_dir / "data"
-
-    if not experts_dir.exists():
-        log_error(f"Data directory does not exist: {experts_dir}")
-        sys.exit(1)
-
-    # Build list of (expert_name, db_path) to migrate
-    targets: list[tuple[str, Path]] = []
-
-    if migrate_all:
-        # Find all expert databases
-        for d in sorted(experts_dir.iterdir()):
-            db_path = d / "metadata.db"
-            if d.is_dir() and db_path.exists():
-                targets.append((d.name, db_path))
-        if not targets:
-            log_warning("No expert databases found to migrate.")
-            return
-    else:
-        # Single expert
-        db_path = experts_dir / expert_name / "metadata.db"
-        if not db_path.exists():
-            log_error(f"Expert database not found: {db_path}")
-            sys.exit(1)
-        targets.append((expert_name, db_path))
-
-    # Run migration on each target
-    log_info(f"Migrating {len(targets)} expert(s)...")
-    success_count = 0
-    failure_count = 0
-
-    for name, db_path in targets:
-        try:
-            migrate_to_multi_project(str(db_path))
-            log_success(f"[{name}] Migration successful.")
-            success_count += 1
-        except Exception as e:
-            log_error(f"[{name}] Migration failed: {e}")
-            failure_count += 1
-
-    # Summary
-    if failure_count == 0:
-        log_success(f"All {success_count} expert(s) migrated successfully.")
-    else:
-        log_warning(f"Migration complete: {success_count} succeeded, {failure_count} failed.")
-        sys.exit(1)
 
 
 @main.command()

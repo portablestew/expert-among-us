@@ -162,13 +162,13 @@ def test_project_config_creation():
         config = ProjectConfig(
             name="payment-service",
             expert_name="my-team",
-            workspace_path=workspace,
+            project_root=workspace,
             vcs_type="git",
         )
 
         assert config.name == "payment-service"
         assert config.expert_name == "my-team"
-        assert config.workspace_path == workspace
+        assert config.project_root == workspace
         assert config.vcs_type == "git"
         assert config.has_vector_metadata is True
 
@@ -181,11 +181,10 @@ def test_project_config_defaults():
         config = ProjectConfig(
             name="myproject",
             expert_name="myexpert",
-            workspace_path=workspace,
+            project_root=workspace,
         )
 
         assert config.vcs_type == "git"
-        assert config.subdirs == []
         assert config.last_indexed_at is None
         assert config.last_processed_commit_hash is None
         assert config.first_processed_commit_hash is None
@@ -212,7 +211,7 @@ def test_project_config_valid_names():
             config = ProjectConfig(
                 name=name,
                 expert_name="expert1",
-                workspace_path=workspace,
+                project_root=workspace,
             )
             assert config.name == name
 
@@ -238,7 +237,7 @@ def test_project_config_invalid_names():
                 ProjectConfig(
                     name=name,
                     expert_name="expert1",
-                    workspace_path=workspace,
+                    project_root=workspace,
                 )
 
 
@@ -251,14 +250,14 @@ def test_project_config_invalid_expert_name():
             ProjectConfig(
                 name="valid-project",
                 expert_name="",
-                workspace_path=workspace,
+                project_root=workspace,
             )
 
         with pytest.raises(ValidationError, match="Expert name"):
             ProjectConfig(
                 name="valid-project",
                 expert_name="bad/name",
-                workspace_path=workspace,
+                project_root=workspace,
             )
 
 
@@ -270,7 +269,7 @@ def test_project_config_nonexistent_workspace():
         ProjectConfig(
             name="myproject",
             expert_name="myexpert",
-            workspace_path=nonexistent,
+            project_root=nonexistent,
         )
 
 
@@ -283,25 +282,8 @@ def test_project_config_workspace_not_directory():
             ProjectConfig(
                 name="myproject",
                 expert_name="myexpert",
-                workspace_path=file_path,
+                project_root=file_path,
             )
-
-
-def test_project_config_with_subdirs():
-    """Test project config with subdirectory filters."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        workspace = Path(tmpdir)
-
-        config = ProjectConfig(
-            name="myproject",
-            expert_name="myexpert",
-            workspace_path=workspace,
-            subdirs=["src/main/", "src/resources/"],
-        )
-
-        assert len(config.subdirs) == 2
-        assert "src/main/" in config.subdirs
-        assert "src/resources/" in config.subdirs
 
 
 def test_project_config_perforce_vcs():
@@ -312,7 +294,7 @@ def test_project_config_perforce_vcs():
         config = ProjectConfig(
             name="shared-lib",
             expert_name="myexpert",
-            workspace_path=workspace,
+            project_root=workspace,
             vcs_type="p4",
         )
 
@@ -327,7 +309,7 @@ def test_project_config_has_vector_metadata_false():
         config = ProjectConfig(
             name="legacy-project",
             expert_name="myexpert",
-            workspace_path=workspace,
+            project_root=workspace,
             has_vector_metadata=False,
         )
 
@@ -342,7 +324,7 @@ def test_project_config_timestamps():
         config = ProjectConfig(
             name="myproject",
             expert_name="myexpert",
-            workspace_path=workspace,
+            project_root=workspace,
         )
 
         # created_at should be set automatically

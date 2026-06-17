@@ -15,7 +15,7 @@ from expert_among_us.config.settings import Settings
 def expert_config(tmp_path):
     return {
         "name": "TestExpert",
-        "workspace_path": str(tmp_path),
+        "project_root": str(tmp_path),
         "max_commits": 10,
     }
 
@@ -67,8 +67,7 @@ def indexer(expert_config, mock_vcs, mock_metadata_db, mock_vector_db, mock_embe
     project_config = {
         "name": "test-project",
         "expert_name": "TestExpert",
-        "workspace_path": expert_config["workspace_path"],
-        "subdirs": [],
+        "project_root": expert_config["project_root"],
         "vcs_type": "git",
         "has_vector_metadata": True,
     }
@@ -153,7 +152,7 @@ def test_indexer_detects_missing_files_and_deletes(indexer, mock_vcs, mock_metad
         files=["deleted_file.py"],  # This file will be reported as missing
     )
     
-    mock_vcs.get_commits_after.return_value = [commit]
+    mock_vcs.get_commits_after.side_effect = [[commit], []]
     mock_vcs.get_tracked_files_at_commit.return_value = []  # File doesn't exist at HEAD
     
     # Setup metadata DB to report chunks exist
