@@ -71,7 +71,7 @@ It helps you understand development patterns, find relevant changes, and get AI-
 - **Smart Text Sanitization**: Automatically removes high-entropy patterns (API keys, UUIDs, binary data) to improve search quality
 - **Metadata Extraction**: Index commit messages, authors, files, and code diffs
 - **Vector Embeddings**: Supports local (GPU-accelerated) or cloud (AWS Bedrock) embedding models
-- **Flexible Filtering**: Search by author, files, or time period
+- **Flexible Filtering**: Search by author or file path (with project scoping)
 - **Version Control Support**: Works with Git and Perforce repositories
 - **Commit Enhancement**: Optionally adds LLM-generated analysis of a commit to its context
 
@@ -170,16 +170,19 @@ Create an expert index from your git repository:
 
 ```bash
 # Index entire repository (uses local embeddings by default)
-expert-among-us populate MyExpert /path/to/repo
+expert-among-us populate MyExpert /path/to/repo --project my-project
 
 # Use AWS Bedrock embeddings instead
-expert-among-us --embedding-provider bedrock populate MyExpert /path/to/repo
+expert-among-us --embedding-provider bedrock populate MyExpert /path/to/repo --project my-project
 
 # Index specific subdirectories only
-expert-among-us populate MyExpert /path/to/repo src/main/ src/resources/
+expert-among-us populate MyExpert /path/to/repo --project my-project src/main/ src/resources/
 
 # Limit the number of commits to index
-expert-among-us populate MyExpert /path/to/repo --max-commits 5000
+expert-among-us populate MyExpert /path/to/repo --project my-project --max-commits 5000
+
+# Multi-project expert: add a second repository to the same expert
+expert-among-us populate MyExpert /path/to/other-repo --project other-service
 ```
 
 **Note**: On first run with local embeddings, the Jina Code model (~1.2GB) will be downloaded automatically. This is a one-time download.
@@ -194,11 +197,15 @@ Find commits similar to your query:
 # Basic search
 expert-among-us query MyExpert "How to add a new feature?"
 
-# Search with filters
+# Search with filters (file paths are project-prefixed)
 expert-among-us query MyExpert "Bug fix for memory leak" \
     --users john,jane \
-    --files src/main.py,src/utils.py \
+    --files my-project/src/main.py,my-project/src/utils.py \
     --max-changes 20
+
+# Scope search to a specific project
+expert-among-us query MyExpert "Payment processing" \
+    --files my-project/
 
 # Save results to JSON
 expert-among-us query MyExpert "API endpoint implementation" \
@@ -218,7 +225,7 @@ expert-among-us prompt MyExpert "How should I implement authentication?"
 # With filters for specific context
 expert-among-us prompt MyExpert "How to handle errors?" \
     --users alice,bob \
-    --files src/handlers/
+    --files my-project/src/handlers/
 
 # With improved commit message context
 expert-among-us prompt MyExpert "Add caching" --impostor
@@ -240,18 +247,19 @@ expert-among-us --debug prompt MyExpert "Optimize queries"
 
 ### `populate` - Index Repository
 
-Create or update an expert index from a repository.
+Create or update an expert index from a repository. Each expert can contain multiple projects, allowing unified semantic search across related repositories.
 
 ```bash
-expert-among-us populate EXPERT_NAME [WORKSPACE] [SUBDIRS...] [OPTIONS]
+expert-among-us populate EXPERT_NAME [WORKSPACE] [SUBDIRS...] --project PROJECT_NAME [OPTIONS]
 ```
 
 **Arguments:**
 - `EXPERT_NAME`: Unique name for this expert (used to identify the index)
-- `WORKSPACE`: Path to the repository root directory (required for new experts, optional for updates)
+- `WORKSPACE`: Path to the repository root directory (required for new projects, optional for updates)
 - `SUBDIRS`: Optional subdirectories to filter (e.g., `src/main/ src/resources/`)
 
 **Options:**
+- `--project TEXT`: Project name within the expert (required). Used as a path prefix in the unified namespace.
 - `--max-commits INTEGER`: Maximum number of commits to index (default: 60000)
 - `--max-batches INTEGER`: Maximum batches to run (returns exit code 2 if more remain)
 - `--batch-size INTEGER`: Maximum commits per embedding batch (default: 1000)
@@ -270,28 +278,33 @@ expert-among-us populate EXPERT_NAME [WORKSPACE] [SUBDIRS...] [OPTIONS]
 **Examples:**
 ```bash
 # Index entire repository with local embeddings (default)
-expert-among-us populate AppExpert ~/projects/myapp
+expert-among-us populate AppExpert ~/projects/myapp --project myapp
 
 # Index with AWS Bedrock embeddings
-expert-among-us --embedding-provider bedrock populate AppExpert ~/projects/myapp
+expert-among-us --embedding-provider bedrock populate AppExpert ~/projects/myapp --project myapp
 
 # Index only backend code
-expert-among-us populate BackendExpert ~/projects/myapp src/backend/ src/api/
+expert-among-us populate AppExpert ~/projects/myapp --project backend src/backend/ src/api/
 
-# Update existing expert (workspace looked up automatically)
-expert-among-us populate AppExpert
+# Add a second project to the same expert
+expert-among-us populate AppExpert ~/projects/frontend --project frontend
+
+# Update existing project (workspace looked up automatically)
+expert-among-us populate AppExpert --project myapp
 
 # Use custom data directory
-expert-among-us --data-dir /mnt/data/experts populate AppExpert ~/projects/myapp
+expert-among-us --data-dir /mnt/data/experts populate AppExpert ~/projects/myapp --project myapp
 ```
 
 ### `list` - List Available Experts
 
-Display all indexed experts and their metadata.
+Display all indexed experts, their projects, and metadata.
 
 ```bash
 expert-among-us list
 ```
+
+Shows each expert's name, projects (with VCS type), total commit count, last indexed time, and commit hash range.
 
 ### `import` - Import Expert via Symlink
 
@@ -317,7 +330,7 @@ expert-among-us query EXPERT_NAME PROMPT [OPTIONS]
 - `--max-changes INTEGER`: Maximum changelist results (default: 20)
 - `--max-file-chunks INTEGER`: Maximum file chunk results (default: 10)
 - `--users TEXT`: Filter by commit authors (comma-separated)
-- `--files TEXT`: Filter by file paths (comma-separated)
+- `--files TEXT`: Filter by file paths (comma-separated, project-prefixed e.g. `my-project/src/main.py`). Use a bare project prefix like `my-project/` to scope results to that project.
 - `--search-scope [all|metadata|diffs|files]`: Search scope (default: all)
 - `--no-reranking`: Disable cross-encoder reranking (faster but less accurate)
 - `--min-score FLOAT`: Minimum similarity score threshold (default: 0.1)
@@ -333,6 +346,9 @@ expert-among-us query AppExpert "authentication implementation"
 
 # Search with author filter
 expert-among-us query AppExpert "database optimization" --users alice,bob
+
+# Scope search to a specific project within the expert
+expert-among-us query AppExpert "error handling" --files backend/
 
 # Search only current file content
 expert-among-us query AppExpert "function implementation" --search-scope files
@@ -363,7 +379,7 @@ expert-among-us [GLOBAL OPTIONS] prompt EXPERT_NAME PROMPT [OPTIONS]
 **Options:**
 - `--max-changes INTEGER`: Maximum context changes to use (default: 20)
 - `--users TEXT`: Filter by commit authors (comma-separated)
-- `--files TEXT`: Filter by file paths (comma-separated)
+- `--files TEXT`: Filter by file paths (comma-separated, project-prefixed e.g. `my-project/src/handlers/`)
 - `--impostor`: Generate synthetic prompts for each commit (improves poor commit messages)
 - `--amogus`: Enable Among Us mode
 - `--temperature FLOAT`: LLM temperature (0.0–1.0, default: 0.7)
