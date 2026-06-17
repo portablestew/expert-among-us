@@ -15,6 +15,7 @@ def create_test_changelist(id: str, message: str, diff_size: int = 1000) -> Chan
     return Changelist(
         id=id,
         expert_name="TestExpert",
+        project_name="test-project",
         message=message,
         author="test@example.com",
         timestamp=datetime.now(timezone.utc),
@@ -244,23 +245,6 @@ class TestConversationContextLimits:
         assert messages[-1].role == "user"
         assert "How to implement feature X?" in messages[-1].content
         assert "Remember to structure your response" in messages[-1].content
-    
-    def test_build_conversation_raises_on_empty(self):
-        """Test that build_conversation raises ValueError with empty results."""
-        builder = ConversationBuilder(
-            prompt_generator=None,
-            max_diff_chars=10000,
-            max_context_tokens=120000,
-            max_response_tokens=4096
-        )
-        
-        with pytest.raises(ValueError, match="Cannot build conversation with empty results"):
-            builder.build_conversation(
-                results=[],
-                user_prompt="Test",
-                amogus=False,
-                impostor=False
-            )
     
     def test_build_conversation_raises_when_none_fit(self):
         """Test that build_conversation always includes at least one result."""

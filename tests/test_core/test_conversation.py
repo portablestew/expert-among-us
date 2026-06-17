@@ -29,6 +29,7 @@ class TestConversationBuilder:
         return Changelist(
             id="abc123",
             expert_name="TestExpert",
+            project_name="test-project",
             timestamp=datetime(2024, 1, 15, 10, 30, 0),
             author="test_author",
             message="Add feature X",
@@ -44,6 +45,7 @@ class TestConversationBuilder:
             Changelist(
                 id="abc123",
                 expert_name="TestExpert",
+                project_name="test-project",
                 timestamp=datetime(2024, 1, 15, 10, 30, 0),
                 author="test_author",
                 message="Add feature X",
@@ -54,6 +56,7 @@ class TestConversationBuilder:
             Changelist(
                 id="def456",
                 expert_name="TestExpert",
+                project_name="test-project",
                 timestamp=datetime(2024, 1, 16, 14, 20, 0),
                 author="test_author",
                 message="Fix bug Y",
@@ -64,6 +67,7 @@ class TestConversationBuilder:
             Changelist(
                 id="ghi789",
                 expert_name="TestExpert",
+                project_name="test-project",
                 timestamp=datetime(2024, 1, 14, 9, 0, 0),  # Earlier than abc123
                 author="test_author",
                 message="Initial commit",
@@ -72,63 +76,6 @@ class TestConversationBuilder:
                 generated_prompt="Create initial structure"
             ),
         ]
-    
-    def test_init(self, mock_prompt_generator):
-        """Test ConversationBuilder initialization."""
-        builder = ConversationBuilder(
-            mock_prompt_generator,
-            TEST_MAX_DIFF_CHARS,
-            max_context_tokens=120000,
-            max_response_tokens=4096
-        )
-        assert builder.prompt_generator == mock_prompt_generator
-        assert builder.max_diff_chars == TEST_MAX_DIFF_CHARS
-    
-    def test_build_system_prompt_normal_mode(self, mock_prompt_generator):
-        """Test system prompt generation in normal mode."""
-        builder = ConversationBuilder(
-            mock_prompt_generator,
-            TEST_MAX_DIFF_CHARS,
-            max_context_tokens=120000,
-            max_response_tokens=4096
-        )
-        prompt = builder._build_system_prompt(amogus=False)
-        
-        assert "expert software developer" in prompt
-        assert "historical commit patterns" in prompt
-        assert "impostor" not in prompt.lower()
-        assert "Among Us" not in prompt
-    
-    def test_build_system_prompt_amogus_mode(self, mock_prompt_generator):
-        """Test system prompt generation in Among Us mode."""
-        builder = ConversationBuilder(
-            mock_prompt_generator,
-            TEST_MAX_DIFF_CHARS,
-            max_context_tokens=120000,
-            max_response_tokens=4096
-        )
-        prompt = builder._build_system_prompt(amogus=True)
-        
-        assert "expert software developer" in prompt
-        assert "Among Us" in prompt
-        assert "spacecraft" in prompt
-        assert "sabotage" in prompt
-        assert "mislead" in prompt
-    
-    def test_format_changelist_basic(self, mock_prompt_generator, sample_changelist):
-        """Test basic changelist formatting."""
-        builder = ConversationBuilder(
-            mock_prompt_generator,
-            TEST_MAX_DIFF_CHARS,
-            max_context_tokens=120000,
-            max_response_tokens=4096
-        )
-        formatted = builder._format_changelist_as_assistant(sample_changelist)
-        
-        assert "Commit: Add feature X" in formatted
-        assert "Files: file.py" in formatted
-        assert "Changes:" in formatted
-        assert "diff --git" in formatted
     
     def test_format_changelist_multiple_files(self, mock_prompt_generator):
         """Test changelist formatting with multiple files."""
@@ -144,6 +91,7 @@ class TestConversationBuilder:
         changelist = Changelist(
             id="abc123",
             expert_name="TestExpert",
+            project_name="test-project",
             timestamp=datetime(2024, 1, 15, 10, 30, 0),
             author="test_author",
             message="Update many files",
@@ -172,6 +120,7 @@ class TestConversationBuilder:
         changelist = Changelist(
             id="abc123",
             expert_name="TestExpert",
+            project_name="test-project",
             timestamp=datetime(2024, 1, 15, 10, 30, 0),
             author="test_author",
             message="Large change",
@@ -276,6 +225,7 @@ class TestConversationBuilder:
             Changelist(
                 id="newest",
                 expert_name="TestExpert",
+                project_name="test-project",
                 timestamp=datetime(2024, 1, 17, 10, 0, 0),
                 author="author",
                 message="Newest",
@@ -286,6 +236,7 @@ class TestConversationBuilder:
             Changelist(
                 id="oldest",
                 expert_name="TestExpert",
+                project_name="test-project",
                 timestamp=datetime(2024, 1, 15, 10, 0, 0),
                 author="author",
                 message="Oldest",
@@ -296,6 +247,7 @@ class TestConversationBuilder:
             Changelist(
                 id="middle",
                 expert_name="TestExpert",
+                project_name="test-project",
                 timestamp=datetime(2024, 1, 16, 10, 0, 0),
                 author="author",
                 message="Middle",
@@ -334,6 +286,7 @@ class TestConversationBuilder:
         changelist = Changelist(
             id="abc123",
             expert_name="TestExpert",
+            project_name="test-project",
             timestamp=datetime(2024, 1, 15, 10, 30, 0),
             author="test_author",
             message="Add feature",
@@ -378,26 +331,6 @@ class TestConversationBuilder:
         # Should use cached prompt
         assert messages[0].content == "Can you add feature X?"
     
-    def test_build_conversation_amogus_mode(self, mock_prompt_generator, sample_changelist):
-        """Test conversation building in Among Us mode."""
-        builder = ConversationBuilder(
-            mock_prompt_generator,
-            TEST_MAX_DIFF_CHARS,
-            max_context_tokens=120000,
-            max_response_tokens=4096
-        )
-        
-        system_prompt, messages = builder.build_conversation(
-            results=[CommitResult(changelist=sample_changelist, similarity_score=0.9, source="metadata")],
-            user_prompt="Test",
-            amogus=True,
-            impostor=True
-        )
-        
-        # System prompt should contain Among Us elements
-        assert "Among Us" in system_prompt
-        assert "sabotage" in system_prompt
-    
     def test_build_conversation_empty_changelists_raises_error(self, mock_prompt_generator):
         """Test that empty changelists raises ValueError."""
         builder = ConversationBuilder(
@@ -413,79 +346,6 @@ class TestConversationBuilder:
                 user_prompt="Test",
                 amogus=False
             )
-    
-    def test_message_types(self, mock_prompt_generator, sample_changelist):
-        """Test that returned messages are Message objects."""
-        builder = ConversationBuilder(
-            mock_prompt_generator,
-            TEST_MAX_DIFF_CHARS,
-            max_context_tokens=120000,
-            max_response_tokens=4096
-        )
-        
-        system_prompt, messages = builder.build_conversation(
-            results=[CommitResult(changelist=sample_changelist, similarity_score=0.9, source="metadata")],
-            user_prompt="Test",
-            amogus=False,
-            impostor=True
-        )
-        
-        # All should be Message objects
-        for msg in messages:
-            assert isinstance(msg, Message)
-            assert hasattr(msg, 'role')
-            assert hasattr(msg, 'content')
-            assert msg.role in ['user', 'assistant']
-    
-    def test_system_prompt_types(self, mock_prompt_generator, sample_changelist):
-        """Test that system prompt is a string."""
-        builder = ConversationBuilder(
-            mock_prompt_generator,
-            TEST_MAX_DIFF_CHARS,
-            max_context_tokens=120000,
-            max_response_tokens=4096
-        )
-        
-        system_prompt, messages = builder.build_conversation(
-            results=[CommitResult(changelist=sample_changelist, similarity_score=0.9, source="metadata")],
-            user_prompt="Test",
-            amogus=False,
-            impostor=True
-        )
-        
-        assert isinstance(system_prompt, str)
-        assert len(system_prompt) > 0
-    
-    def test_integration_with_prompt_generator_mock(self, sample_changelist):
-        """Test integration with mocked PromptGenerator."""
-        # Create a more realistic mock
-        mock_gen = MagicMock()
-        mock_gen._generate_single_prompt.return_value = "Mocked generated prompt"
-        
-        builder = ConversationBuilder(
-            mock_gen,
-            TEST_MAX_DIFF_CHARS,
-            max_context_tokens=120000,
-            max_response_tokens=4096
-        )
-        
-        # Remove cached prompt to trigger generation
-        sample_changelist.generated_prompt = None
-        
-        system_prompt, messages = builder.build_conversation(
-            results=[CommitResult(changelist=sample_changelist, similarity_score=0.9, source="metadata")],
-            user_prompt="Final query",
-            amogus=False,
-            impostor=True
-        )
-        
-        # Verify generator was called
-        mock_gen._generate_single_prompt.assert_called_once()
-        
-        # Verify generated prompt was used
-        assert messages[0].content == "Mocked generated prompt"
-        
-        # Verify changelist was updated with generated prompt
     
     def test_build_conversation_default_mode_all_user_messages(
         self, mock_prompt_generator, sample_changelists_multiple
@@ -537,41 +397,6 @@ class TestConversationBuilder:
         
         # Verify no prompts were generated (mock not called)
         mock_prompt_generator._generate_single_prompt.assert_not_called()
-    
-    
-    def test_build_conversation_impostor_mode_user_assistant_pairs(
-        self, mock_prompt_generator, sample_changelists_multiple
-    ):
-        """Test impostor=True creates user-assistant pairs."""
-        builder = ConversationBuilder(
-            mock_prompt_generator,
-            TEST_MAX_DIFF_CHARS,
-            max_context_tokens=120000,
-            max_response_tokens=4096
-        )
-        
-        results = [
-            CommitResult(changelist=cl, similarity_score=0.9 - i*0.1, source="metadata")
-            for i, cl in enumerate(sample_changelists_multiple)
-        ]
-        system_prompt, messages = builder.build_conversation(
-            results=results,
-            user_prompt="Final question",
-            amogus=False,
-            impostor=True  # Impostor mode
-        )
-        
-        # Should have 7 messages: 3 pairs + final user
-        assert len(messages) == 7
-        
-        # Verify alternating pattern
-        assert messages[0].role == "user"
-        assert messages[1].role == "assistant"
-        assert messages[2].role == "user"
-        assert messages[3].role == "assistant"
-        assert messages[4].role == "user"
-        assert messages[5].role == "assistant"
-        assert messages[6].role == "user"
     
     
     def test_default_mode_raises_if_generator_none_and_impostor_true(

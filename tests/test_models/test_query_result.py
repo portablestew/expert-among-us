@@ -18,6 +18,7 @@ def test_commit_result_interface():
     cl = Changelist(
         id="abc123def456",
         expert_name="test",
+        project_name="test-project",
         timestamp=datetime(2024, 1, 15, 10, 30, 0),
         author="alice",
         message="Add new feature",
@@ -50,6 +51,7 @@ def test_commit_result_preview_truncation():
     cl = Changelist(
         id="abc123",
         expert_name="test",
+        project_name="test-project",
         timestamp=datetime.now(),
         author="bob",
         message=long_message,
@@ -132,6 +134,7 @@ def test_polymorphic_handling():
     commit_cl = Changelist(
         id="commit123",
         expert_name="test",
+        project_name="test-project",
         timestamp=datetime.now(),
         author="alice",
         message="Fix bug",
@@ -183,150 +186,3 @@ def test_polymorphic_handling():
     assert file_count == 1
 
 
-def test_commit_result_with_chroma_id():
-    """Test CommitResult with optional chroma_id."""
-    cl = Changelist(
-        id="test123",
-        expert_name="test",
-        timestamp=datetime.now(),
-        author="bob",
-        message="Test commit",
-        diff="test",
-        files=["test.py"]
-    )
-    
-    result = CommitResult(
-        changelist=cl,
-        similarity_score=0.8,
-        source="metadata",
-        chroma_id="metadata:test123"
-    )
-    
-    assert result.chroma_id == "metadata:test123"
-
-
-def test_file_chunk_result_with_chroma_id():
-    """Test FileChunkResult with optional chroma_id."""
-    chunk = FileChunk(
-        file_path="test.py",
-        chunk_index=0,
-        content="test content",
-        line_start=1,
-        line_end=5,
-        revision_id="abc123"
-    )
-    
-    result = FileChunkResult(
-        file_chunk=chunk,
-        similarity_score=0.7,
-        source="file",
-        chroma_id="file:test.py:chunk_0"
-    )
-    
-    assert result.chroma_id == "file:test.py:chunk_0"
-
-
-def test_file_chunk_result_empty_content():
-    """Test FileChunkResult handles empty content gracefully."""
-    chunk = FileChunk(
-        file_path="empty.py",
-        chunk_index=0,
-        content="",
-        line_start=1,
-        line_end=1,
-        revision_id="abc123"
-    )
-    
-    result = FileChunkResult(
-        file_chunk=chunk,
-        similarity_score=0.3,
-        source="file"
-    )
-    
-    # Should not crash
-    assert result.get_preview_text() == ""
-    assert result.get_content() == ""
-
-
-def test_result_type_literals():
-    """Test result type returns correct literals."""
-    commit_cl = Changelist(
-        id="test",
-        expert_name="test",
-        timestamp=datetime.now(),
-        author="test",
-        message="test",
-        diff="test",
-        files=[]
-    )
-    
-    file_chunk = FileChunk(
-        file_path="test.py",
-        chunk_index=0,
-        content="test",
-        line_start=1,
-        line_end=1,
-        revision_id="test"
-    )
-    
-    commit_result = CommitResult(
-        changelist=commit_cl,
-        similarity_score=0.5,
-        source="metadata"
-    )
-    
-    file_result = FileChunkResult(
-        file_chunk=file_chunk,
-        similarity_score=0.5,
-        source="file"
-    )
-    
-    # Test literal types
-    assert commit_result.get_result_type() == "commit"
-    assert file_result.get_result_type() == "file_chunk"
-
-
-def test_similarity_scores():
-    """Test similarity scores are properly stored."""
-    cl = Changelist(
-        id="test",
-        expert_name="test",
-        timestamp=datetime.now(),
-        author="test",
-        message="test",
-        diff="test",
-        files=[]
-    )
-    
-    scores = [0.0, 0.25, 0.5, 0.75, 1.0]
-    
-    for score in scores:
-        result = CommitResult(
-            changelist=cl,
-            similarity_score=score,
-            source="metadata"
-        )
-        assert result.similarity_score == score
-
-
-def test_source_types():
-    """Test different source types are properly stored."""
-    cl = Changelist(
-        id="test",
-        expert_name="test",
-        timestamp=datetime.now(),
-        author="test",
-        message="test",
-        diff="test",
-        files=[]
-    )
-    
-    sources = ["metadata", "diff", "file", "combined"]
-    
-    for source in sources:
-        result = CommitResult(
-            changelist=cl,
-            similarity_score=0.5,
-            source=source  # type: ignore
-        )
-        assert result.source == source

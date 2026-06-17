@@ -8,31 +8,13 @@ from pydantic import ValidationError
 from expert_among_us.models.changelist import Changelist
 
 
-def test_changelist_creation():
-    """Test basic changelist creation."""
-    cl = Changelist(
-        id="abc123",
-        expert_name="TestExpert",
-        timestamp=datetime.now(timezone.utc),
-        author="test_user",
-        message="Test commit",
-        diff="diff --git a/test.py...",
-        files=["test.py"],
-    )
-    
-    assert cl.id == "abc123"
-    assert cl.expert_name == "TestExpert"
-    assert cl.author == "test_user"
-    assert cl.message == "Test commit"
-    assert len(cl.files) == 1
-
-
 def test_changelist_validation_empty_id():
     """Test that empty ID raises validation error."""
     with pytest.raises(ValidationError):
         Changelist(
             id="",
             expert_name="TestExpert",
+            project_name="test-project",
             timestamp=datetime.now(timezone.utc),
             author="test_user",
             message="Test commit",
@@ -47,6 +29,7 @@ def test_changelist_validation_empty_message():
         Changelist(
             id="abc123",
             expert_name="TestExpert",
+            project_name="test-project",
             timestamp=datetime.now(timezone.utc),
             author="test_user",
             message="",
@@ -55,18 +38,34 @@ def test_changelist_validation_empty_message():
         )
 
 
-def test_changelist_allows_empty_files_list():
-    """Empty files list is allowed for metadata-only or diff-only changelists."""
+def test_changelist_validation_empty_project_name():
+    """Test that project_name field accepts valid non-empty values."""
     cl = Changelist(
         id="abc123",
         expert_name="TestExpert",
+        project_name="my-project",
         timestamp=datetime.now(timezone.utc),
         author="test_user",
         message="Test commit",
         diff="diff --git a/test.py...",
-        files=[],
+        files=["test.py"],
     )
-    assert cl.files == []
+    assert cl.project_name == "my-project"
+
+
+def test_changelist_validation_project_name_required():
+    """Test that project_name is a required field."""
+    with pytest.raises(ValidationError):
+        Changelist(
+            id="abc123",
+            expert_name="TestExpert",
+            # project_name omitted - should fail
+            timestamp=datetime.now(timezone.utc),
+            author="test_user",
+            message="Test commit",
+            diff="diff --git a/test.py...",
+            files=["test.py"],
+        )
 
 
 def test_changelist_embedding_dimension_validation():
@@ -76,6 +75,7 @@ def test_changelist_embedding_dimension_validation():
     cl = Changelist(
         id="abc123",
         expert_name="TestExpert",
+        project_name="test-project",
         timestamp=datetime.now(timezone.utc),
         author="test_user",
         message="Test commit",
@@ -90,6 +90,7 @@ def test_changelist_embedding_dimension_validation():
         Changelist(
             id="abc123",
             expert_name="TestExpert",
+            project_name="test-project",
             timestamp=datetime.now(timezone.utc),
             author="test_user",
             message="Test commit",
@@ -104,6 +105,7 @@ def test_changelist_get_metadata_text():
     cl = Changelist(
         id="abc123",
         expert_name="TestExpert",
+        project_name="test-project",
         timestamp=datetime.now(timezone.utc),
         author="test_user",
         message="Test commit",
@@ -127,6 +129,7 @@ def test_changelist_get_truncated_diff():
     cl = Changelist(
         id="abc123",
         expert_name="TestExpert",
+        project_name="test-project",
         timestamp=datetime.now(timezone.utc),
         author="test_user",
         message="Test commit",
@@ -143,6 +146,7 @@ def test_changelist_get_truncated_diff():
     cl_large = Changelist(
         id="abc123_large",
         expert_name="TestExpert",
+        project_name="test-project",
         timestamp=datetime.now(timezone.utc),
         author="test_user",
         message="Test large commit",
@@ -159,6 +163,7 @@ def test_changelist_to_dict_from_dict():
     cl = Changelist(
         id="abc123",
         expert_name="TestExpert",
+        project_name="test-project",
         timestamp=datetime.now(timezone.utc),
         author="test_user",
         message="Test commit",
@@ -170,9 +175,11 @@ def test_changelist_to_dict_from_dict():
     cl_dict = cl.to_dict()
     assert cl_dict["id"] == "abc123"
     assert cl_dict["author"] == "test_user"
+    assert cl_dict["project_name"] == "test-project"
     
     # Convert back from dict
     cl2 = Changelist.from_dict(cl_dict)
     assert cl2.id == cl.id
     assert cl2.author == cl.author
     assert cl2.message == cl.message
+    assert cl2.project_name == cl.project_name

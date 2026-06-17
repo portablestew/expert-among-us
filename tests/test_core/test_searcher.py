@@ -31,6 +31,7 @@ class TestSearcher:
             "abc123": Changelist(
                 id="abc123",
                 expert_name="TestExpert",
+                project_name="test-project",
                 timestamp=datetime.now(),
                 author="john",
                 message="Add new feature",
@@ -40,6 +41,7 @@ class TestSearcher:
             "def456": Changelist(
                 id="def456",
                 expert_name="TestExpert",
+                project_name="test-project",
                 timestamp=datetime.now(),
                 author="jane",
                 message="Fix bug in parser",
@@ -221,6 +223,7 @@ class TestSearchResult:
         changelist = Changelist(
             id="abc123",
             expert_name="TestExpert",
+            project_name="test-project",
             timestamp=datetime.now(),
             author="john",
             message="Test change",
@@ -242,11 +245,11 @@ class TestSearchResult:
     def test_search_result_sorting(self):
         """Test that commit-style results can be sorted by score."""
         cl1 = Changelist(
-            id="1", expert_name="Test", timestamp=datetime.now(),
+            id="1", expert_name="Test", project_name="test-project", timestamp=datetime.now(),
             author="john", message="m1", diff="d1", files=["f1"]
         )
         cl2 = Changelist(
-            id="2", expert_name="Test", timestamp=datetime.now(),
+            id="2", expert_name="Test", project_name="test-project", timestamp=datetime.now(),
             author="jane", message="m2", diff="d2", files=["f2"]
         )
         
@@ -259,3 +262,134 @@ class TestSearchResult:
         
         assert sorted_results[0].similarity_score == 0.95
         assert sorted_results[1].similarity_score == 0.85
+
+
+
+class TestBuildWhereClause:
+    """Test cases for the Searcher._build_where_clause method."""
+
+    @pytest.fixture
+    def mock_embedder(self):
+        embedder = Mock()
+        embedder.embed.return_value = [0.1] * 1024
+        return embedder
+
+    @pytest.fixture
+    def mock_vector_db(self):
+        db = Mock()
+        db.search_metadata.return_value = []
+        db.search_diffs.return_value = []
+        return db
+
+    def _make_searcher(self, mock_embedder, mock_vector_db, projects, has_vector_metadata=True):
+        """Helper to create a Searcher with specified known projects."""
+        mock_metadata_db = Mock()
+        mock_metadata_db.list_projects.return_value = [{"name": p} for p in projects]
+        return Searcher(
+            expert_name="TestExpert",
+            embedder=mock_embedder,
+            metadata_db=mock_metadata_db,
+            vector_db=mock_vector_db,
+            enable_query_expansion=False,
+            has_vector_metadata=has_vector_metadata
+        )
+
+    def test_returns_none_when_has_vector_metadata_false(self, mock_embedder, mock_vector_db):
+        """Legacy experts with has_vector_metadata=False should never produce a where clause."""
+        searcher = self._make_searcher(mock_embedder, mock_vector_db, ["payment-service"], has_vector_metadata=False)
+        result = searcher._build_where_clause(["payment-service/src/handler.py"])
+        assert result is None
+
+    def test_returns_none_when_files_is_none(self, mock_embedder, mock_vector_db):
+        """No files parameter means no where clause."""
+        searcher = self._make_searcher(mock_embedder, mock_vector_db, ["payment-service"])
+        result = searcher._build_where_clause(None)
+        assert result is None
+
+    def test_returns_none_when_files_is_empty(self, mock_embedder, mock_vector_db):
+        """Empty files list means no where clause."""
+        searcher = self._make_searcher(mock_embedder, mock_vector_db, ["payment-service"])
+        result = searcher._build_where_clause([])
+        assert result is None
+
+    def test_returns_none_when_no_prefix_matches_known_projects(self, mock_embedder, mock_vector_db):
+        """Files with prefixes not matching any known project should produce None."""
+        searcher = self._make_searcher(mock_embedder, mock_vector_db, ["payment-service", "user-service"])
+        result = searcher._build_where_clause(["unknown-project/src/file.py"])
+        assert result is None
+
+    def test_extracts_single_project(self, mock_embedder, mock_vector_db):
+        """Files matching a single known project produce the correct where clause."""
+        searcher = self._make_searcher(mock_embedder, mock_vector_db, ["payment-service", "user-service"])
+        result = searcher._build_where_clause(["payment-service/src/handler.py"])
+        assert result is not None
+        assert result["project"]["$in"] == ["payment-service"]
+
+    def test_extracts_multiple_projects(self, mock_embedder, mock_vector_db):
+        """Files from multiple known projects produce a multi-project where clause."""
+        searcher = self._make_searcher(mock_embedder, mock_vector_db, ["payment-service", "user-service", "shared-lib"])
+        result = searcher._build_where_clause([
+            "payment-service/src/handler.py",
+            "user-service/src/auth.py"
+        ])
+        assert result is not None
+        assert set(result["project"]["$in"]) == {"payment-service", "user-service"}
+
+    def test_project_prefix_only_with_trailing_slash(self, mock_embedder, mock_vector_db):
+        """A bare project prefix like 'payment-service/' should still extract the project."""
+        searcher = self._make_searcher(mock_embedder, mock_vector_db, ["payment-service"])
+        result = searcher._build_where_clause(["payment-service/"])
+        assert result is not None
+        assert result["project"]["$in"] == ["payment-service"]
+
+    def test_ignores_non_project_files_in_mixed_list(self, mock_embedder, mock_vector_db):
+        """Only known project prefixes should appear in where clause, others ignored."""
+        searcher = self._make_searcher(mock_embedder, mock_vector_db, ["payment-service"])
+        result = searcher._build_where_clause([
+            "payment-service/src/handler.py",
+            "nonexistent/src/other.py"
+        ])
+        assert result is not None
+        assert result["project"]["$in"] == ["payment-service"]
+
+    def test_known_projects_fetched_at_construction(self, mock_embedder, mock_vector_db):
+        """Verify the constructor fetches known projects from metadata_db."""
+        mock_metadata_db = Mock()
+        mock_metadata_db.list_projects.return_value = [
+            {"name": "proj-a"},
+            {"name": "proj-b"},
+        ]
+        searcher = Searcher(
+            expert_name="TestExpert",
+            embedder=mock_embedder,
+            metadata_db=mock_metadata_db,
+            vector_db=mock_vector_db,
+            enable_query_expansion=False,
+        )
+        mock_metadata_db.list_projects.assert_called_once_with("TestExpert")
+        assert searcher.known_projects == {"proj-a", "proj-b"}
+
+    def test_constructor_graceful_with_no_list_projects(self, mock_embedder, mock_vector_db):
+        """Constructor handles databases without list_projects gracefully."""
+        mock_metadata_db = Mock(spec=[])  # No methods at all
+        searcher = Searcher(
+            expert_name="TestExpert",
+            embedder=mock_embedder,
+            metadata_db=mock_metadata_db,
+            vector_db=mock_vector_db,
+            enable_query_expansion=False,
+        )
+        assert searcher.known_projects == set()
+
+    def test_has_vector_metadata_defaults_to_true(self, mock_embedder, mock_vector_db):
+        """has_vector_metadata should default to True."""
+        mock_metadata_db = Mock()
+        mock_metadata_db.list_projects.return_value = []
+        searcher = Searcher(
+            expert_name="TestExpert",
+            embedder=mock_embedder,
+            metadata_db=mock_metadata_db,
+            vector_db=mock_vector_db,
+            enable_query_expansion=False,
+        )
+        assert searcher.has_vector_metadata is True

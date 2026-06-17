@@ -1,5 +1,5 @@
 from .changelist import Changelist
-from .expert import ExpertConfig
+from .expert import ExpertConfig, ProjectConfig
 from .file_chunk import FileChunk
 from .query import QueryParams, VectorSearchResult
 from .query_result import (

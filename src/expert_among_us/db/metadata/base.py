@@ -35,17 +35,18 @@ class MetadataDB(ABC):
     def create_expert(
         self,
         name: str,
-        workspace_path: str,
-        subdirs: list[str],
-        vcs_type: str
+        description: Optional[str] = None,
+        **kwargs
     ) -> None:
         """Create a new expert entry.
         
+        In the multi-project schema, experts are logical groupings.
+        Workspace path, subdirs, and VCS type are stored per-project.
+        
         Args:
             name: Unique identifier for the expert
-            workspace_path: Path to the workspace/repository
-            subdirs: List of subdirectories to filter (empty for all)
-            vcs_type: Version control system type ('git', 'p4', etc.)
+            description: Optional human-readable description
+            **kwargs: Accepts legacy parameters for backwards compatibility
         """
         pass
 
@@ -57,7 +58,7 @@ class MetadataDB(ABC):
             name: Expert identifier
             
         Returns:
-            Dictionary with keys: name, workspace_path, subdirs, vcs_type, 
+            Dictionary with keys: name, description, created_at,
             last_indexed_at. Returns None if expert doesn't exist.
         """
         pass
@@ -135,15 +136,17 @@ class MetadataDB(ABC):
         self,
         file_paths: list[str]
     ) -> list[str]:
-        """Get changelist IDs by file path filter using OR logic.
+        """Get changelist IDs by file path prefix filter using OR logic.
         
-        Returns changelists that modified ANY of the specified files.
+        Returns changelists that modified ANY file whose path starts with
+        (or equals) any of the specified file paths. This enables both
+        exact file matching and project-prefix scoping (e.g. "payment-service/").
         
         Args:
-            file_paths: List of file paths to search for
+            file_paths: List of file path prefixes to search for (startsWith semantics)
             
         Returns:
-            List of changelist IDs that modified at least one of the files
+            List of changelist IDs that modified at least one matching file
         """
         pass
 

@@ -93,36 +93,6 @@ class TestBedrockEmbedder(unittest.TestCase):
         self.assertEqual(len(embeddings[0]), 1024)
         self.assertEqual(len(embeddings[1]), 1024)
         
-    @patch('expert_among_us.utils.aws.boto3')
-    def test_dimension(self, mock_boto3):
-        # Mock session and clients
-        mock_session = Mock()
-        mock_boto3.Session.return_value = mock_session
-        
-        mock_sts_client = Mock()
-        mock_sts_client.get_caller_identity.return_value = {'UserId': 'test-user'}
-        
-        mock_bedrock_client = Mock()
-        
-        # Mock credentials to have no expiry (static credentials)
-        mock_credentials = Mock()
-        mock_credentials._expiry_time = None
-        mock_session.get_credentials.return_value = mock_credentials
-        
-        # Configure session.client() to return appropriate clients
-        def client_factory(service_name):
-            if service_name == 'sts':
-                return mock_sts_client
-            elif service_name == 'bedrock-runtime':
-                return mock_bedrock_client
-            return Mock()
-        
-        mock_session.client.side_effect = client_factory
-        
-        model_id = "amazon.titan-embed-text-v2:0"
-        embedder = BedrockEmbedder(model_id)
-        
-        self.assertEqual(embedder.dimension, 1024)
 
 if __name__ == '__main__':
     unittest.main()

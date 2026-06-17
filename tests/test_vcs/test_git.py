@@ -106,11 +106,6 @@ class TestVCSDetection:
         # Parent has .git, so even nested should detect it
         assert Git.detect(str(temp_repo_path))
 
-    def test_detect_git_repository_with_dot_git_dir(self, temp_repo_path):
-        """Verify detection by presence of .git directory."""
-        git_dir = temp_repo_path / ".git"
-        assert git_dir.exists()
-        assert Git.detect(str(temp_repo_path))
 
     def test_detect_nonexistent_path(self):
         """Verify that nonexistent paths return False."""

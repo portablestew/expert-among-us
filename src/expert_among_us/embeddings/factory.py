@@ -23,6 +23,7 @@ def create_embedder(settings: Settings) -> Embedder:
         # We pass settings so it can use local_embedding_model / related config.
         return JinaCodeEmbedder(
             model_id=settings.local_embedding_model,
+            revision=settings.local_embedding_revision,
             dimension=settings.local_embedding_dimension,
             tokens_per_gb=settings.effective_embedding_tokens_per_gb,
             enable_multiprocessing=settings.enable_multiprocessing,

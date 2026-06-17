@@ -17,6 +17,7 @@ def create_reranker(settings) -> Optional[Reranker]:
     if settings.reranking_provider == "local":
         return LocalCrossEncoderReranker(
             model_id=settings.cross_encoder_model,
+            revision=settings.cross_encoder_revision,
             tokens_per_gb=settings.effective_reranking_tokens_per_gb
         )
     

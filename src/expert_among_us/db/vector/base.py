@@ -5,6 +5,7 @@ must implement. The VectorSearchResult model is imported from the models module.
 """
 
 from abc import ABC, abstractmethod
+from typing import Optional
 
 from ...models.query import VectorSearchResult
 from ...config.settings import TITAN_EMBEDDING_DIMENSION
@@ -53,7 +54,8 @@ class VectorDB(ABC):
     @abstractmethod
     def insert_metadata(
         self,
-        vectors: list[tuple[str, list[float]]]
+        vectors: list[tuple[str, list[float]]],
+        metadata: Optional[dict] = None
     ) -> None:
         """Insert commit metadata vectors.
         
@@ -63,13 +65,16 @@ class VectorDB(ABC):
             vectors: List of tuples, each containing:
                 - changelist_id (str): Unique identifier for the commit
                 - embedding (list[float]): Metadata embedding vector
+            metadata: Optional dict of metadata to attach to each vector
+                (e.g., {"project": "payment-service"})
         """
         pass
 
     @abstractmethod
     def insert_diffs(
         self,
-        vectors: list[tuple[str, list[float]]]
+        vectors: list[tuple[str, list[float]]],
+        metadata: Optional[dict] = None
     ) -> None:
         """Insert diff chunk vectors.
         
@@ -79,13 +84,16 @@ class VectorDB(ABC):
             vectors: List of tuples, each containing:
                 - vector_id (str): Identifier for the diff chunk (e.g., commit_hash_chunk_N)
                 - embedding (list[float]): Diff embedding vector
+            metadata: Optional dict of metadata to attach to each vector
+                (e.g., {"project": "payment-service"})
         """
         pass
 
     @abstractmethod
     def insert_files(
         self,
-        vectors: list[tuple[str, list[float]]]
+        vectors: list[tuple[str, list[float]]],
+        metadata: Optional[dict] = None
     ) -> None:
         """Insert file content chunk vectors.
         
@@ -95,6 +103,8 @@ class VectorDB(ABC):
             vectors: List of tuples, each containing:
                 - chunk_id (str): Identifier for the file chunk (e.g., file:path:chunk_N)
                 - embedding (list[float]): File content embedding vector
+            metadata: Optional dict of metadata to attach to each vector
+                (e.g., {"project": "payment-service"})
         """
         pass
 
@@ -128,6 +138,18 @@ class VectorDB(ABC):
         pass
 
     @abstractmethod
+    def delete_project_vectors(self, project_name: str) -> None:
+        """Delete all vectors belonging to a project from all collections.
+        
+        Removes vectors from metadata, diff, and file collections where
+        the project metadata matches the given project name.
+        
+        Args:
+            project_name: Name of the project whose vectors should be deleted
+        """
+        pass
+
+    @abstractmethod
     def delete_file_chunks(
         self,
         chunk_ids: list[str]
@@ -144,7 +166,8 @@ class VectorDB(ABC):
         self,
         query_vector: list[float],
         top_k: int,
-        include_embeddings: bool = False
+        include_embeddings: bool = False,
+        where: Optional[dict] = None
     ) -> list[VectorSearchResult]:
         """Search metadata collection for similar vectors.
         
@@ -154,6 +177,9 @@ class VectorDB(ABC):
             query_vector: Query embedding vector to search for
             top_k: Maximum number of results to return
             include_embeddings: Whether to include embedding vectors in results
+            where: Optional ChromaDB where clause for filtering
+                (e.g., {"project": {"$in": ["payment-service", "user-service"]}})
+                When None, no filtering is applied.
             
         Returns:
             List of VectorSearchResult objects sorted by similarity score
@@ -165,7 +191,8 @@ class VectorDB(ABC):
         self,
         query_vector: list[float],
         top_k: int,
-        include_embeddings: bool = False
+        include_embeddings: bool = False,
+        where: Optional[dict] = None
     ) -> list[VectorSearchResult]:
         """Search diff collection for similar vectors.
         
@@ -175,6 +202,9 @@ class VectorDB(ABC):
             query_vector: Query embedding vector to search for
             top_k: Maximum number of results to return
             include_embeddings: Whether to include embedding vectors in results
+            where: Optional ChromaDB where clause for filtering
+                (e.g., {"project": {"$in": ["payment-service", "user-service"]}})
+                When None, no filtering is applied.
             
         Returns:
             List of VectorSearchResult objects sorted by similarity score
@@ -186,7 +216,8 @@ class VectorDB(ABC):
         self,
         query_vector: list[float],
         top_k: int,
-        include_embeddings: bool = False
+        include_embeddings: bool = False,
+        where: Optional[dict] = None
     ) -> list[VectorSearchResult]:
         """Search file collection for similar vectors.
         
@@ -196,6 +227,9 @@ class VectorDB(ABC):
             query_vector: Query embedding vector to search for
             top_k: Maximum number of results to return
             include_embeddings: Whether to include embedding vectors in results
+            where: Optional ChromaDB where clause for filtering
+                (e.g., {"project": {"$in": ["payment-service", "user-service"]}})
+                When None, no filtering is applied.
             
         Returns:
             List of VectorSearchResult objects sorted by similarity score

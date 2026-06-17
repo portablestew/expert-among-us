@@ -15,6 +15,7 @@ class DummyCommit(Changelist):
         super().__init__(
             id=id,
             expert_name="TestExpert",
+            project_name="test-project",
             timestamp=ts,
             author="tester",
             message=f"Commit {id}",
@@ -138,6 +139,14 @@ def expert_config(tmp_path):
 @pytest.fixture
 def indexer(expert_config, mock_vcs, mock_metadata_db, mock_vector_db, mock_embedder):
     settings = Settings()
+    project_config = {
+        "name": "test-project",
+        "expert_name": "TestExpert",
+        "workspace_path": expert_config["workspace_path"],
+        "subdirs": [],
+        "vcs_type": "git",
+        "has_vector_metadata": True,
+    }
     return Indexer(
         expert_config=expert_config,
         vcs=mock_vcs,
@@ -145,6 +154,7 @@ def indexer(expert_config, mock_vcs, mock_metadata_db, mock_vector_db, mock_embe
         vector_db=mock_vector_db,
         embedder=mock_embedder,
         settings=settings,
+        project_config=project_config,
     )
 
 
@@ -189,7 +199,7 @@ def test_index_unified_progress_and_batches(mock_console, indexer, mock_metadata
     # minimum batch size. This keeps the test aligned with progress/batching refactors.
 
     # Ensure metadata_db last processed commit was updated to final commit in sequence.
-    assert mock_metadata_db.update_last_processed_commit.call_count >= 1
-    last_call = mock_metadata_db.update_last_processed_commit.call_args_list[-1]
-    # last_call[0] contains positional args: (expert_name, last_processed_hash)
-    assert last_call[0][1] == "c3"
+    assert mock_metadata_db.update_project_last_processed.call_count >= 1
+    last_call = mock_metadata_db.update_project_last_processed.call_args_list[-1]
+    # last_call[0] contains positional args: (expert_name, project_name, last_processed_hash)
+    assert last_call[0][2] == "c3"

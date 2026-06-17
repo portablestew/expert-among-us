@@ -81,6 +81,34 @@ class ChromaVectorDB(VectorDB):
             embeddings = [v[1] for v in batch]
             collection.upsert(embeddings=embeddings, ids=ids)
     
+    def _batch_upsert_with_metadata(self, collection, vectors: list[tuple[str, list[float]]], metadata: Optional[dict] = None) -> None:
+        """Helper to batch large upserts with optional metadata into safe chunks.
+        
+        ChromaDB has an internal maximum batch size (~5461) to prevent memory overload.
+        This method splits large batches into smaller sub-batches and attaches metadata
+        (e.g., {"project": project_name}) to each vector during upsert.
+        
+        When metadata is None, vectors are inserted without metadata (backwards compatible).
+        
+        Args:
+            collection: ChromaDB collection to insert into
+            vectors: List of (id, embedding) tuples to insert
+            metadata: Optional dict of metadata to attach to every vector
+                (e.g., {"project": "payment-service"})
+        """
+        if not vectors:
+            return
+            
+        for i in range(0, len(vectors), CHROMA_MAX_BATCH_SIZE):
+            batch = vectors[i:i + CHROMA_MAX_BATCH_SIZE]
+            ids = [v[0] for v in batch]
+            embeddings = [v[1] for v in batch]
+            if metadata is not None:
+                metadatas = [metadata.copy() for _ in batch]
+                collection.upsert(embeddings=embeddings, ids=ids, metadatas=metadatas)
+            else:
+                collection.upsert(embeddings=embeddings, ids=ids)
+    
     def insert_vectors(self, vectors: list[tuple[str, list[float]]]) -> None:
         """Insert or update vectors in a batch operation (idempotent)."""
         self._ensure_client()
@@ -90,23 +118,41 @@ class ChromaVectorDB(VectorDB):
         # Use batching to handle large inserts without exceeding ChromaDB limits
         self._batch_upsert(self.metadata_collection, vectors)
     
-    def insert_metadata(self, vectors: list[tuple[str, list[float]]]) -> None:
-        """Insert commit metadata vectors."""
+    def insert_metadata(self, vectors: list[tuple[str, list[float]]], metadata: Optional[dict] = None) -> None:
+        """Insert commit metadata vectors.
+        
+        Args:
+            vectors: List of (id, embedding) tuples to insert
+            metadata: Optional dict of metadata to attach to each vector
+                (e.g., {"project": "payment-service"})
+        """
         if not self.metadata_collection:
             raise RuntimeError("Collection not initialized. Call initialize() first.")
-        self._batch_upsert(self.metadata_collection, vectors)
+        self._batch_upsert_with_metadata(self.metadata_collection, vectors, metadata)
 
-    def insert_diffs(self, vectors: list[tuple[str, list[float]]]) -> None:
-        """Insert diff chunk vectors."""
+    def insert_diffs(self, vectors: list[tuple[str, list[float]]], metadata: Optional[dict] = None) -> None:
+        """Insert diff chunk vectors.
+        
+        Args:
+            vectors: List of (id, embedding) tuples to insert
+            metadata: Optional dict of metadata to attach to each vector
+                (e.g., {"project": "payment-service"})
+        """
         if not self.diff_collection:
             raise RuntimeError("Collection not initialized. Call initialize() first.")
-        self._batch_upsert(self.diff_collection, vectors)
+        self._batch_upsert_with_metadata(self.diff_collection, vectors, metadata)
 
-    def insert_files(self, vectors: list[tuple[str, list[float]]]) -> None:
-        """Insert file content chunk vectors."""
+    def insert_files(self, vectors: list[tuple[str, list[float]]], metadata: Optional[dict] = None) -> None:
+        """Insert file content chunk vectors.
+        
+        Args:
+            vectors: List of (id, embedding) tuples to insert
+            metadata: Optional dict of metadata to attach to each vector
+                (e.g., {"project": "payment-service"})
+        """
         if not self.file_collection:
             raise RuntimeError("Collection not initialized. Call initialize() first.")
-        self._batch_upsert(self.file_collection, vectors)
+        self._batch_upsert_with_metadata(self.file_collection, vectors, metadata)
         
     def search(self, query_vector: list[float], top_k: int, include_embeddings: bool = False) -> list[VectorSearchResult]:
         """Search for similar vectors and return results sorted by similarity."""
@@ -162,17 +208,21 @@ class ChromaVectorDB(VectorDB):
                 f"Try re-indexing the expert."
             )
     
-    def search_metadata(self, query_vector: list[float], top_k: int, include_embeddings: bool = False) -> list[VectorSearchResult]:
-        """Search metadata collection - NO FILTERING NEEDED."""
+    def search_metadata(self, query_vector: list[float], top_k: int, include_embeddings: bool = False, where: Optional[dict] = None) -> list[VectorSearchResult]:
+        """Search metadata collection - with optional project filtering."""
         self._ensure_client(require_exists=True)
         if not self.metadata_collection:
             raise RuntimeError("Collection not initialized. Call initialize() first.")
         
-        results = self.metadata_collection.query(
+        query_kwargs = dict(
             query_embeddings=[query_vector],
-            n_results=top_k,  # Direct top_k, no multiplier
+            n_results=top_k,
             include=["distances", "documents", "metadatas"] + (["embeddings"] if include_embeddings else [])
         )
+        if where is not None:
+            query_kwargs["where"] = where
+        
+        results = self.metadata_collection.query(**query_kwargs)
         
         # Validate embeddings if requested
         if include_embeddings:
@@ -180,17 +230,21 @@ class ChromaVectorDB(VectorDB):
         
         return self._parse_results(results, include_embeddings)
     
-    def search_diffs(self, query_vector: list[float], top_k: int, include_embeddings: bool = False) -> list[VectorSearchResult]:
-        """Search diffs collection - NO FILTERING NEEDED."""
+    def search_diffs(self, query_vector: list[float], top_k: int, include_embeddings: bool = False, where: Optional[dict] = None) -> list[VectorSearchResult]:
+        """Search diffs collection - with optional project filtering."""
         self._ensure_client(require_exists=True)
         if not self.diff_collection:
             raise RuntimeError("Collection not initialized. Call initialize() first.")
         
-        results = self.diff_collection.query(
+        query_kwargs = dict(
             query_embeddings=[query_vector],
-            n_results=top_k,  # Direct top_k, no multiplier
+            n_results=top_k,
             include=["distances", "documents", "metadatas"] + (["embeddings"] if include_embeddings else [])
         )
+        if where is not None:
+            query_kwargs["where"] = where
+        
+        results = self.diff_collection.query(**query_kwargs)
         
         # Validate embeddings if requested
         if include_embeddings:
@@ -218,17 +272,21 @@ class ChromaVectorDB(VectorDB):
         
         return vector_results
     
-    def search_files(self, query_vector: list[float], top_k: int, include_embeddings: bool = False) -> list[VectorSearchResult]:
-        """Search files collection - NO FILTERING NEEDED."""
+    def search_files(self, query_vector: list[float], top_k: int, include_embeddings: bool = False, where: Optional[dict] = None) -> list[VectorSearchResult]:
+        """Search files collection - with optional project filtering."""
         self._ensure_client(require_exists=True)
         if not self.file_collection:
             raise RuntimeError("Collection not initialized. Call initialize() first.")
         
-        results = self.file_collection.query(
+        query_kwargs = dict(
             query_embeddings=[query_vector],
-            n_results=top_k,  # Direct top_k, no multiplier
+            n_results=top_k,
             include=["distances", "documents", "metadatas"] + (["embeddings"] if include_embeddings else [])
         )
+        if where is not None:
+            query_kwargs["where"] = where
+        
+        results = self.file_collection.query(**query_kwargs)
         
         # Validate embeddings if requested
         if include_embeddings:
@@ -273,6 +331,38 @@ class ChromaVectorDB(VectorDB):
                 ))
         return vector_results
     
+    def delete_project_vectors(self, project_name: str) -> None:
+        """Delete all vectors belonging to a project from all collections.
+        
+        Removes vectors from metadata, diff, and file collections where
+        the project metadata matches the given project name.
+        
+        Args:
+            project_name: Name of the project whose vectors should be deleted
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        where_filter = {"project": project_name}
+        
+        if self.metadata_collection:
+            try:
+                self.metadata_collection.delete(where=where_filter)
+            except Exception as e:
+                logger.warning(f"Failed to delete metadata vectors for project '{project_name}': {e}")
+        
+        if self.diff_collection:
+            try:
+                self.diff_collection.delete(where=where_filter)
+            except Exception as e:
+                logger.warning(f"Failed to delete diff vectors for project '{project_name}': {e}")
+        
+        if self.file_collection:
+            try:
+                self.file_collection.delete(where=where_filter)
+            except Exception as e:
+                logger.warning(f"Failed to delete file vectors for project '{project_name}': {e}")
+
     def delete_file_chunks(self, chunk_ids: list[str]) -> None:
         """Delete file chunk vectors from the files collection."""
         if not chunk_ids:

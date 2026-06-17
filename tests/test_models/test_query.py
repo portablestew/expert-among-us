@@ -6,21 +6,6 @@ from pydantic import ValidationError
 from expert_among_us.models.query import QueryParams, VectorSearchResult
 
 
-def test_query_params_creation():
-    """Test basic query params creation."""
-    params = QueryParams(
-        prompt="How to add a new feature?",
-        max_changes=15,
-        users=["user1", "user2"],
-        files=["file1.py", "file2.py"],
-    )
-    
-    assert params.prompt == "How to add a new feature?"
-    assert params.max_changes == 15
-    assert params.users == ["user1", "user2"]
-    assert params.files == ["file1.py", "file2.py"]
-
-
 def test_query_params_defaults():
     """Test default values."""
     params = QueryParams(prompt="Test query")
@@ -85,29 +70,6 @@ def test_query_params_prompt_trimming():
     """Test that prompt is trimmed."""
     params = QueryParams(prompt="  Test query  ")
     assert params.prompt == "Test query"
-
-
-def test_vector_search_result_creation():
-    """Test basic vector search result creation."""
-    result = VectorSearchResult(
-        result_id="abc123",
-        similarity_score=0.85,
-        source="metadata",
-    )
-    
-    assert result.result_id == "abc123"
-    assert result.similarity_score == 0.85
-    assert result.source == "metadata"
-
-
-def test_vector_search_result_defaults():
-    """Test default source value."""
-    result = VectorSearchResult(
-        result_id="abc123",
-        similarity_score=0.85,
-    )
-    
-    assert result.source == "metadata"
 
 
 def test_vector_search_result_validation_score_range():

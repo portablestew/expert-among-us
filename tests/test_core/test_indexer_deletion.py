@@ -64,6 +64,14 @@ def mock_embedder():
 @pytest.fixture
 def indexer(expert_config, mock_vcs, mock_metadata_db, mock_vector_db, mock_embedder):
     settings = Settings()
+    project_config = {
+        "name": "test-project",
+        "expert_name": "TestExpert",
+        "workspace_path": expert_config["workspace_path"],
+        "subdirs": [],
+        "vcs_type": "git",
+        "has_vector_metadata": True,
+    }
     return Indexer(
         expert_config=expert_config,
         vcs=mock_vcs,
@@ -71,6 +79,7 @@ def indexer(expert_config, mock_vcs, mock_metadata_db, mock_vector_db, mock_embe
         vector_db=mock_vector_db,
         embedder=mock_embedder,
         settings=settings,
+        project_config=project_config,
     )
 
 
@@ -136,6 +145,7 @@ def test_indexer_detects_missing_files_and_deletes(indexer, mock_vcs, mock_metad
     commit = Changelist(
         id="commit1",
         expert_name="TestExpert",
+        project_name="test-project",
         timestamp=base_time,
         author="tester",
         message="Test commit",
@@ -152,7 +162,7 @@ def test_indexer_detects_missing_files_and_deletes(indexer, mock_vcs, mock_metad
     # Run indexing
     indexer.index_unified(batch_size=10)
     
-    # Verify deletion was triggered for the missing file
-    mock_metadata_db.get_file_chunk_ids.assert_called_with("deleted_file.py")
+    # Verify deletion was triggered for the missing file (paths are prefixed with project name)
+    mock_metadata_db.get_file_chunk_ids.assert_called_with("test-project/deleted_file.py")
     mock_vector_db.delete_file_chunks.assert_called_with(["file:deleted_file.py:chunk_0"])
-    mock_metadata_db.delete_file_chunks_by_path.assert_called_with("deleted_file.py")
+    mock_metadata_db.delete_file_chunks_by_path.assert_called_with("test-project/deleted_file.py")

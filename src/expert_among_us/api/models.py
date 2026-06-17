@@ -7,27 +7,43 @@ from typing import List, Optional
 
 
 @dataclass
+class ProjectInfo:
+    """Information about a project within an expert.
+    
+    Attributes:
+        name: Unique name of the project within its expert
+        vcs_type: Version control system type (e.g., "git", "p4")
+        workspace_path: Path to the repository workspace
+        commit_count: Number of commits indexed for this project
+        last_indexed_at: Timestamp of last indexing operation for this project
+        first_processed_commit_hash: Hash of the first processed commit (oldest)
+        last_processed_commit_hash: Hash of the last processed commit (newest)
+    """
+    name: str
+    vcs_type: str
+    workspace_path: str
+    commit_count: int
+    last_indexed_at: Optional[datetime]
+    first_processed_commit_hash: Optional[str] = None
+    last_processed_commit_hash: Optional[str] = None
+
+
+@dataclass
 class ExpertInfo:
     """Information about an expert.
     
     Attributes:
         name: Unique name of the expert
-        vcs_type: Version control system type (e.g., "git")
-        workspace_path: Path to the repository workspace
-        subdirs: List of subdirectories being indexed (empty for all)
-        commit_count: Number of commits indexed
-        last_indexed_at: Timestamp of last indexing operation
-        last_processed_commit_hash: Hash of most recent commit indexed (unified tracking)
-        first_processed_commit_hash: Hash of oldest commit indexed (for display)
+        description: Optional human-readable description of the expert
+        projects: List of projects contained within this expert
+        total_commit_count: Total number of commits indexed across all projects
+        last_indexed_at: Timestamp of most recent indexing operation across all projects
     """
     name: str
-    vcs_type: str
-    workspace_path: str
-    subdirs: List[str]
-    commit_count: int
+    description: Optional[str]
+    projects: List[ProjectInfo]
+    total_commit_count: int
     last_indexed_at: Optional[datetime]
-    last_processed_commit_hash: Optional[str]
-    first_processed_commit_hash: Optional[str]
 
 
 @dataclass

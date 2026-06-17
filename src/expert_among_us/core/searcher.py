@@ -64,7 +64,8 @@ class Searcher:
         expansion_candidate_multiplier: int = 5,
         expansion_passes: int = 1,
         min_similarity_score: float = 0.1,
-        relative_threshold: float = 0.8
+        relative_threshold: float = 0.8,
+        has_vector_metadata: bool = True
     ):
         """
         Initialize the search engine.
@@ -86,6 +87,7 @@ class Searcher:
             expansion_passes: Number of expansion iterations/passes
             min_similarity_score: Minimum similarity score threshold (0.0-1.0)
             relative_threshold: Relative score threshold as percentage drop from top result (0.0-1.0)
+            has_vector_metadata: Whether this expert's vectors have project metadata (False for legacy experts)
         """
         self.expert_name = expert_name
         self.embedder = embedder
@@ -103,6 +105,14 @@ class Searcher:
         self.expansion_passes = expansion_passes
         self.min_similarity_score = min_similarity_score
         self.relative_threshold = relative_threshold
+        self.has_vector_metadata = has_vector_metadata
+        
+        # Fetch known project names for project filter extraction
+        try:
+            self.known_projects = {p["name"] for p in metadata_db.list_projects(expert_name)}
+        except (AttributeError, TypeError):
+            # Gracefully handle databases that don't support list_projects yet
+            self.known_projects = set()
         
         # Note: Constructor parameters take precedence over settings file
         # This allows CLI/API to override settings when needed
@@ -154,6 +164,11 @@ class Searcher:
         """
         log_info(f"Searching expert '{self.expert_name}' for: {params.prompt[:50]}...")
         
+        # Step 0: Build project filter where clause from file prefixes
+        where_clause = self._build_where_clause(params.files)
+        if where_clause:
+            log_info(f"Project filter: {where_clause}")
+        
         # Step 1: Generate query embedding
         query_embedding = self.embedder.embed(params.prompt)
         
@@ -174,13 +189,13 @@ class Searcher:
         if self.enable_metadata_search:
             # Always include embeddings when expansion is enabled for simplicity
             include_embeddings = self.enable_query_expansion
-            metadata_results = self._search_metadata(query_embedding, commit_retrieval_limit, include_embeddings)
+            metadata_results = self._search_metadata(query_embedding, commit_retrieval_limit, include_embeddings, where=where_clause)
         
         diff_results: List[VectorSearchResult] = []
         if self.enable_diff_search:
             # Always include embeddings when expansion is enabled for simplicity
             include_embeddings = self.enable_query_expansion
-            raw_diff_results = self._search_diffs(query_embedding, commit_retrieval_limit, include_embeddings)
+            raw_diff_results = self._search_diffs(query_embedding, commit_retrieval_limit, include_embeddings, where=where_clause)
             diff_results = self._aggregate_chunk_scores(raw_diff_results)
             if len(raw_diff_results) > len(diff_results):
                 log_info(f"Aggregated {len(raw_diff_results)} diff chunks into {len(diff_results)} commits")
@@ -207,7 +222,7 @@ class Searcher:
             # expansion_min_anchors controls fallback in _select_expansion_anchors(), not gating here
             # Use same retrieval limit as initial search (max_changes * multiplier)
             filtered_commits = self._iterative_expansion(
-                params.prompt, filtered_commits, params.max_changes, is_commit_expansion=True
+                params.prompt, filtered_commits, params.max_changes, is_commit_expansion=True, where=where_clause
             )
         
         # Step 7: Apply final limit to commits AFTER expansion and final reranking
@@ -218,7 +233,7 @@ class Searcher:
         if self.enable_file_search:
             # Always include embeddings when expansion is enabled for simplicity
             include_embeddings = self.enable_query_expansion
-            file_results = self._search_files(query_embedding, file_retrieval_limit, include_embeddings)
+            file_results = self._search_files(query_embedding, file_retrieval_limit, include_embeddings, where=where_clause)
 
         file_scores = self._merge_file_scores(file_results)
         top_files = sorted(file_scores.keys(), key=lambda x: file_scores[x]['score'], reverse=True)
@@ -239,7 +254,7 @@ class Searcher:
             # expansion_min_anchors controls fallback in _select_expansion_anchors(), not gating here
             # Use same retrieval limit as initial search (max_file_chunks * multiplier)
             filtered_files = self._iterative_expansion(
-                params.prompt, filtered_files, file_retrieval_limit, is_commit_expansion=False
+                params.prompt, filtered_files, file_retrieval_limit, is_commit_expansion=False, where=where_clause
             )
         
         # Step 10: Apply final limit to files AFTER expansion and final reranking
@@ -410,6 +425,38 @@ class Searcher:
         
         return merged
     
+    def _build_where_clause(self, files: Optional[List[str]]) -> Optional[dict]:
+        """Extract project names from file path prefixes and build a ChromaDB where clause.
+        
+        Analyzes the first path component of each file path to detect known project
+        names, then builds a ChromaDB metadata filter to scope vector search to those
+        projects.
+        
+        Args:
+            files: Optional list of file path strings (may contain project prefixes)
+            
+        Returns:
+            None if has_vector_metadata is False (legacy expert support)
+            None if no files provided
+            None if no project prefixes match known projects
+            {"project": {"$in": [...]}} with detected project names otherwise
+        """
+        if not self.has_vector_metadata:
+            return None
+        if not files:
+            return None
+        
+        detected_projects = set()
+        for file_path in files:
+            parts = file_path.rstrip('/').split('/')
+            if parts[0] in self.known_projects:
+                detected_projects.add(parts[0])
+        
+        if not detected_projects:
+            return None
+        
+        return {"project": {"$in": list(detected_projects)}}
+
     def _apply_commit_filters(
         self,
         changelists: List[Changelist],
@@ -443,10 +490,14 @@ class Searcher:
                 if changelist.author not in params.users:
                     continue
             
-            # Apply file filter (OR logic)
+            # Apply file filter (OR logic) using startsWith matching
             if params.files:
-                # Check if any of the query files match any changelist files
-                if not any(qfile in changelist.files for qfile in params.files):
+                # Include if any changelist file starts with any query file path
+                matches = any(
+                    any(cf.startswith(qf) for cf in changelist.files)
+                    for qf in params.files
+                )
+                if not matches:
                     continue
             
             # Passed all filters, add to results
@@ -505,10 +556,10 @@ class Searcher:
                     if not file_chunk:
                         continue
                     
-                    # Apply file filter (OR logic)
+                    # Apply file filter (OR logic) using startsWith matching
                     if params.files:
-                        # Check if any of the query files match this file path
-                        if not any(qfile in file_chunk.file_path for qfile in params.files):
+                        # Include if file chunk path starts with any query file path
+                        if not any(file_chunk.file_path.startswith(qf) for qf in params.files):
                             continue
                     
                     # Note: User filter doesn't apply to files
@@ -709,7 +760,7 @@ class Searcher:
         
         return anchors
 
-    def _progressive_expansion_commits(self, query: str, reranked_commits: List[CommitResult], max_changes: int) -> List[CommitResult]:
+    def _progressive_expansion_commits(self, query: str, reranked_commits: List[CommitResult], max_changes: int, where: Optional[dict] = None) -> List[CommitResult]:
         """Perform progressive centroid expansion for commits with separate metadata/diff centroids.
           
         Progressively expands search by building centroids from increasing numbers of anchors:
@@ -723,6 +774,7 @@ class Searcher:
             query: Original search query
             reranked_commits: List of reranked commit results (sorted by quality)
             max_changes: Maximum number of new commits to find per search
+            where: Optional ChromaDB where clause for project filtering
             
         Returns:
             List of newly found commit results (deduplication handled by caller)
@@ -769,7 +821,7 @@ class Searcher:
                 if metadata_centroid is None:
                     raise ValueError(f"Failed to compute metadata centroid from {len(progressive_embeddings)} embeddings")
                 
-                metadata_expansion = self._search_with_centroid(query, metadata_centroid, max_changes, is_metadata=True)
+                metadata_expansion = self._search_with_centroid(query, metadata_centroid, max_changes, is_metadata=True, where=where)
                 new_commits.extend(metadata_expansion)
                 all_expanded.extend(metadata_expansion)
                 
@@ -798,7 +850,7 @@ class Searcher:
                     diff_centroid = self._calculate_centroid(progressive_embeddings)
                     
                     if diff_centroid is not None:
-                        diff_expansion = self._search_with_centroid(query, diff_centroid, max_changes, is_metadata=False)
+                        diff_expansion = self._search_with_centroid(query, diff_centroid, max_changes, is_metadata=False, where=where)
                         new_commits.extend(diff_expansion)
                         all_expanded.extend(diff_expansion)
                         
@@ -818,7 +870,7 @@ class Searcher:
             log_info(f"DEBUG: Expansion found {raw_expansion_results} raw results, added {unique_added} new commits")
         return new_commits
 
-    def _progressive_expansion_files(self, query: str, reranked_files: List[FileChunkResult], max_file_chunks: int) -> List[FileChunkResult]:
+    def _progressive_expansion_files(self, query: str, reranked_files: List[FileChunkResult], max_file_chunks: int, where: Optional[dict] = None) -> List[FileChunkResult]:
         """Perform progressive centroid expansion for files.
           
         Progressively expands search by building centroids from increasing numbers of anchors:
@@ -832,6 +884,7 @@ class Searcher:
             query: Original search query
             reranked_files: List of reranked file chunk results (sorted by quality)
             max_file_chunks: Maximum number of new file chunks to find per search
+            where: Optional ChromaDB where clause for project filtering
             
         Returns:
             List of newly found file chunk results (deduplication handled by caller)
@@ -870,7 +923,7 @@ class Searcher:
             if file_centroid is None:
                 raise ValueError(f"Failed to compute file centroid from {len(progressive_embeddings)} embeddings")
             
-            file_expansion = self._search_with_centroid(query, file_centroid, max_file_chunks, is_metadata=False, is_file=True)
+            file_expansion = self._search_with_centroid(query, file_centroid, max_file_chunks, is_metadata=False, is_file=True, where=where)
             all_file_expansion.extend(file_expansion)
             
             from expert_among_us.utils.debug import DebugLogger
@@ -890,7 +943,8 @@ class Searcher:
         query: str,
         initial_results: List[QueryResult],
         max_results: int,
-        is_commit_expansion: bool = True
+        is_commit_expansion: bool = True,
+        where: Optional[dict] = None
     ) -> List[QueryResult]:
         """Perform multiple iterations of progressive centroid expansion with per-pass reranking.
         
@@ -902,6 +956,7 @@ class Searcher:
             initial_results: Starting results (already reranked once)
             max_results: Maximum results to retrieve per pass
             is_commit_expansion: Whether expanding commits (True) or files (False)
+            where: Optional ChromaDB where clause for project filtering
             
         Returns:
             Cumulative pool of results, fully reranked and filtered, ready for final top-K cutoff
@@ -924,7 +979,7 @@ class Searcher:
             
             # Perform expansion from current anchors
             if is_commit_expansion:
-                expanded_results = self._progressive_expansion_commits(query, anchors, max_results)
+                expanded_results = self._progressive_expansion_commits(query, anchors, max_results, where=where)
                 if expanded_results:
                     # Convert VectorSearchResult to CommitResult
                     expanded_commit_ids = [r.result_id for r in expanded_results if r.result_id]
@@ -970,7 +1025,7 @@ class Searcher:
                     log_info(f"Expansion pass {pass_num + 1}: No results found, stopping")
                     break
             else:
-                expanded_results = self._progressive_expansion_files(query, anchors, max_results)
+                expanded_results = self._progressive_expansion_files(query, anchors, max_results, where=where)
                 if expanded_results:
                     # Convert VectorSearchResult to FileChunkResult
                     expanded_chunk_ids = [r.chroma_id for r in expanded_results if r.chroma_id]
@@ -1081,7 +1136,7 @@ class Searcher:
                 log_info(f"DEBUG: Centroid calculation failed with error: {e}")
             return None
 
-    def _search_with_centroid(self, query: str, centroid: List[float], top_k: int, is_metadata: bool = False, is_file: bool = False) -> List[VectorSearchResult]:
+    def _search_with_centroid(self, query: str, centroid: List[float], top_k: int, is_metadata: bool = False, is_file: bool = False, where: Optional[dict] = None) -> List[VectorSearchResult]:
         """Perform search using centroid vector as query.
         
         Args:
@@ -1090,6 +1145,7 @@ class Searcher:
             top_k: Number of results to return
             is_metadata: Whether searching metadata collection
             is_file: Whether searching file collection
+            where: Optional ChromaDB where clause for project filtering
             
         Returns:
             List of vector search results
@@ -1099,11 +1155,11 @@ class Searcher:
         
         try:
             if is_file:
-                results = self.vector_db.search_files(centroid, top_k, include_embeddings=True)
+                results = self.vector_db.search_files(centroid, top_k, include_embeddings=True, where=where)
             elif is_metadata:
-                results = self.vector_db.search_metadata(centroid, top_k, include_embeddings=True)
+                results = self.vector_db.search_metadata(centroid, top_k, include_embeddings=True, where=where)
             else:
-                results = self.vector_db.search_diffs(centroid, top_k, include_embeddings=True)
+                results = self.vector_db.search_diffs(centroid, top_k, include_embeddings=True, where=where)
             
             # Handle results normalization (similar to _search_files)
             if results is None:
@@ -1129,7 +1185,8 @@ class Searcher:
         self,
         query_embedding: List[float],
         top_k: int,
-        include_embeddings: bool = False
+        include_embeddings: bool = False,
+        where: Optional[dict] = None
     ) -> List[VectorSearchResult]:
         """
         Search metadata collection for similar commits.
@@ -1138,11 +1195,12 @@ class Searcher:
             query_embedding: Query vector
             top_k: Number of results to return
             include_embeddings: Whether to include embedding vectors in results
+            where: Optional ChromaDB where clause for project filtering
             
         Returns:
             List of vector search results from metadata collection
         """
-        results = self.vector_db.search_metadata(query_embedding, top_k, include_embeddings)
+        results = self.vector_db.search_metadata(query_embedding, top_k, include_embeddings, where=where)
         log_info(f"Metadata search found {len(results)} results")
         return results
     
@@ -1150,7 +1208,8 @@ class Searcher:
         self,
         query_embedding: List[float],
         top_k: int,
-        include_embeddings: bool = False
+        include_embeddings: bool = False,
+        where: Optional[dict] = None
     ) -> List[VectorSearchResult]:
         """
         Search diff collection for similar code changes.
@@ -1159,11 +1218,12 @@ class Searcher:
             query_embedding: Query vector
             top_k: Number of results to return
             include_embeddings: Whether to include embedding vectors in results
+            where: Optional ChromaDB where clause for project filtering
             
         Returns:
             List of vector search results from diff collection
         """
-        results = self.vector_db.search_diffs(query_embedding, top_k, include_embeddings)
+        results = self.vector_db.search_diffs(query_embedding, top_k, include_embeddings, where=where)
         log_info(f"Diff search found {len(results)} results")
         return results
     
@@ -1171,7 +1231,8 @@ class Searcher:
         self,
         query_embedding: List[float],
         top_k: int,
-        include_embeddings: bool = False
+        include_embeddings: bool = False,
+        where: Optional[dict] = None
     ) -> List[VectorSearchResult]:
         """
         Search file content collection for similar code.
@@ -1180,6 +1241,7 @@ class Searcher:
             query_embedding: Query vector
             top_k: Number of results to return
             include_embeddings: Whether to include embedding vectors in results
+            where: Optional ChromaDB where clause for project filtering
 
         Returns:
             List of vector search results from file content collection
@@ -1192,7 +1254,7 @@ class Searcher:
         # To keep behavior robust (and avoid hiding bugs), we normalize the result
         # to a list and log its size, which works for both real implementations
         # and mocks.
-        results = self.vector_db.search_files(query_embedding, top_k, include_embeddings)
+        results = self.vector_db.search_files(query_embedding, top_k, include_embeddings, where=where)
 
         # Normalize to list defensively; this is effectively a no-op for real
         # implementations that already return a list[VectorSearchResult].

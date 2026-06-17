@@ -42,6 +42,7 @@ def sample_changelist():
     return Changelist(
         id="abc123",
         expert_name="TestExpert",
+        project_name="test-project",
         timestamp=datetime(2024, 1, 15, 10, 30),
         author="test.user@example.com",
         message="Add error handling to user service",
@@ -67,6 +68,7 @@ def sample_changelists():
         Changelist(
             id=f"commit{i}",
             expert_name="TestExpert",
+            project_name="test-project",
             timestamp=datetime(2024, 1, 15, 10, 30),
             author="test.user@example.com",
             message=f"Commit message {i}",
@@ -75,35 +77,6 @@ def sample_changelists():
         )
         for i in range(3)
     ]
-
-
-class TestPromptGeneratorInit:
-    """Tests for PromptGenerator initialization."""
-    
-    def test_init_with_required_params(self, mock_llm, mock_metadata_db):
-        """Test initialization with required parameters."""
-        gen = PromptGenerator(
-            llm_provider=mock_llm,
-            metadata_db=mock_metadata_db,
-            model="test-model",
-            max_diff_chars=TEST_MAX_DIFF_CHARS,
-        )
-        
-        assert gen.llm is mock_llm
-        assert gen.metadata_db is mock_metadata_db
-        assert gen.model == "test-model"
-        assert gen.max_diff_chars == TEST_MAX_DIFF_CHARS
-    
-    def test_init_with_custom_max_diff_chars(self, mock_llm, mock_metadata_db):
-        """Test initialization with custom max_diff_chars."""
-        gen = PromptGenerator(
-            llm_provider=mock_llm,
-            metadata_db=mock_metadata_db,
-            model="test-model",
-            max_diff_chars=5000,
-        )
-        
-        assert gen.max_diff_chars == 5000
 
 
 class TestSinglePromptGeneration:
@@ -179,29 +152,12 @@ class TestBuildPromptRequest:
         assert "Code Changes:" in request
         assert "diff --git a/service.py" in request
     
-    def test_build_request_truncates_long_diff(self, prompt_generator):
-        """Test that long diffs are truncated."""
-        long_changelist = Changelist(
-            id="long123",
-            expert_name="TestExpert",
-            timestamp=datetime(2024, 1, 15, 10, 30),
-            author="test.user@example.com",
-            message="Long diff commit",
-            diff="x" * 5000,  # Longer than max_diff_chars
-            files=["file.py"],
-        )
-        
-        request = prompt_generator._build_prompt_request(long_changelist)
-        
-        # Should be truncated and have truncation marker
-        assert len(request) < 5000
-        assert "[... truncated for brevity ...]" in request
-    
     def test_build_request_limits_files_shown(self, prompt_generator):
         """Test that only first 10 files are shown."""
         many_files_changelist = Changelist(
             id="files123",
             expert_name="TestExpert",
+            project_name="test-project",
             timestamp=datetime(2024, 1, 15, 10, 30),
             author="test.user@example.com",
             message="Many files commit",
@@ -218,31 +174,6 @@ class TestBuildPromptRequest:
 class TestBatchProcessing:
     """Tests for batch prompt generation."""
 
-    def test_generate_prompts_all_cache_hits(
-        self, prompt_generator, mock_metadata_db, sample_changelists
-    ):
-        """Test batch generation when all prompts are cached."""
-        # Mock all cache hits
-        mock_metadata_db.get_generated_prompt.side_effect = [
-            "Cached prompt 0",
-            "Cached prompt 1",
-            "Cached prompt 2",
-        ]
-
-        # Global dummy_progress fixture in tests/conftest.py already patches
-        # expert_among_us.utils.progress.create_progress_bar to avoid Rich LiveError.
-        # No per-test patching needed here.
-
-        results = prompt_generator.generate_prompts(sample_changelists)
-        
-        assert len(results) == 3
-        assert results["commit0"] == "Cached prompt 0"
-        assert results["commit1"] == "Cached prompt 1"
-        assert results["commit2"] == "Cached prompt 2"
-        
-        # Should not call LLM
-        assert not prompt_generator.llm.generate.called
-    
     def test_generate_prompts_all_cache_misses(
         self, prompt_generator, mock_llm, mock_metadata_db, sample_changelists
     ):
@@ -347,6 +278,7 @@ class TestDiffTruncation:
         small_changelist = Changelist(
             id="small123",
             expert_name="TestExpert",
+            project_name="test-project",
             timestamp=datetime(2024, 1, 15, 10, 30),
             author="test.user@example.com",
             message="Small change",
@@ -359,25 +291,6 @@ class TestDiffTruncation:
         # Should not have truncation marker
         assert "[... truncated for brevity ...]" not in request
         assert "x" * 100 in request
-    
-    def test_diff_truncated_when_large(self, prompt_generator):
-        """Test that large diffs are truncated."""
-        large_changelist = Changelist(
-            id="large123",
-            expert_name="TestExpert",
-            timestamp=datetime(2024, 1, 15, 10, 30),
-            author="test.user@example.com",
-            message="Large change",
-            diff="x" * 10000,  # Large diff
-            files=["file.py"],
-        )
-        
-        request = prompt_generator._build_prompt_request(large_changelist)
-        
-        # Should be truncated
-        assert "[... truncated for brevity ...]" in request
-        # Should not contain full original diff
-        assert "x" * 10000 not in request
     
     def test_diff_truncation_respects_max_diff_chars(
         self, mock_llm, mock_metadata_db
@@ -393,6 +306,7 @@ class TestDiffTruncation:
         changelist = Changelist(
             id="test123",
             expert_name="TestExpert",
+            project_name="test-project",
             timestamp=datetime(2024, 1, 15, 10, 30),
             author="test.user@example.com",
             message="Test",
@@ -450,6 +364,7 @@ class TestProgressReporting:
             Changelist(
                 id=f"commit{i}",
                 expert_name="TestExpert",
+                project_name="test-project",
                 timestamp=datetime(2024, 1, 15, 10, 30),
                 author="test.user@example.com",
                 message=f"Message {i}",

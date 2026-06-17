@@ -68,6 +68,7 @@ from .exceptions import (
 
 # Models
 from .models import (
+    ProjectInfo,
     ExpertInfo,
     PromptResponse,
     QueryRequest,
@@ -96,6 +97,7 @@ __all__ = [
     'NoResultsError',
     
     # Models
+    'ProjectInfo',
     'ExpertInfo',
     'PromptResponse',
     'QueryRequest',

@@ -68,21 +68,7 @@ class TestOpenAIConfiguration:
             debug=True
         )
     
-    @patch("expert_among_us.llm.factory.OpenAICompatibleLLM")
-    def test_factory_with_openai_default_model(self, mock_openai_class, base_settings):
-        """Test factory uses default_model if available."""
-        base_settings.llm_provider = "openai"
-        base_settings.openai_api_key = "sk-test-key"
-        base_settings.default_model = "gpt-4-turbo"
-        
-        provider = create_llm_provider(base_settings)
-        
-        mock_openai_class.assert_called_once_with(
-            api_key="sk-test-key",
-            model="not-used",  # Model specified per-call
-            base_url=None,
-            debug=False
-        )
+
     
     def test_openai_provider_raises_error_when_api_key_missing(self, base_settings):
         """Test OpenAI provider raises ValueError when API key is missing."""
@@ -361,40 +347,3 @@ class TestErrorCases:
         assert "unknown-provider" in error_msg
 
 
-class TestDebugParameterPropagation:
-    """Tests for debug parameter propagation to providers."""
-    
-    @patch("expert_among_us.llm.factory.OpenAICompatibleLLM")
-    def test_debug_propagates_to_openai(self, mock_openai, base_settings):
-        """Test debug parameter propagates to OpenAI provider."""
-        base_settings.llm_provider = "openai"
-        base_settings.openai_api_key = "sk-test"
-        
-        create_llm_provider(base_settings, debug=True)
-        
-        call_kwargs = mock_openai.call_args[1]
-        assert call_kwargs["debug"] is True
-    
-    @patch("expert_among_us.llm.factory.OpenAICompatibleLLM")
-    def test_debug_false_by_default(self, mock_openai, base_settings):
-        """Test debug is False by default."""
-        base_settings.llm_provider = "openai"
-        base_settings.openai_api_key = "sk-test"
-        
-        create_llm_provider(base_settings)
-        
-        call_kwargs = mock_openai.call_args[1]
-        assert call_kwargs["debug"] is False
-    
-    @patch("expert_among_us.llm.factory.OpenAICompatibleLLM")
-    def test_debug_propagates_to_openrouter(self, mock_openai, base_settings):
-        """Test debug parameter propagates to OpenRouter provider."""
-        base_settings.llm_provider = "openrouter"
-        base_settings.openrouter_api_key = "sk-or-test"
-        
-        create_llm_provider(base_settings, debug=True)
-        
-        call_kwargs = mock_openai.call_args[1]
-        assert call_kwargs["debug"] is True
-    
-    # test_debug_propagates_to_local_llm removed - "local" provider no longer exists

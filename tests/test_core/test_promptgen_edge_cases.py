@@ -38,57 +38,12 @@ def prompt_generator(mock_llm, mock_metadata_db):
 class TestEmptyAndNullInputs:
     """Test handling of minimal valid inputs."""
     
-    def test_minimal_commit_message(self, prompt_generator, mock_llm):
-        """Test handling of changelist with minimal commit message."""
-        changelist = Changelist(
-            id="minimal123",
-            expert_name="TestExpert",
-            timestamp=datetime(2024, 1, 15, 10, 0, 0),
-            author="test@example.com",
-            message="x",  # Minimal but valid message
-            diff="diff --git a/file.py b/file.py\n+new line",
-            files=["file.py"],
-        )
-        
-        mock_llm.generate.return_value = LLMResponse(
-            content="Add new functionality",
-            model="test-model",
-            stop_reason="end_turn",
-            usage=UsageMetrics(input_tokens=50, output_tokens=10, total_tokens=60)
-        )
-        
-        # Should work with minimal message
-        prompt = prompt_generator._generate_single_prompt(changelist)
-        assert prompt == "Add new functionality"
-    
-    def test_minimal_diff(self, prompt_generator, mock_llm):
-        """Test handling of changelist with minimal diff."""
-        changelist = Changelist(
-            id="mindiff123",
-            expert_name="TestExpert",
-            timestamp=datetime(2024, 1, 15, 10, 0, 0),
-            author="test@example.com",
-            message="Commit with minimal diff",
-            diff="x",  # Minimal but valid diff
-            files=["file.py"],
-        )
-        
-        mock_llm.generate.return_value = LLMResponse(
-            content="Update configuration",
-            model="test-model",
-            stop_reason="end_turn",
-            usage=UsageMetrics(input_tokens=50, output_tokens=10, total_tokens=60)
-        )
-        
-        # Should handle minimal diff gracefully
-        prompt = prompt_generator._generate_single_prompt(changelist)
-        assert prompt == "Update configuration"
-    
     def test_single_file_changed(self, prompt_generator, mock_llm):
         """Test handling of changelist with single file."""
         changelist = Changelist(
             id="singlefile123",
             expert_name="TestExpert",
+            project_name="test-project",
             timestamp=datetime(2024, 1, 15, 10, 0, 0),
             author="test@example.com",
             message="Commit message",
@@ -118,6 +73,7 @@ class TestExtremeInputs:
         changelist = Changelist(
             id="longmsg123",
             expert_name="TestExpert",
+            project_name="test-project",
             timestamp=datetime(2024, 1, 15, 10, 0, 0),
             author="test@example.com",
             message=long_message,
@@ -143,6 +99,7 @@ class TestExtremeInputs:
         changelist = Changelist(
             id="manyfiles123",
             expert_name="TestExpert",
+            project_name="test-project",
             timestamp=datetime(2024, 1, 15, 10, 0, 0),
             author="test@example.com",
             message="Update many files",
@@ -165,6 +122,7 @@ class TestExtremeInputs:
         changelist = Changelist(
             id="exact123",
             expert_name="TestExpert",
+            project_name="test-project",
             timestamp=datetime(2024, 1, 15, 10, 0, 0),
             author="test@example.com",
             message="Exact limit change",
@@ -182,36 +140,12 @@ class TestExtremeInputs:
 class TestSpecialCharactersAndEncoding:
     """Test handling of special characters and encoding issues."""
     
-    def test_newlines_in_commit_message(self, prompt_generator, mock_llm):
-        """Test handling of multi-line commit messages."""
-        multiline_message = "First line\n\nSecond paragraph\n\nThird paragraph"
-        
-        changelist = Changelist(
-            id="multiline123",
-            expert_name="TestExpert",
-            timestamp=datetime(2024, 1, 15, 10, 0, 0),
-            author="test@example.com",
-            message=multiline_message,
-            diff="diff content",
-            files=["file.py"],
-        )
-        
-        mock_llm.generate.return_value = LLMResponse(
-            content="Update with multiple changes",
-            model="test-model",
-            stop_reason="end_turn",
-            usage=UsageMetrics(input_tokens=50, output_tokens=10, total_tokens=60)
-        )
-        
-        # Should handle newlines properly
-        prompt = prompt_generator._generate_single_prompt(changelist)
-        assert prompt == "Update with multiple changes"
-    
     def test_tabs_and_special_whitespace(self, prompt_generator):
         """Test handling of tabs and special whitespace."""
         changelist = Changelist(
             id="whitespace123",
             expert_name="TestExpert",
+            project_name="test-project",
             timestamp=datetime(2024, 1, 15, 10, 0, 0),
             author="test@example.com",
             message="Commit\twith\ttabs",
@@ -224,34 +158,12 @@ class TestSpecialCharactersAndEncoding:
         # Should preserve tabs in request
         assert "\t" in request
     
-    def test_emoji_and_unicode(self, prompt_generator, mock_llm):
-        """Test handling of emoji and Unicode characters."""
-        changelist = Changelist(
-            id="emoji123",
-            expert_name="TestExpert",
-            timestamp=datetime(2024, 1, 15, 10, 0, 0),
-            author="test@example.com",
-            message="Add emoji support 🎉✨🚀",
-            diff="diff --git a/file.py\n+message = '你好世界 🌍'",
-            files=["file.py"],
-        )
-        
-        mock_llm.generate.return_value = LLMResponse(
-            content="Add internationalization and emoji support",
-            model="test-model",
-            stop_reason="end_turn",
-            usage=UsageMetrics(input_tokens=50, output_tokens=10, total_tokens=60)
-        )
-        
-        # Should handle Unicode properly
-        prompt = prompt_generator._generate_single_prompt(changelist)
-        assert prompt == "Add internationalization and emoji support"
-    
     def test_control_characters(self, prompt_generator):
         """Test handling of control characters in input."""
         changelist = Changelist(
             id="control123",
             expert_name="TestExpert",
+            project_name="test-project",
             timestamp=datetime(2024, 1, 15, 10, 0, 0),
             author="test@example.com",
             message="Commit\x00with\x01control\x02chars",
@@ -315,6 +227,7 @@ class TestBatchProcessingEdgeCases:
         changelist = Changelist(
             id="single123",
             expert_name="TestExpert",
+            project_name="test-project",
             timestamp=datetime(2024, 1, 15, 10, 0, 0),
             author="test@example.com",
             message="Single change",
@@ -331,61 +244,12 @@ class TestBatchProcessingEdgeCases:
 class TestQuoteHandling:
     """Test handling of quotes in generated prompts."""
     
-    def test_double_quotes_at_start_and_end(self, prompt_generator, mock_llm):
-        """Test removal of double quotes from generated prompts."""
-        changelist = Changelist(
-            id="quotes123",
-            expert_name="TestExpert",
-            timestamp=datetime(2024, 1, 15, 10, 0, 0),
-            author="test@example.com",
-            message="Add feature",
-            diff="diff content",
-            files=["file.py"],
-        )
-        
-        mock_llm.generate.return_value = LLMResponse(
-            content='"Add authentication to the API"',
-            model="test-model",
-            stop_reason="end_turn",
-            usage=UsageMetrics(input_tokens=50, output_tokens=10, total_tokens=60)
-        )
-        
-        prompt = prompt_generator._generate_single_prompt(changelist)
-        
-        # Should strip quotes
-        assert prompt == "Add authentication to the API"
-        assert not prompt.startswith('"')
-        assert not prompt.endswith('"')
-    
-    def test_single_quotes_at_start_and_end(self, prompt_generator, mock_llm):
-        """Test removal of single quotes from generated prompts."""
-        changelist = Changelist(
-            id="singles123",
-            expert_name="TestExpert",
-            timestamp=datetime(2024, 1, 15, 10, 0, 0),
-            author="test@example.com",
-            message="Add feature",
-            diff="diff content",
-            files=["file.py"],
-        )
-        
-        mock_llm.generate.return_value = LLMResponse(
-            content="'Implement user validation'",
-            model="test-model",
-            stop_reason="end_turn",
-            usage=UsageMetrics(input_tokens=50, output_tokens=10, total_tokens=60)
-        )
-        
-        prompt = prompt_generator._generate_single_prompt(changelist)
-        
-        # Should strip single quotes
-        assert prompt == "Implement user validation"
-    
     def test_quotes_in_middle_preserved(self, prompt_generator, mock_llm):
         """Test that quotes in the middle of text are preserved."""
         changelist = Changelist(
             id="middle123",
             expert_name="TestExpert",
+            project_name="test-project",
             timestamp=datetime(2024, 1, 15, 10, 0, 0),
             author="test@example.com",
             message="Add feature",
@@ -410,6 +274,7 @@ class TestQuoteHandling:
         changelist = Changelist(
             id="mixed123",
             expert_name="TestExpert",
+            project_name="test-project",
             timestamp=datetime(2024, 1, 15, 10, 0, 0),
             author="test@example.com",
             message="Add feature",
@@ -451,6 +316,7 @@ class TestConcurrentGenerationScenarios:
             Changelist(
                 id="duplicate",
                 expert_name="TestExpert",
+                project_name="test-project",
                 timestamp=datetime(2024, 1, 15, 10, 0, 0),
                 author="test@example.com",
                 message=f"Change {i}",

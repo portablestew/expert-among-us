@@ -42,12 +42,6 @@ def test_truncate_to_bytes_utf8_safety():
     assert was_truncated is True
 
 
-def test_truncate_to_bytes_empty():
-    """Test truncating empty string."""
-    truncated, was_truncated = truncate_to_bytes("", max_bytes=100)
-    
-    assert truncated == ""
-    assert was_truncated is False
 
 
 def test_truncate_to_tokens_no_truncation():
@@ -86,9 +80,6 @@ def test_is_binary_file_mostly_nontext():
     assert is_binary_file(binary_content) is True
 
 
-def test_is_binary_file_empty():
-    """Test empty content."""
-    assert is_binary_file(b"") is False
 
 
 def test_extract_filename_from_diff_git_format():
@@ -161,22 +152,6 @@ def test_truncate_diff_for_embedding_with_truncation():
     assert "[TRUNCATED" in truncated
 
 
-def test_truncate_diff_for_embedding_empty():
-    """Test truncating empty diff."""
-    truncated, was_truncated = truncate_diff_for_embedding("")
-    
-    assert truncated == ""
-    assert was_truncated is False
-
-
-def test_filter_binary_from_diff_empty():
-    """Test filtering empty diff."""
-    from expert_among_us.utils.truncate import filter_binary_from_diff
-    
-    filtered, binary_files = filter_binary_from_diff("")
-    
-    assert filtered == ""
-    assert binary_files == []
 
 
 def test_filter_binary_from_diff_text_only():

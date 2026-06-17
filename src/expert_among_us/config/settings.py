@@ -44,6 +44,15 @@ TITAN_EMBEDDING_DIMENSION = 1024  # Titan embedding vector dimension
 # Embedding model characteristics - Local Jina Code
 JINA_CODE_MODEL_ID = "jinaai/jina-code-embeddings-0.5b"
 JINA_CODE_DIMENSION = 512  # Matryoshka truncation from 896
+# Pinned HuggingFace revision (git SHA) to prevent unexpected model updates.
+# To find the latest revision for a model, run:
+#   curl -s https://huggingface.co/api/models/<org>/<model> | python -m json.tool | grep sha
+# Or visit the model page on HuggingFace and check the commit history.
+JINA_CODE_REVISION = "4db235132dafbe56a8b9c5f59b59795ecf58a4a7"
+
+# Cross-encoder reranking model
+CROSS_ENCODER_MODEL_ID = "cross-encoder/ms-marco-MiniLM-L-12-v2"
+CROSS_ENCODER_REVISION = "7b0235231ca2674cb8ca8f022859a6eba2b1c968"
 
 
 class Settings(BaseSettings):
@@ -148,6 +157,7 @@ class Settings(BaseSettings):
     
     # Local embedding settings
     local_embedding_model: str = JINA_CODE_MODEL_ID
+    local_embedding_revision: str = JINA_CODE_REVISION
     local_embedding_dimension: int = JINA_CODE_DIMENSION
     
     # Bedrock embedding settings
@@ -190,7 +200,8 @@ class Settings(BaseSettings):
     # Reranking settings
     enable_reranking: bool = True  # Enabled by default
     reranking_provider: str = "local"  # Only "local" supported initially
-    cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-12-v2"  # Changed to L-12 for better quality
+    cross_encoder_model: str = CROSS_ENCODER_MODEL_ID
+    cross_encoder_revision: str = CROSS_ENCODER_REVISION
 
     # Query expansion settings
     enable_query_expansion: bool = True

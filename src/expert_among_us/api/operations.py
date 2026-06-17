@@ -16,7 +16,7 @@ from expert_among_us.db.metadata.sqlite import SQLiteMetadataDB
 
 from .context import ExpertContext
 from .exceptions import ExpertNotFoundError, ExpertAlreadyExistsError, InvalidExpertError
-from .models import ExpertInfo
+from .models import ExpertInfo, ProjectInfo
 
 
 def query_expert(
@@ -117,6 +117,15 @@ def query_expert(
             require_exists=True
         )
         
+        # Determine has_vector_metadata from projects
+        # If ALL projects have has_vector_metadata=True, pass True; otherwise False
+        projects = ctx.metadata_db.list_projects(expert_name)
+        if projects:
+            has_vector_metadata = all(p['has_vector_metadata'] for p in projects)
+        else:
+            # No projects yet (legacy or empty expert) — default to True
+            has_vector_metadata = True
+        
         # Determine search scope
         enable_metadata_search = search_scope_lower in ("metadata", "all")
         enable_diff_search = search_scope_lower in ("diffs", "all")
@@ -143,6 +152,7 @@ def query_expert(
             relative_threshold=relative_threshold,
             expansion_candidate_multiplier=expansion_candidate_multiplier,
             expansion_passes=expansion_passes,
+            has_vector_metadata=has_vector_metadata,
         )
         
         # Create query parameters
@@ -173,7 +183,8 @@ def list_experts(
     """List all available experts.
     
     Scans the data directory for expert databases and collects metadata
-    about each expert including commit counts and time ranges.
+    about each expert including per-project details, aggregated commit
+    counts, and time ranges spanning all projects.
     
     Args:
         data_dir: Optional custom data directory path. If not provided,
@@ -192,7 +203,8 @@ def list_experts(
         
         for expert in experts:
             print(f"Name: {expert.name}")
-            print(f"Commits: {expert.commit_count}")
+            print(f"Projects: {len(expert.projects)}")
+            print(f"Total commits: {expert.total_commit_count}")
             print(f"Last indexed: {expert.last_indexed_at}")
         ```
     """
@@ -223,17 +235,41 @@ def list_experts(
             experts = metadata_db.list_all_experts()
             if experts:
                 expert = experts[0]  # Should only be one expert per database
-                commit_count = metadata_db.get_commit_count(expert_name)
+                
+                # Build ProjectInfo list from projects table
+                projects_data = metadata_db.list_projects(expert_name)
+                project_infos = []
+                total_commit_count = 0
+                latest_indexed_at = None
+                
+                for proj in projects_data:
+                    commit_count = metadata_db.get_project_commit_count(
+                        expert_name, proj['name']
+                    )
+                    total_commit_count += commit_count
+                    
+                    # Track the most recent last_indexed_at across all projects
+                    proj_indexed_at = proj.get('last_indexed_at')
+                    if proj_indexed_at is not None:
+                        if latest_indexed_at is None or proj_indexed_at > latest_indexed_at:
+                            latest_indexed_at = proj_indexed_at
+                    
+                    project_infos.append(ProjectInfo(
+                        name=proj['name'],
+                        vcs_type=proj['vcs_type'],
+                        workspace_path=proj['workspace_path'],
+                        commit_count=commit_count,
+                        last_indexed_at=proj_indexed_at,
+                        first_processed_commit_hash=proj.get('first_processed_commit_hash'),
+                        last_processed_commit_hash=proj.get('last_processed_commit_hash'),
+                    ))
                 
                 experts_info.append(ExpertInfo(
                     name=expert['name'],
-                    vcs_type=expert['vcs_type'],
-                    workspace_path=expert['workspace_path'],
-                    subdirs=expert['subdirs'],
-                    commit_count=commit_count,
-                    last_indexed_at=expert['last_indexed_at'],
-                    last_processed_commit_hash=expert['last_processed_commit_hash'],
-                    first_processed_commit_hash=expert['first_processed_commit_hash']
+                    description=expert.get('description'),
+                    projects=project_infos,
+                    total_commit_count=total_commit_count,
+                    last_indexed_at=latest_indexed_at,
                 ))
         finally:
             metadata_db.close()

@@ -1122,6 +1122,7 @@ class Perforce(VCSProvider):
                 changelist = Changelist(
                     id=cl_number,
                     expert_name="",  # Will be set by caller
+                    project_name="",  # Will be set by caller
                     timestamp=timestamp,
                     author=author,
                     message=message if message else f"Changelist {cl_number}",

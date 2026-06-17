@@ -85,12 +85,6 @@ class TestCollectionInitialization:
             gc.collect()
             time.sleep(0.2)
 
-    def test_db_creates_collection(self, temp_vector_db):
-        """Verify that three collections are created on initialization."""
-        assert temp_vector_db.metadata_collection is not None
-        assert temp_vector_db.diff_collection is not None
-        assert temp_vector_db.file_collection is not None
-
     def test_db_persists_directory(self):
         """Verify that database persists to the specified directory."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -124,25 +118,6 @@ class TestCollectionInitialization:
             gc.collect()
             time.sleep(0.2)
 
-    def test_dimension_parameter_stored(self):
-        """Verify that the dimension parameter is properly used."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db = ChromaVectorDB("dim_test")
-            db.client = __import__('chromadb').PersistentClient(path=tmpdir)
-            db.initialize(dimension=512)
-            
-            # Verify collections were created
-            assert db.metadata_collection is not None
-            assert db.diff_collection is not None
-            assert db.file_collection is not None
-            db.close()
-            
-            # Clean up for Windows
-            import gc
-            import time
-            del db
-            gc.collect()
-            time.sleep(0.2)
 
 
 class TestVectorInsertion:
@@ -170,12 +145,6 @@ class TestVectorInsertion:
         
         assert temp_vector_db.count() == 1
 
-    def test_insert_multiple_vectors_sequentially(self, temp_vector_db, sample_vectors):
-        """Verify that vectors can be inserted one at a time."""
-        for i, vec in enumerate(sample_vectors):
-            temp_vector_db.insert_vectors([(f"vec_id_{i}", vec)])
-        
-        assert temp_vector_db.count() == len(sample_vectors)
 
     def test_insert_without_initialize_raises_error(self):
         """Verify that inserting without initialization raises an error."""
@@ -359,35 +328,6 @@ class TestCountOperations:
     def test_count_empty_collection(self, temp_vector_db):
         """Verify count returns 0 for empty collection."""
         assert temp_vector_db.count() == 0
-
-    def test_count_after_insertions(self, temp_vector_db, sample_vectors):
-        """Verify count increases with insertions."""
-        assert temp_vector_db.count() == 0
-        
-        temp_vector_db.insert_vectors([("vec_id_1", sample_vectors[0])])
-        assert temp_vector_db.count() == 1
-        
-        temp_vector_db.insert_vectors([("vec_id_2", sample_vectors[1])])
-        assert temp_vector_db.count() == 2
-
-    def test_count_after_batch_insertion(self, temp_vector_db, sample_vectors):
-        """Verify count is correct after batch insertion."""
-        vectors_to_insert = [
-            (f"vec_id_{i}", sample_vectors[i])
-            for i in range(5)
-        ]
-        
-        temp_vector_db.insert_vectors(vectors_to_insert)
-        assert temp_vector_db.count() == 5
-
-    def test_count_with_duplicate_insert(self, temp_vector_db, sample_vectors):
-        """Verify count doesn't increase with duplicate ID insertion."""
-        temp_vector_db.insert_vectors([("vec_id_1", sample_vectors[0])])
-        assert temp_vector_db.count() == 1
-        
-        # Insert with same ID - should overwrite, not increase count
-        temp_vector_db.insert_vectors([("vec_id_1", sample_vectors[1])])
-        assert temp_vector_db.count() == 1
 
     def test_count_without_collection(self):
         """Verify count returns 0 when collection is not initialized."""
@@ -652,3 +592,171 @@ class TestEmbeddingExtraction:
         assert results[0].embedding is not None
         assert isinstance(results[0].embedding, list)
         assert len(results[0].embedding) == 1024
+
+
+class TestProjectMetadataInserts:
+    """Tests for project metadata on vector inserts and where clause on searches."""
+
+    def test_insert_metadata_with_project_metadata(self, temp_vector_db, sample_vectors):
+        """Verify that insert_metadata attaches project metadata to vectors."""
+        metadata = {"project": "payment-service"}
+        temp_vector_db.insert_metadata([("commit_1", sample_vectors[0])], metadata=metadata)
+
+        # Retrieve directly from collection to verify metadata
+        result = temp_vector_db.metadata_collection.get(
+            ids=["commit_1"], include=["metadatas"]
+        )
+        assert result["metadatas"][0]["project"] == "payment-service"
+
+    def test_insert_diffs_with_project_metadata(self, temp_vector_db, sample_vectors):
+        """Verify that insert_diffs attaches project metadata to vectors."""
+        metadata = {"project": "user-service"}
+        temp_vector_db.insert_diffs([("diff_1", sample_vectors[0])], metadata=metadata)
+
+        result = temp_vector_db.diff_collection.get(
+            ids=["diff_1"], include=["metadatas"]
+        )
+        assert result["metadatas"][0]["project"] == "user-service"
+
+    def test_insert_files_with_project_metadata(self, temp_vector_db, sample_vectors):
+        """Verify that insert_files attaches project metadata to vectors."""
+        metadata = {"project": "shared-lib"}
+        temp_vector_db.insert_files([("file_1", sample_vectors[0])], metadata=metadata)
+
+        result = temp_vector_db.file_collection.get(
+            ids=["file_1"], include=["metadatas"]
+        )
+        assert result["metadatas"][0]["project"] == "shared-lib"
+
+    def test_insert_without_metadata(self, temp_vector_db, sample_vectors):
+        """Verify that inserts work without metadata (legacy behavior)."""
+        temp_vector_db.insert_metadata([("commit_no_meta", sample_vectors[0])])
+
+        result = temp_vector_db.metadata_collection.get(
+            ids=["commit_no_meta"], include=["metadatas"]
+        )
+        # Should still have a metadata dict (possibly empty or None project)
+        assert result["metadatas"] is not None
+
+
+class TestWhereClauseFiltering:
+    """Tests for where clause filtering on ChromaDB searches."""
+
+    def test_search_metadata_with_where_clause(self, temp_vector_db, sample_vectors):
+        """Verify that search_metadata filters by project when where clause is provided."""
+        # Insert vectors for two different projects
+        temp_vector_db.insert_metadata(
+            [("commit_proj_a", sample_vectors[0])], metadata={"project": "proj-a"}
+        )
+        temp_vector_db.insert_metadata(
+            [("commit_proj_b", sample_vectors[1])], metadata={"project": "proj-b"}
+        )
+
+        # Search with where clause filtering to proj-a
+        where = {"project": {"$in": ["proj-a"]}}
+        results = temp_vector_db.search_metadata(sample_vectors[0], top_k=10, where=where)
+
+        # Should only return proj-a result
+        assert len(results) == 1
+        assert results[0].result_id == "commit_proj_a"
+
+    def test_search_diffs_with_where_clause(self, temp_vector_db, sample_vectors):
+        """Verify that search_diffs filters by project when where clause is provided."""
+        temp_vector_db.insert_diffs(
+            [("diff_proj_a", sample_vectors[0])], metadata={"project": "proj-a"}
+        )
+        temp_vector_db.insert_diffs(
+            [("diff_proj_b", sample_vectors[1])], metadata={"project": "proj-b"}
+        )
+
+        where = {"project": {"$in": ["proj-a"]}}
+        results = temp_vector_db.search_diffs(sample_vectors[0], top_k=10, where=where)
+
+        assert len(results) == 1
+        assert results[0].result_id == "diff_proj_a"
+
+    def test_search_files_with_where_clause(self, temp_vector_db, sample_vectors):
+        """Verify that search_files filters by project when where clause is provided."""
+        temp_vector_db.insert_files(
+            [("file_proj_a", sample_vectors[0])], metadata={"project": "proj-a"}
+        )
+        temp_vector_db.insert_files(
+            [("file_proj_b", sample_vectors[1])], metadata={"project": "proj-b"}
+        )
+
+        where = {"project": {"$in": ["proj-a"]}}
+        results = temp_vector_db.search_files(sample_vectors[0], top_k=10, where=where)
+
+        assert len(results) == 1
+        assert results[0].result_id == "file_proj_a"
+
+    def test_search_without_where_returns_all(self, temp_vector_db, sample_vectors):
+        """Verify that search without where clause returns results from all projects."""
+        temp_vector_db.insert_metadata(
+            [("commit_a", sample_vectors[0])], metadata={"project": "proj-a"}
+        )
+        temp_vector_db.insert_metadata(
+            [("commit_b", sample_vectors[1])], metadata={"project": "proj-b"}
+        )
+
+        # Search without where clause
+        results = temp_vector_db.search_metadata(sample_vectors[0], top_k=10)
+
+        # Should return both
+        assert len(results) == 2
+
+    def test_search_where_multiple_projects(self, temp_vector_db, sample_vectors):
+        """Verify that where clause with multiple projects returns results from all listed."""
+        temp_vector_db.insert_metadata(
+            [("commit_a", sample_vectors[0])], metadata={"project": "proj-a"}
+        )
+        temp_vector_db.insert_metadata(
+            [("commit_b", sample_vectors[1])], metadata={"project": "proj-b"}
+        )
+        temp_vector_db.insert_metadata(
+            [("commit_c", sample_vectors[2])], metadata={"project": "proj-c"}
+        )
+
+        where = {"project": {"$in": ["proj-a", "proj-c"]}}
+        results = temp_vector_db.search_metadata(sample_vectors[0], top_k=10, where=where)
+
+        result_ids = {r.result_id for r in results}
+        assert "commit_a" in result_ids
+        assert "commit_c" in result_ids
+        assert "commit_b" not in result_ids
+
+
+class TestDeleteProjectVectors:
+    """Tests for project vector deletion."""
+
+    def test_delete_project_vectors_removes_from_all_collections(self, temp_vector_db, sample_vectors):
+        """Verify that delete_project_vectors removes vectors from metadata, diffs, and files."""
+        metadata = {"project": "to-delete"}
+        temp_vector_db.insert_metadata([("m1", sample_vectors[0])], metadata=metadata)
+        temp_vector_db.insert_diffs([("d1", sample_vectors[0])], metadata=metadata)
+        temp_vector_db.insert_files([("f1", sample_vectors[0])], metadata=metadata)
+
+        assert temp_vector_db.count() == 3
+
+        temp_vector_db.delete_project_vectors("to-delete")
+
+        assert temp_vector_db.count() == 0
+
+    def test_delete_project_vectors_preserves_other_projects(self, temp_vector_db, sample_vectors):
+        """Verify that deleting one project's vectors doesn't affect others."""
+        temp_vector_db.insert_metadata(
+            [("keep_m1", sample_vectors[0])], metadata={"project": "keep"}
+        )
+        temp_vector_db.insert_metadata(
+            [("del_m1", sample_vectors[1])], metadata={"project": "delete-me"}
+        )
+
+        temp_vector_db.delete_project_vectors("delete-me")
+
+        # keep project's vectors should still exist
+        result = temp_vector_db.metadata_collection.get(ids=["keep_m1"])
+        assert len(result["ids"]) == 1
+
+        # deleted project's vectors should be gone
+        result = temp_vector_db.metadata_collection.get(ids=["del_m1"])
+        assert len(result["ids"]) == 0

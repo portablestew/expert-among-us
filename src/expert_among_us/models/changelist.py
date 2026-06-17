@@ -18,6 +18,7 @@ class Changelist(BaseModel):
     Attributes:
         id: Commit hash or CL number (primary key)
         expert_name: Which expert this belongs to
+        project_name: Which project within the expert this commit belongs to
         timestamp: When the commit was made
         author: Commit author
         message: Commit message
@@ -31,6 +32,7 @@ class Changelist(BaseModel):
 
     id: str = Field(..., description="Commit hash or CL number (primary key)")
     expert_name: str = Field(..., description="Expert this changelist belongs to")
+    project_name: str = Field(..., description="Project this commit belongs to")
     timestamp: datetime = Field(..., description="When the commit was made")
     author: str = Field(..., description="Commit author")
     message: str = Field(..., description="Commit message")
@@ -54,6 +56,7 @@ class Changelist(BaseModel):
             "example": {
                 "id": "abc123def456",
                 "expert_name": "MyExpert",
+                "project_name": "my-project",
                 "timestamp": "2024-01-15T10:30:00Z",
                 "author": "portablestew",
                 "message": "Add new arrow type support",

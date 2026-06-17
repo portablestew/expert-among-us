@@ -27,6 +27,7 @@ class Indexer:
         vector_db: VectorDB,
         embedder: Embedder,
         settings,
+        project_config: dict,
         max_commits: int = 10000,
     ):
         """Create a new Indexer.
@@ -39,8 +40,13 @@ class Indexer:
             embedder: Embedding provider instance.
             settings: Settings instance.
             max_commits: Maximum commits to index (default: 10000).
+            project_config: Project configuration dict with keys:
+                name, workspace_path, subdirs, vcs_type, has_vector_metadata.
+                Enables path prefixing, project metadata on vectors,
+                and per-project state tracking.
         """
         self.expert_config = expert_config
+        self.project_config = project_config
         self.vcs: VCSProvider = vcs
         self.metadata_db: MetadataDB = metadata_db
         self.vector_db: VectorDB = vector_db
@@ -109,7 +115,9 @@ class Indexer:
         Returns:
             True if more commits remain to be indexed (hit batch limit), False otherwise
         """
-        workspace_path=self.expert_config["workspace_path"]
+        workspace_path = self.project_config["workspace_path"]
+        
+        project_name = self.project_config["name"]
         
         # Get starting point
         # Override with start_after if provided (for testing specific commits)
@@ -117,7 +125,8 @@ class Indexer:
             last_processed_id = start_after
         else:
             last_processed_id = self.metadata_db.get_last_processed_commit_hash(
-                self.expert_config['name']
+                self.expert_config['name'],
+                project_name=project_name,
             )
 
         # Respect global max_commits across runs: treat already indexed commits as part of the total.
@@ -129,7 +138,7 @@ class Indexer:
         # IMPORTANT: Call this BEFORE get_commit_position() to ensure VCS cache is loaded
         total_available = self.vcs.get_total_commit_count(
             workspace_path=workspace_path,
-            subdirs=self.expert_config.get("subdirs"),
+            subdirs=self.project_config.get("subdirs"),
         )
 
         # Get position in VCS sequence for accurate progress tracking
@@ -252,7 +261,7 @@ class Indexer:
                     workspace_path=workspace_path,
                     after_hash=last_processed_id,
                     batch_size=batch_size,
-                    subdirs=self.expert_config.get('subdirs'),
+                    subdirs=self.project_config.get('subdirs'),
                     progress_callback=update_cl_progress,
                 )
                 
@@ -327,8 +336,10 @@ class Indexer:
                 final_commit = batch[-1]
                 last_processed_id = final_commit.id
                 total_commits += len(batch)
-                self.metadata_db.update_last_processed_commit(
+                # Per-project state tracking
+                self.metadata_db.update_project_last_processed(
                     self.expert_config['name'],
+                    project_name,
                     last_processed_id,
                 )
 
@@ -361,9 +372,9 @@ class Indexer:
         """Check which files exist at the specified revision."""
         
         tracked_files = set(self.vcs.get_tracked_files_at_commit(
-            self.expert_config['workspace_path'],
+            self.project_config['workspace_path'],
             revision_id,
-            subdirs=self.expert_config.get('subdirs')
+            subdirs=self.project_config.get('subdirs')
         ))
         
         existing = file_paths & tracked_files
@@ -416,7 +427,7 @@ class Indexer:
 
         # Batched read from VCS with progress tracking
         contents_by_path = self.vcs.get_files_content_at_commit(
-            workspace_path=self.expert_config["workspace_path"],
+            workspace_path=self.project_config["workspace_path"],
             file_paths=list(file_paths),
             commit_hash=revision_id,
             progress_callback=update_file_progress,
@@ -562,7 +573,8 @@ class Indexer:
                     vectors_for_file.append((chunk.get_chroma_id(), vec))
 
             if vectors_for_file:
-                self.vector_db.insert_files(vectors_for_file)
+                metadata_arg = {"project": self.project_config["name"]}
+                self.vector_db.insert_files(vectors_for_file, metadata=metadata_arg)
 
             self.progress.update(task_id, advance=1)
     
@@ -667,18 +679,76 @@ class Indexer:
         for idx, commit in enumerate(batch):
             metadata_emb = metadata_embeddings[idx]
 
+            # Apply project-aware transformations
+            proj_name = self.project_config["name"]
+            # Prefix file paths with project name
+            commit.files = self.prefix_file_paths(commit.files, proj_name)
+            # Rewrite diff paths with project prefix
+            commit.diff = self.rewrite_diff_paths(commit.diff, proj_name)
+            # Set project_name on changelist before insertion
+            commit.project_name = proj_name
+
             # Store metadata (skip if embedding is None)
             self.metadata_db.insert_changelists([commit])
             if metadata_emb is not None:
-                self.vector_db.insert_metadata([(commit.id, metadata_emb)])
+                metadata_arg = {"project": self.project_config["name"]}
+                self.vector_db.insert_metadata([(commit.id, metadata_emb)], metadata=metadata_arg)
 
             # Store diffs for this commit, if any
             diff_vectors = commit_diff_vectors.get(commit.id)
             if diff_vectors:
-                self.vector_db.insert_diffs(diff_vectors)
+                metadata_arg = {"project": self.project_config["name"]}
+                self.vector_db.insert_diffs(diff_vectors, metadata=metadata_arg)
 
             self.progress.update(self._commit_store_task, advance=1)
 
         # Remove arrow on completion
         self.progress.update(self._commit_store_task, description=self._TASK_DESC_COMMIT_STORE)
         self.progress.stop_task(self._commit_store_task)
+
+    @staticmethod
+    def prefix_file_paths(files: list[str], project_name: str) -> list[str]:
+        """Prepend project_name/ to every file path.
+
+        Args:
+            files: List of relative file paths.
+            project_name: Non-empty project identifier (alphanumeric, hyphens, underscores).
+
+        Returns:
+            List of paths with project_name/ prepended.
+        """
+        return [f"{project_name}/{f}" for f in files]
+
+    @staticmethod
+    def rewrite_diff_paths(diff: str, project_name: str) -> str:
+        """Rewrite unified diff path lines to include the project prefix.
+
+        Transforms:
+          - '--- a/X' → '--- a/{project_name}/X'
+          - '+++ b/X' → '+++ b/{project_name}/X'
+          - '/dev/null' lines are left unchanged.
+          - All other lines pass through unmodified.
+
+        The output always has the same number of lines as the input.
+
+        Args:
+            diff: Unified diff string (may be empty or multi-hunk).
+            project_name: Non-empty project identifier.
+
+        Returns:
+            Rewritten diff string with prefixed paths.
+        """
+        lines = diff.split('\n')
+        result = []
+        for line in lines:
+            if line.startswith('--- /dev/null') or line.startswith('+++ /dev/null'):
+                result.append(line)
+            elif line.startswith('--- a/'):
+                path = line[6:]  # strip '--- a/'
+                result.append(f'--- a/{project_name}/{path}')
+            elif line.startswith('+++ b/'):
+                path = line[6:]  # strip '+++ b/'
+                result.append(f'+++ b/{project_name}/{path}')
+            else:
+                result.append(line)
+        return '\n'.join(result)

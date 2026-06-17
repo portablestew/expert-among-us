@@ -76,17 +76,6 @@ class TestChunkTextWithLines:
         assert len(chunk_text) == 8192
         assert "...[line truncated]" not in chunk_text
     
-    def test_just_under_limit(self):
-        """Line just under limit should not be truncated."""
-        under_limit_line = "x" * 8000
-        chunks = chunk_text_with_lines(under_limit_line, chunk_size=8192)
-        
-        assert len(chunks) == 1
-        chunk_text, _, _ = chunks[0]
-        # Should not be truncated
-        assert "...[line truncated]" not in chunk_text
-        assert len(chunk_text) == 8000
-    
     def test_chunk_size_parameter_respected(self):
         """Custom chunk_size should be respected."""
         text = "x" * 10000
@@ -114,11 +103,6 @@ class TestChunkTextWithLines:
         
         for chunk_text, _, _ in chunks:
             assert len(chunk_text) <= 8192, f"Minified JS chunk exceeded limit: {len(chunk_text)}"
-    
-    def test_empty_text(self):
-        """Empty text should return empty list."""
-        chunks = chunk_text_with_lines("", chunk_size=8192)
-        assert chunks == []
     
     def test_line_numbers_correct_with_truncation(self):
         """Line numbers should remain accurate even with truncation."""

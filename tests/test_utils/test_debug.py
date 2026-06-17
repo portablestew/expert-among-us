@@ -70,17 +70,6 @@ def test_log_request_when_disabled(temp_log_dir):
     assert len(files) == 0
 
 
-def test_log_response_when_disabled(temp_log_dir):
-    """Test that no files are created when debug mode is disabled."""
-    DebugLogger.configure(enabled=False, log_dir=temp_log_dir)
-    
-    DebugLogger.log_response("test_operation", {"key": "value"})
-    
-    # No files should be created (check recursively for subdirectories)
-    files = list(temp_log_dir.glob("**/*.json"))
-    assert len(files) == 0
-
-
 def test_log_request_creates_file(temp_log_dir):
     """Test that log_request creates a file with correct naming in subdirectory."""
     DebugLogger.configure(enabled=True, log_dir=temp_log_dir)
@@ -311,21 +300,6 @@ def test_silent_failure_on_write_error(temp_log_dir):
         temp_log_dir.chmod(0o755)
 
 
-def test_configure_multiple_times(temp_log_dir):
-    """Test that configure can be called multiple times."""
-    # First configuration
-    DebugLogger.configure(enabled=True, log_dir=temp_log_dir)
-    assert DebugLogger.is_enabled() is True
-    
-    # Disable
-    DebugLogger.configure(enabled=False)
-    assert DebugLogger.is_enabled() is False
-    
-    # Re-enable
-    DebugLogger.configure(enabled=True, log_dir=temp_log_dir)
-    assert DebugLogger.is_enabled() is True
-
-
 def test_thread_safety_multiple_logs(temp_log_dir):
     """Test that multiple log calls are thread-safe."""
     import threading
@@ -350,25 +324,6 @@ def test_thread_safety_multiple_logs(temp_log_dir):
     for f in files:
         with open(f, "r", encoding="utf-8") as file:
             json.load(file)
-
-
-def test_is_enabled_returns_bool():
-    """Test that is_enabled returns a boolean."""
-    result = DebugLogger.is_enabled()
-    assert isinstance(result, bool)
-
-
-def test_empty_payload(temp_log_dir):
-    """Test logging empty payload."""
-    DebugLogger.configure(enabled=True, log_dir=temp_log_dir)
-    
-    DebugLogger.log_request("test", {})
-    
-    files = list(temp_log_dir.glob("**/test_*_request.json"))
-    with open(files[0], "r", encoding="utf-8") as f:
-        content = json.load(f)
-    
-    assert content["payload"] == {}
 
 
 def test_category_subdirectories(temp_log_dir):

@@ -494,6 +494,7 @@ class Git(VCSProvider):
             changelist = Changelist(
                 id=commit_hash,
                 expert_name="",  # Will be set by the caller
+                project_name="",  # Will be set by the caller
                 timestamp=timestamp,
                 author=f"{author_name} <{author_email}>",
                 message=message,

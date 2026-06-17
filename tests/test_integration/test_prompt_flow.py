@@ -25,6 +25,7 @@ def sample_changelists():
         Changelist(
             id="commit1",
             expert_name="TestExpert",
+            project_name="test-project",
             timestamp=datetime(2024, 1, 15, 10, 0, 0),
             author="alice@example.com",
             message="Add authentication",
@@ -34,6 +35,7 @@ def sample_changelists():
         Changelist(
             id="commit2",
             expert_name="TestExpert",
+            project_name="test-project",
             timestamp=datetime(2024, 1, 16, 11, 0, 0),
             author="bob@example.com",
             message="Add validation",
@@ -43,6 +45,7 @@ def sample_changelists():
         Changelist(
             id="commit3",
             expert_name="TestExpert",
+            project_name="test-project",
             timestamp=datetime(2024, 1, 17, 12, 0, 0),
             author="charlie@example.com",
             message="Add error handling",
@@ -398,6 +401,7 @@ class TestPromptFlowEdgeCases:
         changelist = Changelist(
             id="long123",
             expert_name="TestExpert",
+            project_name="test-project",
             timestamp=datetime(2024, 1, 15, 10, 0, 0),
             author="test@example.com",
             message="Long change",
@@ -440,6 +444,7 @@ class TestPromptFlowEdgeCases:
         changelist = Changelist(
             id="special123",
             expert_name="TestExpert",
+            project_name="test-project",
             timestamp=datetime(2024, 1, 15, 10, 0, 0),
             author="test@example.com",
             message="Add support for <>&\"'",
@@ -472,6 +477,7 @@ class TestPromptFlowEdgeCases:
         changelist = Changelist(
             id="unicode123",
             expert_name="TestExpert",
+            project_name="test-project",
             timestamp=datetime(2024, 1, 15, 10, 0, 0),
             author="test@example.com",
             message="Add emoji support 🎉",
@@ -505,6 +511,7 @@ class TestPromptFlowEdgeCases:
             Changelist(
                 id=f"commit{i}",
                 expert_name="TestExpert",
+                project_name="test-project",
                 timestamp=datetime(2024, 1, 15, 10, i, 0),
                 author="test@example.com",
                 message=f"Change {i}",

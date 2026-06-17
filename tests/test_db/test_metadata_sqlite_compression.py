@@ -28,6 +28,15 @@ def temp_db():
         db.db_path = str(db_dir / "metadata.db")
         db.initialize()
         
+        # Create expert and project for FK constraints
+        db.create_expert("test_expert")
+        cursor = db.conn.cursor()
+        cursor.execute("""
+            INSERT OR IGNORE INTO projects (expert_name, name, workspace_path, subdirs, vcs_type)
+            VALUES (?, ?, ?, ?, ?)
+        """, ("test_expert", "test-project", "/path/to/repo", "", "git"))
+        db.conn.commit()
+        
         yield db
         
         # Cleanup
@@ -41,6 +50,7 @@ def test_insert_retrieve_compressed_changelist(temp_db):
     changelist = Changelist(
         id="abc123",
         expert_name="test_expert",
+        project_name="test-project",
         timestamp=datetime.now(timezone.utc),
         author="test_author",
         message="test message",
@@ -76,6 +86,7 @@ def test_multiple_changelists_compression(temp_db):
         changelist = Changelist(
             id=f"id_{i}",
             expert_name="test_expert",
+            project_name="test-project",
             timestamp=datetime.now(timezone.utc),
             author=f"author_{i}",
             message=f"message {i}",
@@ -107,6 +118,7 @@ def test_large_diff_compression(temp_db):
     changelist = Changelist(
         id="large_diff_id",
         expert_name="test_expert",
+        project_name="test-project",
         timestamp=datetime.now(timezone.utc),
         author="test_author",
         message="large diff test",
@@ -143,6 +155,7 @@ def test_unicode_diff_compression(temp_db):
     changelist = Changelist(
         id="unicode_id",
         expert_name="test_expert",
+        project_name="test-project",
         timestamp=datetime.now(timezone.utc),
         author="test_author",
         message="unicode test",
@@ -166,6 +179,7 @@ def test_minimal_diff_compression(temp_db):
     changelist = Changelist(
         id="minimal_id",
         expert_name="test_expert",
+        project_name="test-project",
         timestamp=datetime.now(timezone.utc),
         author="test_author",
         message="minimal test",
@@ -202,6 +216,7 @@ index 1234567..abcdefg 100644
     changelist = Changelist(
         id="git_diff_id",
         expert_name="test_expert",
+        project_name="test-project",
         timestamp=datetime.now(timezone.utc),
         author="test_author",
         message="realistic git diff",

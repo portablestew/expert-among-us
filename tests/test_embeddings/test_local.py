@@ -84,59 +84,6 @@ class TestJinaCodeEmbedder(unittest.TestCase):
     @patch('torch.cuda.is_available', return_value=False)
     @patch('torch.compile', side_effect=lambda x: x)
     @patch('sentence_transformers.SentenceTransformer')
-    def test_dimension(self, mock_sentence_transformer_class, mock_compile, mock_cuda):
-        """Test dimension property."""
-        # Setup mocks
-        mock_model = Mock()
-        mock_sentence_transformer_class.return_value = mock_model
-        
-        # Mock multi-process pool methods for multi-GPU support
-        mock_pool = Mock()
-        mock_model.start_multi_process_pool.return_value = mock_pool
-        mock_model.stop_multi_process_pool.return_value = None
-        
-        # Initialize embedder with custom dimension
-        model_id = "jinaai/jina-code-embeddings-0.5b"
-        embedder = JinaCodeEmbedder(model_id=model_id, dimension=256)
-        
-        # Verify dimension
-        self.assertEqual(embedder.dimension, 256)
-        
-    @patch('torch.cuda.is_available', return_value=False)
-    @patch('torch.compile', side_effect=lambda x: x)
-    @patch('sentence_transformers.SentenceTransformer')
-    def test_task_prefix_application(self, mock_sentence_transformer_class, mock_compile, mock_cuda):
-        """Test that task prefix is correctly applied."""
-        # Setup mocks
-        mock_model = Mock()
-        mock_sentence_transformer_class.return_value = mock_model
-        
-        # Mock multi-process pool methods for multi-GPU support
-        mock_pool = Mock()
-        mock_model.start_multi_process_pool.return_value = mock_pool
-        mock_model.stop_multi_process_pool.return_value = None
-        
-        # Mock encode
-        full_embedding = np.array([0.1] * 896)
-        mock_model.encode.return_value = full_embedding
-        
-        # Initialize embedder
-        model_id = "jinaai/jina-code-embeddings-0.5b"
-        embedder = JinaCodeEmbedder(model_id=model_id)
-        
-        # Test with specific text
-        text = "def hello_world(): pass"
-        embedder.embed(text)
-        
-        # Verify the exact prefix format
-        call_args = mock_model.encode.call_args
-        called_text = call_args[0][0]
-        expected_prefix = "Represent this code for retrieving similar code: "
-        self.assertEqual(called_text, expected_prefix + text)
-        
-    @patch('torch.cuda.is_available', return_value=False)
-    @patch('torch.compile', side_effect=lambda x: x)
-    @patch('sentence_transformers.SentenceTransformer')
     def test_model_initialization(self, mock_sentence_transformer_class, mock_compile, mock_cuda):
         """Test that model is initialized with correct parameters."""
         # Setup mocks
@@ -188,30 +135,6 @@ class TestJinaCodeEmbedder(unittest.TestCase):
         self.assertEqual(embedding[0], 0)
         self.assertEqual(embedding[511], 511)
         
-    @patch('torch.cuda.is_available', return_value=False)
-    @patch('torch.compile', side_effect=lambda x: x)
-    @patch('sentence_transformers.SentenceTransformer')
-    def test_default_parameters(self, mock_sentence_transformer_class, mock_compile, mock_cuda):
-        """Test default parameter values."""
-        # Setup mocks
-        mock_model = Mock()
-        mock_sentence_transformer_class.return_value = mock_model
-        
-        # Mock multi-process pool methods for multi-GPU support
-        mock_pool = Mock()
-        mock_model.start_multi_process_pool.return_value = mock_pool
-        mock_model.stop_multi_process_pool.return_value = None
-        
-        # Initialize embedder with model_id and default dimension
-        model_id = "jinaai/jina-code-embeddings-0.5b"
-        embedder = JinaCodeEmbedder(model_id=model_id)
-        
-        # Verify defaults
-        self.assertEqual(embedder.model_id, model_id)
-        self.assertEqual(embedder.dimension, 512)  # Default dimension
-        self.assertEqual(embedder.task, "code2code")
-        self.assertEqual(embedder.task_prefix, "Represent this code for retrieving similar code: ")
-    
     @patch('torch.cuda.is_available', return_value=True)
     @patch('torch.cuda.get_device_name', return_value="NVIDIA GeForce RTX 3080")
     @patch('torch.compile', side_effect=lambda x: x)

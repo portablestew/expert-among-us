@@ -15,6 +15,7 @@ def test_get_metadata_text_message_truncation():
     cl = Changelist(
         id="test123",
         expert_name="TestExpert",
+        project_name="test-project",
         timestamp=datetime.now(timezone.utc),
         author="test_user",
         message=large_message,
@@ -41,6 +42,7 @@ def test_get_metadata_text_files_truncation():
     cl = Changelist(
         id="test456",
         expert_name="TestExpert",
+        project_name="test-project",
         timestamp=datetime.now(timezone.utc),
         author="test_user",
         message="Short message",
@@ -73,6 +75,7 @@ def test_get_metadata_text_both_truncated():
     cl = Changelist(
         id="test789",
         expert_name="TestExpert",
+        project_name="test-project",
         timestamp=datetime.now(timezone.utc),
         author="test_user",
         message=large_message,
@@ -99,6 +102,7 @@ def test_get_metadata_text_small_data_no_truncation():
     cl = Changelist(
         id="test000",
         expert_name="TestExpert",
+        project_name="test-project",
         timestamp=datetime.now(timezone.utc),
         author="test_user",
         message=small_message,
@@ -129,6 +133,7 @@ def test_get_metadata_text_custom_limits():
     cl = Changelist(
         id="test_custom",
         expert_name="TestExpert",
+        project_name="test-project",
         timestamp=datetime.now(timezone.utc),
         author="test_user",
         message=message,
@@ -156,6 +161,7 @@ def test_get_metadata_text_exactly_at_limit():
     cl = Changelist(
         id="test_exact",
         expert_name="TestExpert",
+        project_name="test-project",
         timestamp=datetime.now(timezone.utc),
         author="test_user",
         message=message,
@@ -175,6 +181,7 @@ def test_get_metadata_text_empty_files():
     cl = Changelist(
         id="test_empty",
         expert_name="TestExpert",
+        project_name="test-project",
         timestamp=datetime.now(timezone.utc),
         author="test_user",
         message="Commit with no files",

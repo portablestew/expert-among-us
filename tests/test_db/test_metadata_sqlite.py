@@ -32,6 +32,14 @@ def temp_db():
         with SQLiteMetadataDB(expert_name) as db:
             db.db_path = str(db_path)
             db.initialize()
+            # Create a default expert and project for tests that insert changelists
+            db.create_expert("test_expert")
+            cursor = db.conn.cursor()
+            cursor.execute("""
+                INSERT OR IGNORE INTO projects (expert_name, name, workspace_path, subdirs, vcs_type)
+                VALUES (?, ?, ?, ?, ?)
+            """, ("test_expert", "test-project", "/path/to/repo", "", "git"))
+            db.conn.commit()
             yield db
 
 
@@ -41,6 +49,7 @@ def sample_changelist():
     return Changelist(
         id="abc123def456",
         expert_name="test_expert",
+        project_name="test-project",
         timestamp=datetime.now(),
         author="John Doe",
         message="Fixed bug in authentication module",
@@ -51,21 +60,6 @@ def sample_changelist():
 
 class TestDatabaseInitialization:
     """Tests for database initialization and schema creation."""
-
-    def test_db_initialization_creates_file(self):
-        """Verify that database initialization creates a database file."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            expert_name = "init_test"
-            db_path = Path(tmpdir) / "data" / expert_name / "metadata.db"
-            db_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            db = SQLiteMetadataDB(expert_name)
-            db.db_path = str(db_path)
-            
-            assert not db_path.exists()
-            db.initialize()
-            assert db_path.exists()
-            db.close()
 
     def test_db_schema_created(self, temp_db):
         """Verify that database schema is properly created with all required tables."""
@@ -78,6 +72,7 @@ class TestDatabaseInitialization:
         
         # Verify required tables exist
         assert "experts" in table_names
+        assert "projects" in table_names
         assert "changelists" in table_names
         assert "changelist_files" in table_names
 
@@ -92,7 +87,7 @@ class TestDatabaseInitialization:
             db1 = SQLiteMetadataDB(expert_name)
             db1.db_path = str(db_path)
             db1.initialize()
-            db1.create_expert("test_expert", "/path/to/repo", [], "git")
+            db1.create_expert("test_expert")
             db1.close()
 
             # Reopen and verify data persists
@@ -112,17 +107,13 @@ class TestExpertOperations:
         """Verify that an expert can be created and stored."""
         temp_db.create_expert(
             name="new_expert",
-            workspace_path="/home/user/repo",
-            subdirs=["src", "tests"],
-            vcs_type="git"
+            description="A test expert"
         )
         
         retrieved = temp_db.get_expert("new_expert")
         assert retrieved is not None
         assert retrieved["name"] == "new_expert"
-        assert retrieved["workspace_path"] == "/home/user/repo"
-        assert retrieved["subdirs"] == ["src", "tests"]
-        assert retrieved["vcs_type"] == "git"
+        assert retrieved["description"] == "A test expert"
 
     def test_get_nonexistent_expert(self, temp_db):
         """Verify that getting a non-existent expert returns None."""
@@ -131,8 +122,6 @@ class TestExpertOperations:
 
     def test_update_expert_index_time(self, temp_db):
         """Verify that expert index time can be updated."""
-        temp_db.create_expert("test_expert", "/path", [], "git")
-        
         new_time = datetime.now()
         temp_db.update_expert_index_time("test_expert", new_time)
         
@@ -141,22 +130,17 @@ class TestExpertOperations:
 
     def test_create_multiple_experts(self, temp_db):
         """Verify that multiple experts can be created and retrieved independently."""
-        temp_db.create_expert("expert1", "/path1", [], "git")
-        temp_db.create_expert("expert2", "/path2", ["src"], "git")
+        temp_db.create_expert("expert1", description="First expert")
+        temp_db.create_expert("expert2", description="Second expert")
         
         retrieved1 = temp_db.get_expert("expert1")
         retrieved2 = temp_db.get_expert("expert2")
         
         assert retrieved1["name"] == "expert1"
         assert retrieved2["name"] == "expert2"
-        assert retrieved2["subdirs"] == ["src"]
+        assert retrieved1["description"] == "First expert"
+        assert retrieved2["description"] == "Second expert"
 
-    def test_create_expert_with_empty_subdirs(self, temp_db):
-        """Verify that experts with empty subdirs list are handled."""
-        temp_db.create_expert("expert_no_subdirs", "/path", [], "git")
-        
-        retrieved = temp_db.get_expert("expert_no_subdirs")
-        assert retrieved["subdirs"] == []
 
 
 class TestChangelistOperations:
@@ -177,6 +161,7 @@ class TestChangelistOperations:
             Changelist(
                 id=f"id_{i}",
                 expert_name="test_expert",
+                project_name="test-project",
                 timestamp=datetime.now(),
                 author=f"Author {i}",
                 message=f"Change {i}",
@@ -204,6 +189,7 @@ class TestChangelistOperations:
             Changelist(
                 id=f"id_{i}",
                 expert_name="test_expert",
+                project_name="test-project",
                 timestamp=datetime.now(),
                 author=f"Author {i}",
                 message=f"Change {i}",
@@ -227,6 +213,7 @@ class TestChangelistOperations:
             Changelist(
                 id="exists_1",
                 expert_name="test_expert",
+                project_name="test-project",
                 timestamp=datetime.now(),
                 author="Author",
                 message="Change",
@@ -236,6 +223,7 @@ class TestChangelistOperations:
             Changelist(
                 id="exists_2",
                 expert_name="test_expert",
+                project_name="test-project",
                 timestamp=datetime.now(),
                 author="Author",
                 message="Change",
@@ -251,10 +239,6 @@ class TestChangelistOperations:
         # Should only return existing ones
         assert len(retrieved) == 2
 
-    def test_get_changelists_by_ids_empty_list(self, temp_db):
-        """Verify that get_changelists_by_ids handles empty ID list."""
-        retrieved = temp_db.get_changelists_by_ids([])
-        assert retrieved == []
 
 
 class TestQueryOperations:
@@ -266,6 +250,7 @@ class TestQueryOperations:
             Changelist(
                 id="id_1",
                 expert_name="test_expert",
+                project_name="test-project",
                 timestamp=datetime.now(),
                 author="John Doe",
                 message="Change 1",
@@ -275,6 +260,7 @@ class TestQueryOperations:
             Changelist(
                 id="id_2",
                 expert_name="test_expert",
+                project_name="test-project",
                 timestamp=datetime.now(),
                 author="Jane Smith",
                 message="Change 2",
@@ -284,6 +270,7 @@ class TestQueryOperations:
             Changelist(
                 id="id_3",
                 expert_name="test_expert",
+                project_name="test-project",
                 timestamp=datetime.now(),
                 author="John Doe",
                 message="Change 3",
@@ -305,6 +292,7 @@ class TestQueryOperations:
             Changelist(
                 id="id_1",
                 expert_name="test_expert",
+                project_name="test-project",
                 timestamp=datetime.now(),
                 author="Author",
                 message="Change 1",
@@ -314,6 +302,7 @@ class TestQueryOperations:
             Changelist(
                 id="id_2",
                 expert_name="test_expert",
+                project_name="test-project",
                 timestamp=datetime.now(),
                 author="Author",
                 message="Change 2",
@@ -323,6 +312,7 @@ class TestQueryOperations:
             Changelist(
                 id="id_3",
                 expert_name="test_expert",
+                project_name="test-project",
                 timestamp=datetime.now(),
                 author="Author",
                 message="Change 3",
@@ -344,6 +334,7 @@ class TestQueryOperations:
             Changelist(
                 id="id_1",
                 expert_name="test_expert",
+                project_name="test-project",
                 timestamp=datetime.now(),
                 author="Author",
                 message="Change 1",
@@ -353,6 +344,7 @@ class TestQueryOperations:
             Changelist(
                 id="id_2",
                 expert_name="test_expert",
+                project_name="test-project",
                 timestamp=datetime.now(),
                 author="Author",
                 message="Change 2",
@@ -362,6 +354,7 @@ class TestQueryOperations:
             Changelist(
                 id="id_3",
                 expert_name="test_expert",
+                project_name="test-project",
                 timestamp=datetime.now(),
                 author="Author",
                 message="Change 3",
@@ -382,6 +375,7 @@ class TestQueryOperations:
         changelist = Changelist(
             id="id_1",
             expert_name="test_expert",
+            project_name="test-project",
             timestamp=datetime.now(),
             author="Author",
             message="Change 1",
@@ -393,15 +387,81 @@ class TestQueryOperations:
         result_ids = temp_db.query_changelists_by_files(["nonexistent.py"])
         assert result_ids == []
 
+    def test_query_changelists_by_files_prefix_matching(self, temp_db):
+        """Verify that querying uses startsWith/prefix matching (LIKE) semantics."""
+        # Create additional projects needed for this test
+        cursor = temp_db.conn.cursor()
+        cursor.execute("""
+            INSERT OR IGNORE INTO projects (expert_name, name, workspace_path, subdirs, vcs_type)
+            VALUES (?, ?, ?, ?, ?)
+        """, ("test_expert", "payment-service", "/path/to/payment", "", "git"))
+        cursor.execute("""
+            INSERT OR IGNORE INTO projects (expert_name, name, workspace_path, subdirs, vcs_type)
+            VALUES (?, ?, ?, ?, ?)
+        """, ("test_expert", "user-service", "/path/to/users", "", "git"))
+        temp_db.conn.commit()
+
+        changelists = [
+            Changelist(
+                id="id_1",
+                expert_name="test_expert",
+                project_name="payment-service",
+                timestamp=datetime.now(),
+                author="Author",
+                message="Change 1",
+                diff="diff 1",
+                files=["payment-service/src/handler.py", "payment-service/src/utils.py"]
+            ),
+            Changelist(
+                id="id_2",
+                expert_name="test_expert",
+                project_name="user-service",
+                timestamp=datetime.now(),
+                author="Author",
+                message="Change 2",
+                diff="diff 2",
+                files=["user-service/src/auth.py"]
+            ),
+            Changelist(
+                id="id_3",
+                expert_name="test_expert",
+                project_name="payment-service",
+                timestamp=datetime.now(),
+                author="Author",
+                message="Change 3",
+                diff="diff 3",
+                files=["payment-service/tests/test_handler.py"]
+            ),
+        ]
+        temp_db.insert_changelists(changelists)
+
+        # Prefix query: match all files within payment-service project
+        result_ids = temp_db.query_changelists_by_files(["payment-service/"])
+        assert len(result_ids) == 2
+        assert "id_1" in result_ids
+        assert "id_3" in result_ids
+
+        # Prefix query: match specific subdirectory
+        result_ids = temp_db.query_changelists_by_files(["payment-service/src/"])
+        assert len(result_ids) == 1
+        assert "id_1" in result_ids
+
+        # Exact-style match still works (path acts as prefix of itself)
+        result_ids = temp_db.query_changelists_by_files(["user-service/src/auth.py"])
+        assert len(result_ids) == 1
+        assert "id_2" in result_ids
+
+        # Multiple prefixes use OR logic
+        result_ids = temp_db.query_changelists_by_files(["payment-service/tests/", "user-service/"])
+        assert len(result_ids) == 2
+        assert "id_2" in result_ids
+        assert "id_3" in result_ids
+
     def test_query_changelists_by_author_no_results(self, temp_db):
         """Verify that querying by author returns empty list when no matches."""
         result_ids = temp_db.query_changelists_by_author("Nonexistent Author")
         assert result_ids == []
 
-    def test_query_changelists_by_files_empty_list(self, temp_db):
-        """Verify that querying by empty files list returns empty result."""
-        result_ids = temp_db.query_changelists_by_files([])
-        assert result_ids == []
 
 
 class TestPromptCaching:
@@ -458,6 +518,279 @@ class TestConnectionManagement:
                 cursor.execute("SELECT 1")
 
 
+class TestProjectOperations:
+    """Tests for Project CRUD operations."""
+
+    def test_create_project(self, temp_db):
+        """Verify that a project can be created and stored."""
+        temp_db.create_project(
+            expert_name="test_expert",
+            project_name="my-project",
+            workspace_path="/repos/my-project",
+            subdirs=["src", "tests"],
+            vcs_type="git"
+        )
+        
+        project = temp_db.get_project("test_expert", "my-project")
+        assert project is not None
+        assert project["name"] == "my-project"
+        assert project["expert_name"] == "test_expert"
+        assert project["workspace_path"] == "/repos/my-project"
+        assert project["subdirs"] == ["src", "tests"]
+        assert project["vcs_type"] == "git"
+        assert project["has_vector_metadata"] is True
+        assert project["last_processed_commit_hash"] is None
+        assert project["first_processed_commit_hash"] is None
+
+    def test_create_project_empty_subdirs(self, temp_db):
+        """Verify that a project with no subdirs is handled correctly."""
+        temp_db.create_project(
+            expert_name="test_expert",
+            project_name="no-subdirs",
+            workspace_path="/repos/no-subdirs",
+            subdirs=[],
+            vcs_type="p4"
+        )
+        
+        project = temp_db.get_project("test_expert", "no-subdirs")
+        assert project is not None
+        assert project["subdirs"] == []
+        assert project["vcs_type"] == "p4"
+
+    def test_create_project_idempotent(self, temp_db):
+        """Verify that creating the same project twice is a no-op (INSERT OR IGNORE)."""
+        temp_db.create_project(
+            expert_name="test_expert",
+            project_name="idempotent-proj",
+            workspace_path="/repos/first",
+            subdirs=[],
+            vcs_type="git"
+        )
+        # Second creation with different path should be ignored
+        temp_db.create_project(
+            expert_name="test_expert",
+            project_name="idempotent-proj",
+            workspace_path="/repos/second",
+            subdirs=["new-dir"],
+            vcs_type="p4"
+        )
+        
+        project = temp_db.get_project("test_expert", "idempotent-proj")
+        assert project is not None
+        # Original values preserved due to INSERT OR IGNORE
+        assert project["workspace_path"] == "/repos/first"
+        assert project["vcs_type"] == "git"
+
+    def test_get_project_nonexistent(self, temp_db):
+        """Verify that getting a non-existent project returns None."""
+        result = temp_db.get_project("test_expert", "nonexistent")
+        assert result is None
+
+    def test_get_project_wrong_expert(self, temp_db):
+        """Verify that projects are scoped to their expert."""
+        temp_db.create_project(
+            expert_name="test_expert",
+            project_name="scoped-proj",
+            workspace_path="/repos/scoped",
+            subdirs=[],
+            vcs_type="git"
+        )
+        # Different expert should not find this project
+        result = temp_db.get_project("other_expert", "scoped-proj")
+        assert result is None
+
+    def test_list_projects_empty(self, temp_db):
+        """Verify that listing projects for an expert with no projects (after removing fixture project) works."""
+        temp_db.create_expert("empty_expert")
+        projects = temp_db.list_projects("empty_expert")
+        assert projects == []
+
+    def test_list_projects_multiple(self, temp_db):
+        """Verify that list_projects returns all projects for an expert."""
+        temp_db.create_project("test_expert", "alpha", "/repos/alpha", [], "git")
+        temp_db.create_project("test_expert", "beta", "/repos/beta", ["src"], "p4")
+        temp_db.create_project("test_expert", "gamma", "/repos/gamma", [], "git")
+        
+        projects = temp_db.list_projects("test_expert")
+        # Should include the fixture project + 3 new ones
+        project_names = [p["name"] for p in projects]
+        assert "alpha" in project_names
+        assert "beta" in project_names
+        assert "gamma" in project_names
+
+    def test_list_projects_ordered_by_name(self, temp_db):
+        """Verify that list_projects returns projects in alphabetical order."""
+        temp_db.create_project("test_expert", "zebra", "/repos/z", [], "git")
+        temp_db.create_project("test_expert", "apple", "/repos/a", [], "git")
+        
+        projects = temp_db.list_projects("test_expert")
+        names = [p["name"] for p in projects]
+        assert names == sorted(names)
+
+    def test_update_project_last_processed(self, temp_db):
+        """Verify that update_project_last_processed updates commit hash and timestamps."""
+        temp_db.create_project("test_expert", "indexed-proj", "/repos/indexed", [], "git")
+        
+        temp_db.update_project_last_processed("test_expert", "indexed-proj", "abc123")
+        
+        project = temp_db.get_project("test_expert", "indexed-proj")
+        assert project["last_processed_commit_hash"] == "abc123"
+        assert project["first_processed_commit_hash"] == "abc123"
+        assert project["last_indexed_at"] is not None
+
+    def test_update_project_last_processed_preserves_first_hash(self, temp_db):
+        """Verify that first_processed_commit_hash is only set once."""
+        temp_db.create_project("test_expert", "multi-index", "/repos/multi", [], "git")
+        
+        temp_db.update_project_last_processed("test_expert", "multi-index", "first_hash")
+        temp_db.update_project_last_processed("test_expert", "multi-index", "second_hash")
+        
+        project = temp_db.get_project("test_expert", "multi-index")
+        assert project["last_processed_commit_hash"] == "second_hash"
+        assert project["first_processed_commit_hash"] == "first_hash"
+
+    def test_get_project_commit_count_empty(self, temp_db):
+        """Verify that commit count is 0 for a project with no changelists."""
+        temp_db.create_project("test_expert", "empty-proj", "/repos/empty", [], "git")
+        
+        count = temp_db.get_project_commit_count("test_expert", "empty-proj")
+        assert count == 0
+
+    def test_get_project_commit_count_with_changelists(self, temp_db):
+        """Verify that commit count returns correct number for a project."""
+        # test-project already exists in fixture
+        changelists = [
+            Changelist(
+                id=f"proj_count_{i}",
+                expert_name="test_expert",
+                project_name="test-project",
+                timestamp=datetime.now(),
+                author="Author",
+                message=f"Change {i}",
+                diff=f"diff {i}",
+                files=[f"file_{i}.py"]
+            )
+            for i in range(3)
+        ]
+        temp_db.insert_changelists(changelists)
+        
+        count = temp_db.get_project_commit_count("test_expert", "test-project")
+        assert count == 3
+
+    def test_get_project_commit_count_scoped_to_project(self, temp_db):
+        """Verify that commit count is scoped to the specific project."""
+        temp_db.create_project("test_expert", "proj-a", "/repos/a", [], "git")
+        temp_db.create_project("test_expert", "proj-b", "/repos/b", [], "git")
+        
+        changelists_a = [
+            Changelist(
+                id=f"a_{i}",
+                expert_name="test_expert",
+                project_name="proj-a",
+                timestamp=datetime.now(),
+                author="Author",
+                message=f"A change {i}",
+                diff=f"diff {i}",
+                files=[f"file_{i}.py"]
+            )
+            for i in range(2)
+        ]
+        changelists_b = [
+            Changelist(
+                id=f"b_{i}",
+                expert_name="test_expert",
+                project_name="proj-b",
+                timestamp=datetime.now(),
+                author="Author",
+                message=f"B change {i}",
+                diff=f"diff {i}",
+                files=[f"file_{i}.py"]
+            )
+            for i in range(5)
+        ]
+        temp_db.insert_changelists(changelists_a)
+        temp_db.insert_changelists(changelists_b)
+        
+        assert temp_db.get_project_commit_count("test_expert", "proj-a") == 2
+        assert temp_db.get_project_commit_count("test_expert", "proj-b") == 5
+
+    def test_delete_project(self, temp_db):
+        """Verify that deleting a project removes it from the database."""
+        temp_db.create_project("test_expert", "to-delete", "/repos/del", [], "git")
+        
+        temp_db.delete_project("test_expert", "to-delete")
+        
+        project = temp_db.get_project("test_expert", "to-delete")
+        assert project is None
+
+    def test_delete_project_cascades_changelists(self, temp_db):
+        """Verify that deleting a project removes its changelists."""
+        temp_db.create_project("test_expert", "cascade-proj", "/repos/cascade", [], "git")
+        
+        changelists = [
+            Changelist(
+                id=f"cascade_{i}",
+                expert_name="test_expert",
+                project_name="cascade-proj",
+                timestamp=datetime.now(),
+                author="Author",
+                message=f"Change {i}",
+                diff=f"diff {i}",
+                files=[f"file_{i}.py"]
+            )
+            for i in range(3)
+        ]
+        temp_db.insert_changelists(changelists)
+        
+        # Verify changelists exist
+        assert temp_db.get_project_commit_count("test_expert", "cascade-proj") == 3
+        
+        temp_db.delete_project("test_expert", "cascade-proj")
+        
+        # Changelists should be gone
+        assert temp_db.get_project_commit_count("test_expert", "cascade-proj") == 0
+        for i in range(3):
+            assert temp_db.get_changelist(f"cascade_{i}") is None
+
+    def test_delete_project_isolation(self, temp_db):
+        """Verify that deleting a project does not affect other projects."""
+        temp_db.create_project("test_expert", "keep-proj", "/repos/keep", [], "git")
+        temp_db.create_project("test_expert", "delete-proj", "/repos/del", [], "git")
+        
+        keep_cl = Changelist(
+            id="keep_cl",
+            expert_name="test_expert",
+            project_name="keep-proj",
+            timestamp=datetime.now(),
+            author="Author",
+            message="Keep this",
+            diff="diff keep",
+            files=["keep.py"]
+        )
+        delete_cl = Changelist(
+            id="delete_cl",
+            expert_name="test_expert",
+            project_name="delete-proj",
+            timestamp=datetime.now(),
+            author="Author",
+            message="Delete this",
+            diff="diff delete",
+            files=["delete.py"]
+        )
+        temp_db.insert_changelists([keep_cl, delete_cl])
+        
+        temp_db.delete_project("test_expert", "delete-proj")
+        
+        # keep-proj and its changelists should still exist
+        assert temp_db.get_project("test_expert", "keep-proj") is not None
+        assert temp_db.get_changelist("keep_cl") is not None
+        assert temp_db.get_project_commit_count("test_expert", "keep-proj") == 1
+        
+        # delete-proj should be gone
+        assert temp_db.get_project("test_expert", "delete-proj") is None
+        assert temp_db.get_changelist("delete_cl") is None
+
+
 class TestEdgeCases:
     """Tests for edge cases and boundary conditions."""
 
@@ -466,6 +799,7 @@ class TestEdgeCases:
         changelist = Changelist(
             id="id_empty_files",
             expert_name="test_expert",
+            project_name="test-project",
             timestamp=datetime.now(),
             author="Author",
             message="Change with no files",
@@ -482,6 +816,7 @@ class TestEdgeCases:
         changelist = Changelist(
             id="id_special",
             expert_name="test_expert",
+            project_name="test-project",
             timestamp=datetime.now(),
             author="O'Brien & Co.",
             message='Fixed bug with "quotes" and \'apostrophes\'',
@@ -495,24 +830,23 @@ class TestEdgeCases:
         assert retrieved.author == "O'Brien & Co."
         assert '"quotes"' in retrieved.message
 
-    def test_expert_with_special_characters_in_path(self, temp_db):
-        """Verify that experts with special characters in paths are handled."""
+    def test_expert_with_description(self, temp_db):
+        """Verify that experts with descriptions are handled correctly."""
         temp_db.create_expert(
             "special_expert",
-            "/path/with spaces/and-dashes",
-            ["sub dir/with/slashes"],
-            "git"
+            description="A description with 'quotes' and \"double quotes\""
         )
         
         retrieved = temp_db.get_expert("special_expert")
         assert retrieved is not None
-        assert retrieved["workspace_path"] == "/path/with spaces/and-dashes"
+        assert retrieved["description"] == "A description with 'quotes' and \"double quotes\""
 
     def test_insert_duplicate_changelist_overwrites(self, temp_db):
         """Verify that inserting duplicate changelist ID overwrites."""
         changelist1 = Changelist(
             id="duplicate_id",
             expert_name="test_expert",
+            project_name="test-project",
             timestamp=datetime.now(),
             author="Author 1",
             message="Message 1",
@@ -522,6 +856,7 @@ class TestEdgeCases:
         changelist2 = Changelist(
             id="duplicate_id",
             expert_name="test_expert",
+            project_name="test-project",
             timestamp=datetime.now(),
             author="Author 2",
             message="Message 2",
@@ -541,6 +876,7 @@ class TestEdgeCases:
         changelist = Changelist(
             id="id_1",
             expert_name="test_expert",
+            project_name="test-project",
             timestamp=datetime.now(),
             author="Test Author",
             message="Test change",

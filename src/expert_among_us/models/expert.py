@@ -1,5 +1,6 @@
-"""Expert configuration model representing an indexed repository."""
+"""Expert and project configuration models."""
 
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Literal, Optional
@@ -7,31 +8,67 @@ from typing import List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-class ExpertConfig(BaseModel):
-    """Configuration for an expert (indexed repository).
-    
-    This model defines all settings and metadata for an expert, including
-    the repository location, VCS type, indexing parameters, and tracking
-    information for incremental updates.
-    
+# Regex for valid project/expert names: alphanumeric, hyphens, and underscores (can start with any)
+_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-][a-zA-Z0-9_-]*$")
+
+
+def _validate_identifier_name(v: str, field_label: str) -> str:
+    """Validate that a name matches [a-zA-Z0-9][a-zA-Z0-9_-]*.
+
+    Rejects empty strings, strings with path separators, and strings
+    that don't match the required pattern.
+
+    Args:
+        v: Name to validate
+        field_label: Human-readable label for error messages (e.g. "Expert name")
+
+    Returns:
+        Validated name (stripped of leading/trailing whitespace)
+
+    Raises:
+        ValueError: If name is invalid
+    """
+    if not v or not v.strip():
+        raise ValueError(f"{field_label} cannot be empty")
+
+    v = v.strip()
+
+    # Reject path separators explicitly for clear error messages
+    if "/" in v or "\\" in v:
+        raise ValueError(
+            f"{field_label} must not contain path separators"
+        )
+
+    if not _NAME_PATTERN.match(v):
+        raise ValueError(
+            f"{field_label} must contain only alphanumeric characters, hyphens, and underscores"
+        )
+
+    return v
+
+
+class ProjectConfig(BaseModel):
+    """Configuration for a project within an expert.
+
+    A project represents a physical repository link within an expert.
+    Multiple projects can share a single expert's ChromaDB vector space,
+    enabling unified semantic search across related repositories.
+
     Attributes:
-        name: Expert identifier (unique, used as directory name)
+        name: Project identifier within the expert (unique per expert)
+        expert_name: Parent expert name
         workspace_path: Path to repository root
         subdirs: Optional subdirectory filters for indexing
         vcs_type: Version control system type ('git' or 'p4')
-        data_dir: Base directory for expert data storage
-        created_at: When the expert was first created
-        last_indexed_at: Last successful index time
-        last_processed_commit_hash: Most recent commit hash indexed (unified tracking)
+        last_indexed_at: Last successful index time for this project
+        last_processed_commit_hash: Most recent commit hash indexed
         first_processed_commit_hash: Oldest commit hash indexed (for display)
-        max_metadata_embedding_size: Maximum bytes for metadata embeddings (20KB default)
-        max_embedding_text_size: Maximum bytes for diff before chunking (100KB default)
-        diff_chunk_size_bytes: Chunk size for diff embeddings (8KB default)
-        embed_diffs: Whether to create diff embeddings
-        embed_metadata: Whether to create metadata embeddings
+        has_vector_metadata: Whether ChromaDB vectors have project metadata
+        created_at: When the project was first created
     """
 
-    name: str = Field(..., description="Expert identifier (unique)")
+    name: str = Field(..., description="Project identifier within expert")
+    expert_name: str = Field(..., description="Parent expert name")
     workspace_path: Path = Field(..., description="Path to repository")
     subdirs: List[str] = Field(
         default_factory=list, description="Optional subdir filters"
@@ -39,9 +76,123 @@ class ExpertConfig(BaseModel):
     vcs_type: Literal["git", "p4"] = Field(
         default="git", description="Version control system type"
     )
+    last_indexed_at: Optional[datetime] = Field(
+        None, description="Last successful index time"
+    )
+    last_processed_commit_hash: Optional[str] = Field(
+        None, description="Most recent commit hash indexed"
+    )
+    first_processed_commit_hash: Optional[str] = Field(
+        None, description="Oldest commit hash indexed (for display)"
+    )
+    has_vector_metadata: bool = Field(
+        default=True,
+        description="False for migrated projects without ChromaDB project metadata",
+    )
+    created_at: Optional[datetime] = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        description="When the project was created",
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "name": "payment-service",
+                "expert_name": "my-team",
+                "workspace_path": "/repos/payment",
+                "subdirs": ["src/"],
+                "vcs_type": "git",
+            }
+        }
+    )
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        """Validate that project name is safe for path prefixing.
+
+        Project names must contain only alphanumeric characters, hyphens,
+        and underscores since they are used as path prefixes in the virtual
+        unified namespace.
+
+        Args:
+            v: Name to validate
+
+        Returns:
+            Validated name
+
+        Raises:
+            ValueError: If name is invalid
+        """
+        return _validate_identifier_name(v, "Project name")
+
+    @field_validator("expert_name")
+    @classmethod
+    def validate_expert_name(cls, v: str) -> str:
+        """Validate that parent expert name is valid.
+
+        Args:
+            v: Expert name to validate
+
+        Returns:
+            Validated expert name
+
+        Raises:
+            ValueError: If name is invalid
+        """
+        return _validate_identifier_name(v, "Expert name")
+
+    @field_validator("workspace_path")
+    @classmethod
+    def validate_workspace(cls, v: Path) -> Path:
+        """Validate that workspace path exists and is a directory.
+
+        Args:
+            v: Workspace path to validate
+
+        Returns:
+            Validated path
+
+        Raises:
+            ValueError: If path does not exist or is not a directory
+        """
+        if not v.exists():
+            raise ValueError(f"Workspace path does not exist: {v}")
+
+        if not v.is_dir():
+            raise ValueError(f"Workspace path is not a directory: {v}")
+
+        return v
+
+
+class ExpertConfig(BaseModel):
+    """Configuration for an expert (logical grouping of projects).
+
+    An expert owns a ChromaDB vector space and contains one or more projects.
+    After the multi-project migration, workspace_path, subdirs, and vcs_type
+    are stored per-project in ProjectConfig rather than on the expert.
+
+    Attributes:
+        name: Expert identifier (unique, used as directory name)
+        description: Optional human-readable description of the expert
+        data_dir: Base directory for expert data storage
+        created_at: When the expert was first created
+        last_indexed_at: Last successful index time (aggregate across projects)
+        max_metadata_embedding_size: Maximum bytes for metadata embeddings (20KB default)
+        max_embedding_text_size: Maximum bytes for diff before chunking (100KB default)
+        file_chunk_size_bytes: File content chunk size (4KB default)
+        diff_chunk_size_bytes: Chunk size for diff embeddings (4KB default)
+        embed_diffs: Whether to create diff embeddings
+        embed_metadata: Whether to create metadata embeddings
+    """
+
+    name: str = Field(..., description="Expert identifier (unique)")
+    description: Optional[str] = Field(
+        None, description="Human-readable description of the expert"
+    )
     data_dir: Path = Field(
         default_factory=lambda: Path.home() / ".expert-among-us",
-        description="Base directory for expert data storage"
+        description="Base directory for expert data storage",
     )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc),
@@ -49,12 +200,6 @@ class ExpertConfig(BaseModel):
     )
     last_indexed_at: Optional[datetime] = Field(
         None, description="Last successful index time"
-    )
-    last_processed_commit_hash: Optional[str] = Field(
-        None, description="Most recent commit hash indexed (unified tracking)"
-    )
-    first_processed_commit_hash: Optional[str] = Field(
-        None, description="Oldest commit hash indexed (for display)"
     )
     max_metadata_embedding_size: int = Field(
         default=20000, ge=1, description="Max bytes for metadata embeddings (20KB)"
@@ -79,9 +224,7 @@ class ExpertConfig(BaseModel):
         json_schema_extra={
             "example": {
                 "name": "MyExpert",
-                "workspace_path": "/home/user/projects/myrepo",
-                "subdirs": ["src/main/", "src/resources/"],
-                "vcs_type": "git"
+                "description": "Team microservices expert",
             }
         }
     )
@@ -90,59 +233,28 @@ class ExpertConfig(BaseModel):
     @classmethod
     def validate_name(cls, v: str) -> str:
         """Validate that expert name is valid for use as a filename.
-        
-        Expert names must be alphanumeric with optional hyphens and underscores,
-        as they are used as directory names in the storage structure.
-        
+
+        Expert names must contain only alphanumeric characters, hyphens,
+        and underscores as they are used as directory names in the storage
+        structure.
+
         Args:
             v: Name to validate
-            
+
         Returns:
             Validated name
-            
+
         Raises:
             ValueError: If name is invalid
         """
-        if not v or not v.strip():
-            raise ValueError("Expert name cannot be empty")
-        
-        # Remove valid separators and check if remaining chars are alphanumeric
-        sanitized = v.replace("_", "").replace("-", "")
-        if not sanitized.isalnum():
-            raise ValueError(
-                "Expert name must be alphanumeric with hyphens/underscores only"
-            )
-        
-        return v.strip()
-
-    @field_validator("workspace_path")
-    @classmethod
-    def validate_workspace(cls, v: Path) -> Path:
-        """Validate that workspace path exists.
-        
-        Args:
-            v: Workspace path to validate
-            
-        Returns:
-            Validated path
-            
-        Raises:
-            ValueError: If path does not exist
-        """
-        if not v.exists():
-            raise ValueError(f"Workspace path does not exist: {v}")
-        
-        if not v.is_dir():
-            raise ValueError(f"Workspace path is not a directory: {v}")
-        
-        return v
+        return _validate_identifier_name(v, "Expert name")
 
     def get_storage_dir(self) -> Path:
         """Get the storage directory for this expert.
-        
+
         Returns the base directory where all data for this expert is stored,
         including metadata database and vector database.
-        
+
         Returns:
             Path to storage directory: {data_dir}/data/{name}/
         """
@@ -151,7 +263,7 @@ class ExpertConfig(BaseModel):
 
     def get_metadata_db_path(self) -> Path:
         """Get the path to the SQLite metadata database.
-        
+
         Returns:
             Path to metadata.db file
         """
@@ -159,7 +271,7 @@ class ExpertConfig(BaseModel):
 
     def get_vector_db_path(self) -> Path:
         """Get the path to the ChromaDB vector database directory.
-        
+
         Returns:
             Path to chroma/ directory
         """
@@ -167,13 +279,13 @@ class ExpertConfig(BaseModel):
 
     def ensure_storage_exists(self) -> None:
         """Create storage directories if they don't exist.
-        
+
         This creates the full storage structure for the expert, including
         the base directory and subdirectories for databases.
         """
         storage_dir = self.get_storage_dir()
         storage_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Create vector DB directory
         vector_dir = self.get_vector_db_path()
         vector_dir.mkdir(parents=True, exist_ok=True)

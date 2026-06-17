@@ -89,9 +89,20 @@ async def list_tools() -> list[Tool]:
         else:
             lines = ["\n\n**Currently Available Experts:**"]
             for expert in experts:
-                lines.append(f"- Name: **{expert.name}** -- Path: {expert.workspace_path} -- {expert.commit_count} {expert.vcs_type} commits")
-                if expert.first_processed_commit_hash and expert.last_processed_commit_hash:
-                    lines.append(f" spanning {expert.first_processed_commit_hash[:8]} to {expert.last_processed_commit_hash[:8]}")
+                lines.append(f"- Name: **{expert.name}** -- {expert.total_commit_count} commits")
+                # Show commit hash range spanning all projects
+                first_hash = None
+                last_hash = None
+                for proj in expert.projects:
+                    if proj.first_processed_commit_hash and first_hash is None:
+                        first_hash = proj.first_processed_commit_hash
+                    if proj.last_processed_commit_hash:
+                        last_hash = proj.last_processed_commit_hash
+                if first_hash and last_hash:
+                    lines.append(f"  spanning {first_hash[:8]} to {last_hash[:8]}")
+                # Show per-project details
+                for proj in expert.projects:
+                    lines.append(f"  \u2022 {proj.name} ({proj.vcs_type}) - {proj.workspace_path} -- {proj.commit_count} commits")
             expert_list = "\n".join(lines)
     except Exception as e:
         expert_list = f"\n\n**Currently Available Experts:** Error loading: {str(e)}"
@@ -275,22 +286,40 @@ async def handle_list() -> list[TextContent]:
                 text="No experts found. Create one with the 'populate' command."
             )]
         
-        # Format as markdown table
+        # Format as markdown with per-project details
         lines = ["# Available Experts\n"]
         for expert in experts:
             lines.append(f"## {expert.name}")
-            lines.append(f"- **Workspace**: {expert.workspace_path}")
-            lines.append(f"- **VCS Type**: {expert.vcs_type}")
-            lines.append(f"- **Commits Indexed**: {expert.commit_count}")
-            if expert.subdirs:
-                lines.append(f"- **Subdirectories**: {', '.join(expert.subdirs)}")
+            lines.append(f"- **Total Commits**: {expert.total_commit_count}")
+            if expert.description:
+                lines.append(f"- **Description**: {expert.description}")
             if expert.last_indexed_at:
                 lines.append(f"- **Last Indexed**: {expert.last_indexed_at.isoformat()}")
-            if expert.first_processed_commit_hash and expert.last_processed_commit_hash:
+            
+            # Show commit hash range spanning all projects
+            first_hash = None
+            last_hash = None
+            for proj in expert.projects:
+                if proj.first_processed_commit_hash and first_hash is None:
+                    first_hash = proj.first_processed_commit_hash
+                if proj.last_processed_commit_hash:
+                    last_hash = proj.last_processed_commit_hash
+            if first_hash and last_hash:
                 lines.append(
-                    f"- **Commit Range**: {expert.first_processed_commit_hash[:8]} to "
-                    f"{expert.last_processed_commit_hash[:8]}"
+                    f"- **Commit Range**: {first_hash[:8]} to "
+                    f"{last_hash[:8]}"
                 )
+            
+            # Show per-project details
+            if expert.projects:
+                lines.append("")
+                lines.append("**Projects:**")
+                for proj in expert.projects:
+                    proj_line = f"  \u2022 **{proj.name}** ({proj.vcs_type}) - {proj.workspace_path} -- {proj.commit_count} commits"
+                    lines.append(proj_line)
+                    if proj.first_processed_commit_hash and proj.last_processed_commit_hash:
+                        lines.append(f"    spanning {proj.first_processed_commit_hash[:8]} to {proj.last_processed_commit_hash[:8]}")
+            
             lines.append("")
         
         return [TextContent(

@@ -16,6 +16,7 @@ class LocalCrossEncoderReranker(Reranker):
     def __init__(
         self,
         model_id: str = 'cross-encoder/ms-marco-MiniLM-L-6-v2',
+        revision: str = None,
         tokens_per_gb: int = 1024,
         max_chunk_chars: int = 2000  # ~512 tokens
     ):
@@ -23,6 +24,7 @@ class LocalCrossEncoderReranker(Reranker):
         
         Args:
             model_id: HuggingFace model identifier
+            revision: Pinned HuggingFace revision SHA (default: None = latest)
             tokens_per_gb: Maximum tokens per batch per GB of GPU memory
             max_chunk_chars: Maximum characters per chunk (~512 tokens)
         """
@@ -42,7 +44,7 @@ class LocalCrossEncoderReranker(Reranker):
         from sentence_transformers import CrossEncoder
         
         # Load cross-encoder model
-        self.model = CrossEncoder(model_id, device=self.device)
+        self.model = CrossEncoder(model_id, device=self.device, revision=revision)
         
         # Store torch reference for later use
         self.torch = torch

@@ -12,7 +12,7 @@ sentence_transformers_import = None
 class JinaCodeEmbedder(Embedder):
     """Local embeddings using Jina Code model with code2code task."""
     
-    def __init__(self, model_id: str, dimension: int = 512, compile_model: bool = True, tokens_per_gb: int = 2048, enable_multiprocessing: bool = True):
+    def __init__(self, model_id: str, dimension: int = 512, compile_model: bool = True, tokens_per_gb: int = 2048, enable_multiprocessing: bool = True, revision: str = None):
         """Initialize the Jina Code embedder.
         
         Args:
@@ -21,6 +21,7 @@ class JinaCodeEmbedder(Embedder):
             compile_model: Whether to use torch.compile for optimization (default: True)
             tokens_per_gb: Maximum tokens per batch per GB of GPU memory (default: 2048)
             enable_multiprocessing: Whether to enable multiprocessing (default: True)
+            revision: Pinned HuggingFace revision SHA (default: None = latest)
         """
         self.model_id = model_id
         self._dimension = dimension
@@ -63,7 +64,8 @@ class JinaCodeEmbedder(Embedder):
             model_id,
             trust_remote_code=True,
             device=self.device,
-            model_kwargs={'dtype': torch.float16}
+            model_kwargs={'dtype': torch.float16},
+            revision=revision,
         )
         
         # Start multi-process pool for CPU/GPU/multi-GPU support

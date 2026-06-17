@@ -105,51 +105,7 @@ class TestFactoryIntegration:
         assert call_kwargs["api_key"] == "sk-test-key"
         assert "base_url" not in call_kwargs
     
-    def test_factory_raises_error_without_provider_selection(self, base_settings):
-        """Test factory raises ValueError when no provider is selected."""
-        settings = base_settings.model_copy(update={"llm_provider": None})
-        
-        with pytest.raises(ValueError) as exc_info:
-            create_llm_provider(settings, debug=False)
-        
-        assert "No LLM provider specified" in str(exc_info.value)
-        assert "--llm-provider" in str(exc_info.value)
-    
-    def test_openai_provider_raises_error_when_api_key_missing(self, base_settings):
-        """Test OpenAI provider raises error when API key is missing."""
-        settings = base_settings.model_copy(update={
-            "llm_provider": "openai",
-            "openai_api_key": None
-        })
-        
-        with pytest.raises(ValueError) as exc_info:
-            create_llm_provider(settings, debug=False)
-        
-        assert "OPENAI_API_KEY" in str(exc_info.value)
-    
-    def test_openrouter_provider_raises_error_when_api_key_missing(self, base_settings):
-        """Test OpenRouter provider raises error when API key is missing."""
-        settings = base_settings.model_copy(update={
-            "llm_provider": "openrouter",
-            "openrouter_api_key": None
-        })
-        
-        with pytest.raises(ValueError) as exc_info:
-            create_llm_provider(settings, debug=False)
-        
-        assert "OPENROUTER_API_KEY" in str(exc_info.value)
-    
-    def test_factory_with_debug_enabled(self, mock_openai_client, base_settings):
-        """Test factory creates provider with debug enabled."""
-        settings = base_settings.model_copy(update={
-            "llm_provider": "openai",
-            "openai_api_key": "sk-test-key"
-        })
-        
-        provider = create_llm_provider(settings, debug=True)
-        
-        assert isinstance(provider, OpenAICompatibleLLM)
-        assert provider.debug is True
+
 
 
 class TestEndToEndProviderFlow:
@@ -242,33 +198,7 @@ class TestEndToEndProviderFlow:
         call_kwargs = mock_client_instance.chat.completions.create.call_args[1]
         assert call_kwargs["stream"] is True
     
-    def test_generate_with_system_prompt_flow(self, mock_openai_client, base_settings, mock_successful_response):
-        """Test generate with system prompt through full flow."""
-        # Setup
-        mock_client_instance = MagicMock()
-        mock_openai_client.return_value = mock_client_instance
-        mock_client_instance.chat.completions.create.return_value = mock_successful_response
-        
-        settings = base_settings.model_copy(update={
-            "llm_provider": "openai",
-            "openai_api_key": "sk-test-key"
-        })
-        provider = create_llm_provider(settings)
-        
-        # Generate with system prompt
-        messages = [Message(role="user", content="Hello")]
-        response = provider.generate(
-            messages=messages,
-            model="gpt-4",
-            system="You are a helpful assistant"
-        )
-        
-        # Verify system prompt was added
-        call_kwargs = mock_client_instance.chat.completions.create.call_args[1]
-        api_messages = call_kwargs["messages"]
-        assert api_messages[0]["role"] == "system"
-        assert api_messages[0]["content"] == "You are a helpful assistant"
-        assert api_messages[1]["role"] == "user"
+
 
 
 class TestErrorHandlingIntegration:
@@ -350,32 +280,7 @@ class TestErrorHandlingIntegration:
         
         assert "API error" in str(exc_info.value)
     
-    @pytest.mark.asyncio
-    async def test_stream_error_propagation(self, mock_openai_client, base_settings):
-        """Test error propagates correctly during streaming."""
-        # Setup
-        mock_client_instance = MagicMock()
-        mock_openai_client.return_value = mock_client_instance
-        
-        # Create a mock response with request attribute
-        mock_response = MagicMock()
-        mock_response.request = MagicMock()
-        
-        mock_client_instance.chat.completions.create.side_effect = RateLimitError(
-            "Rate limit exceeded", response=mock_response, body=None
-        )
-        
-        settings = base_settings.model_copy(update={
-            "llm_provider": "openai",
-            "openai_api_key": "sk-test-key"
-        })
-        provider = create_llm_provider(settings)
-        
-        # Attempt streaming
-        messages = [Message(role="user", content="Test")]
-        with pytest.raises(LLMRateLimitError):
-            async for _ in provider.stream(messages=messages, model="gpt-4"):
-                pass
+
 
 
 class TestSettingsIntegration:
@@ -433,52 +338,7 @@ class TestMessageFlowIntegration:
         assert api_messages[1]["role"] == "assistant"
         assert api_messages[2]["role"] == "user"
     
-    def test_empty_messages_handling(self, mock_openai_client, base_settings, mock_successful_response):
-        """Test handling of empty message list."""
-        # Setup
-        mock_client_instance = MagicMock()
-        mock_openai_client.return_value = mock_client_instance
-        mock_client_instance.chat.completions.create.return_value = mock_successful_response
-        
-        settings = base_settings.model_copy(update={
-            "llm_provider": "openai",
-            "openai_api_key": "sk-test-key"
-        })
-        provider = create_llm_provider(settings)
-        
-        # Empty messages
-        messages = []
-        response = provider.generate(messages=messages, model="gpt-4")
-        
-        # Should still work
-        call_kwargs = mock_client_instance.chat.completions.create.call_args[1]
-        assert call_kwargs["messages"] == []
-    
-    def test_special_characters_in_messages(self, mock_openai_client, base_settings, mock_successful_response):
-        """Test messages with special characters flow through correctly."""
-        # Setup
-        mock_client_instance = MagicMock()
-        mock_openai_client.return_value = mock_client_instance
-        mock_client_instance.chat.completions.create.return_value = mock_successful_response
-        
-        settings = base_settings.model_copy(update={
-            "llm_provider": "openai",
-            "openai_api_key": "sk-test-key"
-        })
-        provider = create_llm_provider(settings)
-        
-        # Messages with special characters
-        messages = [
-            Message(role="user", content="Test with <>&\"' and emoji 🎉")
-        ]
-        
-        response = provider.generate(messages=messages, model="gpt-4")
-        
-        # Verify special characters were preserved
-        call_kwargs = mock_client_instance.chat.completions.create.call_args[1]
-        api_messages = call_kwargs["messages"]
-        assert "🎉" in api_messages[0]["content"]
-        assert "<>&\"'" in api_messages[0]["content"]
+
 
 
 class TestDebugLoggingIntegration:

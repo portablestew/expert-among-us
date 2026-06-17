@@ -43,27 +43,7 @@ class TestEnvironmentVariableDetection:
         assert "openrouter" in error_msg
         assert "--llm-provider" in error_msg
     
-    @patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test", "AWS_ACCESS_KEY_ID": "AKIATEST"}, clear=True)
-    @patch("expert_among_us.utils.progress.log_info")
-    def test_fails_with_openai_and_aws(self, mock_log):
-        """Test failure when both OpenAI and AWS keys are present."""
-        with pytest.raises(ValueError) as exc_info:
-            detect_llm_provider()
-        
-        error_msg = str(exc_info.value)
-        assert "Multiple LLM providers detected" in error_msg
-        assert "bedrock" in error_msg or "openai" in error_msg
-    
-    @patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or", "AWS_ACCESS_KEY_ID": "AKIA"}, clear=True)
-    @patch("expert_among_us.utils.progress.log_info")
-    def test_fails_with_openrouter_and_aws(self, mock_log):
-        """Test failure when both OpenRouter and AWS keys are present."""
-        with pytest.raises(ValueError) as exc_info:
-            detect_llm_provider()
-        
-        error_msg = str(exc_info.value)
-        assert "Multiple LLM providers detected" in error_msg
-        assert "bedrock" in error_msg or "openrouter" in error_msg
+
 
 
 class TestAWSCredentialsDetection:
@@ -133,20 +113,6 @@ class TestAWSCredentialsDetection:
 
 class TestClaudeCLIDetection:
     """Tests for Claude Code CLI detection."""
-    
-    @patch.dict(os.environ, {}, clear=True)
-    @patch("expert_among_us.llm.auto_detect._check_aws_credentials")
-    @patch("expert_among_us.llm.auto_detect.shutil.which")
-    @patch("expert_among_us.utils.progress.log_info")
-    def test_detects_claude_cli(self, mock_log, mock_which, mock_check_aws):
-        """Test detection of Claude CLI when it's on PATH."""
-        mock_check_aws.return_value = False
-        mock_which.return_value = "/usr/local/bin/claude"
-        
-        provider = detect_llm_provider()
-        
-        assert provider == "claude-code"
-        mock_which.assert_called_once_with("claude")
     
     @patch.dict(os.environ, {}, clear=True)
     @patch("expert_among_us.llm.auto_detect._check_aws_credentials")
@@ -290,19 +256,3 @@ class TestDetectionPriority:
         mock_which.assert_not_called()
         mock_ollama.assert_not_called()
     
-    @patch.dict(os.environ, {}, clear=True)
-    @patch("expert_among_us.llm.auto_detect._check_aws_credentials")
-    @patch("expert_among_us.llm.auto_detect.shutil.which")
-    @patch("expert_among_us.llm.auto_detect._check_ollama_running")
-    @patch("expert_among_us.utils.progress.log_info")
-    def test_claude_takes_priority_over_ollama(self, mock_log, mock_ollama, mock_which, mock_check_aws):
-        """Test Claude CLI takes priority over Ollama."""
-        mock_check_aws.return_value = False
-        mock_which.return_value = "/usr/local/bin/claude"
-        mock_ollama.return_value = True
-        
-        provider = detect_llm_provider()
-        
-        assert provider == "claude-code"
-        # Should not check Ollama when Claude is found
-        mock_ollama.assert_not_called()

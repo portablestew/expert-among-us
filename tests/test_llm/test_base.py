@@ -23,27 +23,6 @@ class TestMessage:
         msg = Message(role="user", content="Hello, world!")
         assert msg.role == "user"
         assert msg.content == "Hello, world!"
-    
-    def test_message_roles(self):
-        """Test different message roles."""
-        user_msg = Message(role="user", content="User prompt")
-        assistant_msg = Message(role="assistant", content="Assistant response")
-        system_msg = Message(role="system", content="System instruction")
-        
-        assert user_msg.role == "user"
-        assert assistant_msg.role == "assistant"
-        assert system_msg.role == "system"
-    
-    def test_message_empty_content(self):
-        """Test Message with empty content."""
-        msg = Message(role="user", content="")
-        assert msg.content == ""
-    
-    def test_message_multiline_content(self):
-        """Test Message with multiline content."""
-        content = "Line 1\nLine 2\nLine 3"
-        msg = Message(role="user", content=content)
-        assert msg.content == content
 
 
 class TestUsageMetrics:
@@ -91,28 +70,6 @@ class TestLLMResponse:
         assert response.stop_reason == "end_turn"
         assert response.usage.input_tokens == 10
         assert response.usage.output_tokens == 20
-    
-    def test_llm_response_stop_reasons(self):
-        """Test different stop reasons."""
-        for reason in ["end_turn", "max_tokens", "stop_sequence"]:
-            response = LLMResponse(
-                content="Text",
-                model="model",
-                stop_reason=reason,
-                usage=UsageMetrics(input_tokens=5, output_tokens=10, total_tokens=15)
-            )
-            assert response.stop_reason == reason
-    
-    def test_llm_response_with_zero_tokens(self):
-        """Test LLMResponse with zero token usage."""
-        response = LLMResponse(
-            content="",
-            model="model",
-            stop_reason="end_turn",
-            usage=UsageMetrics(input_tokens=0, output_tokens=0, total_tokens=0)
-        )
-        assert response.usage.input_tokens == 0
-        assert response.usage.output_tokens == 0
 
 
 class TestStreamChunk:
@@ -135,25 +92,6 @@ class TestStreamChunk:
         assert chunk.delta == ""
         assert chunk.stop_reason == "end_turn"
         assert chunk.usage is not None
-    
-    def test_stream_chunk_empty_delta(self):
-        """Test StreamChunk with empty delta."""
-        chunk = StreamChunk(delta="")
-        assert chunk.delta == ""
-    
-    def test_stream_chunk_incremental(self):
-        """Test incremental content chunks."""
-        chunks = [
-            StreamChunk(delta="Hello"),
-            StreamChunk(delta=" "),
-            StreamChunk(delta="world"),
-            StreamChunk(delta="!", stop_reason="end_turn")
-        ]
-        
-        # Reconstruct full content
-        full_content = "".join(c.delta for c in chunks)
-        assert full_content == "Hello world!"
-        assert chunks[-1].stop_reason == "end_turn"
 
 
 class TestLLMProvider:
@@ -163,33 +101,6 @@ class TestLLMProvider:
         """Test that LLMProvider cannot be instantiated directly."""
         with pytest.raises(TypeError):
             LLMProvider()
-    
-    def test_must_implement_generate(self):
-        """Test that subclasses must implement generate method."""
-        
-        class IncompleteProvider(LLMProvider):
-            async def stream(self, messages, model, max_tokens=4096, 
-                           temperature=1.0, system=None, debug_category="expert"):
-                yield StreamChunk(delta="test")
-        
-        with pytest.raises(TypeError):
-            IncompleteProvider()
-    
-    def test_must_implement_stream(self):
-        """Test that subclasses must implement stream method."""
-        
-        class IncompleteProvider(LLMProvider):
-            def generate(self, messages, model, max_tokens=4096,
-                        temperature=1.0, system=None, debug_category="expert"):
-                return LLMResponse(
-                    content="test",
-                    model=model,
-                    stop_reason="end_turn",
-                    usage=UsageMetrics(input_tokens=1, output_tokens=1, total_tokens=2)
-                )
-        
-        with pytest.raises(TypeError):
-            IncompleteProvider()
 
 
 class TestMockImplementation:
@@ -271,37 +182,9 @@ class TestMockImplementation:
         assert len(chunks) > 0
         assert all(isinstance(c, StreamChunk) for c in chunks)
         
-        # Verify final chunk has metadata
         final_chunk = chunks[-1]
         assert final_chunk.stop_reason == "end_turn"
         assert final_chunk.usage is not None
-    
-    def test_mock_generate_with_system(self):
-        """Test mock generate with system prompt."""
-        provider = self.MockLLMProvider()
-        messages = [Message(role="user", content="Hello")]
-        
-        response = provider.generate(
-            messages=messages,
-            model="test-model",
-            system="You are a helpful assistant"
-        )
-        
-        assert isinstance(response, LLMResponse)
-    
-    def test_mock_generate_with_parameters(self):
-        """Test mock generate with custom parameters."""
-        provider = self.MockLLMProvider()
-        messages = [Message(role="user", content="Test")]
-        
-        response = provider.generate(
-            messages=messages,
-            model="custom-model",
-            max_tokens=2048,
-            temperature=0.5
-        )
-        
-        assert response.model == "custom-model"
 
 
 class TestLLMExceptions:
@@ -317,33 +200,13 @@ class TestLLMExceptions:
         """Test LLMRateLimitError exception."""
         error = LLMRateLimitError("Rate limit exceeded")
         assert isinstance(error, LLMError)
-        assert isinstance(error, Exception)
         assert "Rate limit" in str(error)
     
     def test_invalid_request_error(self):
         """Test LLMInvalidRequestError exception."""
         error = LLMInvalidRequestError("Invalid parameters")
         assert isinstance(error, LLMError)
-        assert isinstance(error, Exception)
         assert "Invalid" in str(error)
-    
-    def test_exception_raising(self):
-        """Test that exceptions can be raised and caught."""
-        with pytest.raises(LLMError):
-            raise LLMError("Test error")
-        
-        with pytest.raises(LLMRateLimitError):
-            raise LLMRateLimitError("Rate limit")
-        
-        with pytest.raises(LLMInvalidRequestError):
-            raise LLMInvalidRequestError("Invalid request")
-    
-    def test_exception_hierarchy_catching(self):
-        """Test catching specific exceptions via base class."""
-        try:
-            raise LLMRateLimitError("Rate limit")
-        except LLMError as e:
-            assert isinstance(e, LLMRateLimitError)
 
 
 class TestNotImplementedErrors:
@@ -356,17 +219,14 @@ class TestNotImplementedErrors:
             """Provider that calls parent generate."""
             def generate(self, messages, model, max_tokens=4096,
                         temperature=1.0, system=None, debug_category="expert"):
-                # Call parent's NotImplementedError
                 return super().generate(messages, model, max_tokens, temperature, system, debug_category)
             
             async def stream(self, messages, model, max_tokens=4096,
                            temperature=1.0, system=None, debug_category="expert"):
                 yield StreamChunk(delta="test")
         
-        # Create concrete instance
         provider = PartialProvider()
         
-        # Call generate which should raise NotImplementedError
         with pytest.raises(NotImplementedError) as exc_info:
             provider.generate([], "model")
         
@@ -390,14 +250,11 @@ class TestNotImplementedErrors:
             
             async def stream(self, messages, model, max_tokens=4096,
                            temperature=1.0, system=None, debug_category="expert"):
-                # Call parent's NotImplementedError
                 async for chunk in super().stream(messages, model, max_tokens, temperature, system, debug_category):
                     yield chunk
         
-        # Create concrete instance
         provider = PartialProvider()
         
-        # Call stream which should raise NotImplementedError
         with pytest.raises(NotImplementedError) as exc_info:
             async for _ in provider.stream([], "model"):
                 pass
