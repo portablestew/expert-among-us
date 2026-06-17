@@ -13,6 +13,7 @@ from rich.table import Table
 
 from expert_among_us import __version__
 from expert_among_us.config.settings import Settings
+from expert_among_us.config.paths import resolve_data_dir
 from expert_among_us.models.expert import ExpertConfig
 from expert_among_us.db.metadata.sqlite import SQLiteMetadataDB
 from expert_among_us.db.vector.chroma import ChromaVectorDB
@@ -31,7 +32,7 @@ console = Console(stderr=True)
 
 @click.group()
 @click.option('--debug', is_flag=True, help='Enable debug logging for all Bedrock API calls')
-@click.option('--data-dir', type=click.Path(path_type=Path), help='Base directory for expert data storage (default: ~/.expert-among-us)')
+@click.option('--data-dir', type=click.Path(path_type=Path), help='Base directory for expert data storage (default: ./.expert-among-us if present, else ~/.expert-among-us)')
 @click.option('--llm-provider', type=click.Choice(['auto', 'openai', 'openrouter', 'ollama', 'bedrock', 'claude-code', 'kiro-cli']), default='auto', help='LLM provider for AI recommendations (auto-detects by default)')
 @click.option('--base-url-override', type=str, help='Override base URL for OpenAI-compatible providers (openai, openrouter, ollama)')
 @click.option('--embedding-provider', type=click.Choice(['local', 'bedrock']), default='local', help='Embedding provider: local=Jina Code, bedrock=AWS Titan (default: local)')
@@ -287,7 +288,7 @@ def populate(
         # Create expert configuration (logical grouping only - no project/vcs fields)
         expert_config = ExpertConfig(
             name=expert_name,
-            data_dir=data_dir or Path.home() / ".expert-among-us"
+            data_dir=resolve_data_dir(data_dir)
         )
         
         # Ensure storage directories exist
@@ -1015,8 +1016,7 @@ def import_(ctx, source_path: Path) -> None:
         log_success(f"Successfully imported expert '{imported_name}'")
         
         # Calculate paths for informational logging
-        if data_dir is None:
-            data_dir = Path.home() / ".expert-among-us"
+        data_dir = resolve_data_dir(data_dir)
         target_path = data_dir / "data" / imported_name
         log_info(f"Symlink created: {target_path} -> {source_path.resolve()}")
         

@@ -7,6 +7,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from expert_among_us.config.paths import resolve_data_dir
+
 
 # Regex for valid project/expert names: alphanumeric, hyphens, and underscores (can start with any)
 _NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-][a-zA-Z0-9_-]*$")
@@ -186,7 +188,7 @@ class ExpertConfig(BaseModel):
         None, description="Human-readable description of the expert"
     )
     data_dir: Path = Field(
-        default_factory=lambda: Path.home() / ".expert-among-us",
+        default_factory=resolve_data_dir,
         description="Base directory for expert data storage",
     )
     created_at: datetime = Field(

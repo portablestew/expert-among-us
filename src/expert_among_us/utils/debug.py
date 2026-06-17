@@ -21,11 +21,15 @@ class DebugLogger:
         
         Args:
             enabled: Whether debug logging is enabled
-            log_dir: Directory for log files (default: ~/.expert-among-us/logs)
+            log_dir: Directory for log files (default: <resolved data dir>/logs)
         """
         with cls._lock:
             cls._enabled = enabled
-            cls._log_dir = log_dir or Path.home() / ".expert-among-us" / "logs"
+            if log_dir is not None:
+                cls._log_dir = log_dir
+            else:
+                from expert_among_us.config.paths import resolve_data_dir
+                cls._log_dir = resolve_data_dir() / "logs"
             
             if cls._enabled and cls._log_dir:
                 cls._log_dir.mkdir(parents=True, exist_ok=True)

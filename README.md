@@ -271,7 +271,7 @@ expert-among-us populate EXPERT_NAME [WORKSPACE] [SUBDIRS...] --project PROJECT_
 
 **Global Options (before command):**
 - `--embedding-provider [local|bedrock]`: Embedding provider (default: local)
-- `--data-dir PATH`: Base directory for expert data storage (default: ~/.expert-among-us)
+- `--data-dir PATH`: Base directory for expert data storage (default: `./.expert-among-us` if present, otherwise `~/.expert-among-us`)
 - `--gpu-memory-multiplier FLOAT`: GPU memory scaling factor (default: 1.0)
 - `--debug`: Enable debug logging
 
@@ -403,9 +403,25 @@ expert-among-us --debug prompt AppExpert "Optimize queries"
 
 ### Storage Location
 
-By default, expert indexes are stored in: `~/.expert-among-us/data/`
+The base data directory is resolved using the following precedence:
 
-Customize with the `--data-dir` global option. Always use the same `--data-dir` for all operations on the same expert.
+1. **`--data-dir PATH`** — an explicit path always wins.
+2. **`./.expert-among-us`** — a workspace-local directory in the current working directory, *if it already exists*. This keeps experts portable and scoped to a workspace.
+3. **`~/.expert-among-us`** — the global home directory (the default when neither of the above applies).
+
+The workspace-local location is only used when the `./.expert-among-us` directory already exists, so running commands from arbitrary directories won't scatter new data folders. To bootstrap a workspace-local store the first time, create it explicitly once:
+
+```bash
+# Bootstrap a workspace-local store (creates ./.expert-among-us)
+expert-among-us --data-dir ./.expert-among-us populate AppExpert ./ --project myapp
+
+# Subsequent commands run from the same directory auto-detect it
+expert-among-us list
+```
+
+The same precedence applies to every command, including `import` — an imported expert's symlink is created under whichever directory resolves. Always operate on an expert from a context that resolves to the same data directory.
+
+> Tip: add `.expert-among-us/` to your project's `.gitignore`, since it holds machine-specific ChromaDB and SQLite data.
 
 Each expert creates:
 - **ChromaDB**: Vector embeddings (`{data-dir}/data/{expert-name}/chroma/`)

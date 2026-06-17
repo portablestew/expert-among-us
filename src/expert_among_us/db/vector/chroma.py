@@ -3,13 +3,14 @@ import chromadb
 from pathlib import Path
 from typing import Optional
 from expert_among_us.db.vector.base import VectorDB, VectorSearchResult
+from expert_among_us.config.paths import resolve_data_dir
 
 # Safe batch size for ChromaDB operations (below internal limit of ~5461)
 CHROMA_MAX_BATCH_SIZE = 5000
 
 class ChromaVectorDB(VectorDB):
     def __init__(self, expert_name: str, data_dir: Optional[Path] = None):
-        base_dir = data_dir or Path.home() / ".expert-among-us"
+        base_dir = resolve_data_dir(data_dir)
         self.storage_path = Path(base_dir / "data" / expert_name / "chroma")
         self.client = None
         self.metadata_collection = None

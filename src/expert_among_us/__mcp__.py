@@ -588,7 +588,8 @@ async def start_server(
     
     # Add file handler for debug mode
     if _debug:
-        log_dir = Path.home() / ".expert-among-us" / "logs"
+        from expert_among_us.config.paths import resolve_data_dir
+        log_dir = resolve_data_dir(_data_dir) / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / f"mcp-{pid}.log"
         file_handler = logging.FileHandler(log_file, mode='w', encoding='utf-8')

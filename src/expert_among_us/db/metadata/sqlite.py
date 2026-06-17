@@ -6,11 +6,13 @@ from expert_among_us.db.metadata.base import MetadataDB
 from expert_among_us.models.changelist import Changelist
 from expert_among_us.models.file_chunk import FileChunk
 from expert_among_us.utils.compression import compress_diff, decompress_diff
+from expert_among_us.config.paths import resolve_data_dir
 
 class SQLiteMetadataDB(MetadataDB):
     def __init__(self, expert_name: str, data_dir: Optional[Path] = None):
-        # Use Path.home() to properly expand home directory on all platforms (Windows, Linux, Mac)
-        base_dir = data_dir or Path.home() / ".expert-among-us"
+        # resolve_data_dir applies the --data-dir / cwd / home precedence chain
+        # and expands the home directory on all platforms (Windows, Linux, Mac).
+        base_dir = resolve_data_dir(data_dir)
         self.db_path = str(base_dir / "data" / expert_name / "metadata.db")
         self.conn = None
         self.expert_name = expert_name

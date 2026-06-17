@@ -13,6 +13,7 @@ from typing import List, Optional
 from expert_among_us.core.searcher import Searcher, SearchResult
 from expert_among_us.models.query import QueryParams
 from expert_among_us.db.metadata.sqlite import SQLiteMetadataDB
+from expert_among_us.config.paths import resolve_data_dir
 
 from .context import ExpertContext
 from .exceptions import ExpertNotFoundError, ExpertAlreadyExistsError, InvalidExpertError
@@ -188,7 +189,8 @@ def list_experts(
     
     Args:
         data_dir: Optional custom data directory path. If not provided,
-                  uses default ~/.expert-among-us
+                  resolves via ./.expert-among-us (if present) then
+                  ~/.expert-among-us
         
     Returns:
         List of ExpertInfo objects containing metadata about each expert.
@@ -209,8 +211,7 @@ def list_experts(
         ```
     """
     # Determine data directory
-    if data_dir is None:
-        data_dir = Path.home() / ".expert-among-us"
+    data_dir = resolve_data_dir(data_dir)
     
     experts_dir = data_dir / "data"
     
@@ -291,7 +292,8 @@ def import_expert(
         source_path: Path to the expert directory to import. Must contain
                      a valid metadata.db file.
         data_dir: Optional custom data directory path. If not provided,
-                  uses default ~/.expert-among-us
+                  resolves via ./.expert-among-us (if present) then
+                  ~/.expert-among-us
         
     Returns:
         The expert name that was imported (derived from source directory name)
@@ -325,8 +327,7 @@ def import_expert(
         raise ValueError(f"Source path is not a directory: {source_path}")
     
     # Determine data directory
-    if data_dir is None:
-        data_dir = Path.home() / ".expert-among-us"
+    data_dir = resolve_data_dir(data_dir)
     
     # Ensure data directory exists
     experts_dir = data_dir / "data"

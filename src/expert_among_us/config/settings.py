@@ -6,6 +6,8 @@ from typing import Optional
 from pydantic import Field, AliasChoices
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from expert_among_us.config.paths import resolve_data_dir
+
 
 # Model identifiers
 DEFAULT_EMBEDDING_MODEL_ID = "amazon.titan-embed-text-v2:0"
@@ -69,7 +71,7 @@ class Settings(BaseSettings):
     )
     
     # Storage base directory
-    data_dir: Path = Field(default_factory=lambda: Path.home() / ".expert-among-us")
+    data_dir: Path = Field(default_factory=resolve_data_dir)
     
     # AWS settings
     aws_region: str = "us-west-2"
