@@ -48,6 +48,7 @@ class TestQueryExpansion:
         """Create a mock CommitResult for testing."""
         mock_changelist = Mock(spec=Changelist)
         mock_changelist.id = commit_id
+        mock_changelist.project_name = "test-project"
         mock_changelist.message = f"Commit {commit_id}"
         mock_changelist.author = "test_author"
         mock_changelist.timestamp = None
@@ -151,6 +152,7 @@ class TestQueryExpansion:
             for commit_id in ids:
                 mock_changelist = Mock(spec=Changelist)
                 mock_changelist.id = commit_id
+                mock_changelist.project_name = "test-project"
                 mock_changelist.message = f"New commit {commit_id}"
                 mock_changelist.author = "test_author"
                 mock_changelist.timestamp = None
@@ -339,6 +341,7 @@ class TestQueryExpansion:
             for commit_id in ids:
                 mock_changelist = Mock(spec=Changelist)
                 mock_changelist.id = commit_id
+                mock_changelist.project_name = "test-project"
                 mock_changelist.message = f"Commit {commit_id}"
                 mock_changelist.author = "test_author"
                 mock_changelist.timestamp = None
@@ -378,6 +381,7 @@ class TestQueryExpansion:
             for commit_id in ids:
                 mock_changelist = Mock(spec=Changelist)
                 mock_changelist.id = commit_id
+                mock_changelist.project_name = "test-project"
                 mock_changelist.message = f"Expanded commit {commit_id}"
                 mock_changelist.author = "test_author"
                 mock_changelist.timestamp = None
@@ -434,6 +438,7 @@ class TestQueryExpansion:
             for commit_id in ids:
                 mock_changelist = Mock(spec=Changelist)
                 mock_changelist.id = commit_id
+                mock_changelist.project_name = "test-project"
                 mock_changelist.message = f"Commit {commit_id}"
                 mock_changelist.author = "test_author"
                 mock_changelist.timestamp = None
@@ -521,6 +526,7 @@ class TestQueryExpansion:
             for commit_id in ids:
                 mock_changelist = Mock(spec=Changelist)
                 mock_changelist.id = commit_id
+                mock_changelist.project_name = "test-project"
                 mock_changelist.message = f"Original commit {commit_id}"
                 mock_changelist.author = "test_author"
                 mock_changelist.timestamp = None
@@ -547,6 +553,7 @@ class TestQueryExpansion:
             for commit_id in ids:
                 mock_changelist = Mock(spec=Changelist)
                 mock_changelist.id = commit_id
+                mock_changelist.project_name = "test-project"
                 mock_changelist.message = f"Expansion commit {commit_id}"
                 mock_changelist.author = "test_author"
                 mock_changelist.timestamp = None

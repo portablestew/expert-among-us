@@ -225,6 +225,16 @@ class Searcher:
                 params.prompt, filtered_commits, params.max_changes, is_commit_expansion=True, where=where_clause
             )
         
+        # Step 6c: Merge cross-project duplicate commits (same raw VCS id indexed
+        # under multiple subdir-scoped projects). Done before the final limit so
+        # collapsed duplicates free slots for distinct results, and after
+        # reranking/expansion so the per-namespaced-id embeddings stay intact.
+        if filtered_commits:
+            before_merge = len(filtered_commits)
+            filtered_commits = self._merge_duplicate_commits(filtered_commits)
+            if len(filtered_commits) < before_merge:
+                log_info(f"Merged {before_merge - len(filtered_commits)} cross-project duplicate commit(s)")
+
         # Step 7: Apply final limit to commits AFTER expansion and final reranking
         filtered_commits = filtered_commits[:params.max_changes]
         
@@ -424,7 +434,137 @@ class Searcher:
             }
         
         return merged
-    
+
+    @staticmethod
+    def _raw_changelist_id(changelist: Changelist) -> str:
+        """Return the raw VCS id of a changelist, stripping the project prefix.
+
+        Stored ids are namespaced as ``{project_name}/{raw_id}`` (see
+        :meth:`Indexer.to_stored_id`). The raw id (P4 CL number / git hash) is
+        the identity shared by the same underlying changelist when one VCS commit
+        is indexed under multiple subdir-scoped projects.
+
+        Args:
+            changelist: Changelist whose raw id to extract.
+
+        Returns:
+            The raw id with the ``{project_name}/`` prefix removed when present,
+            otherwise the id unchanged.
+        """
+        prefix = f"{changelist.project_name}/"
+        if changelist.project_name and changelist.id.startswith(prefix):
+            return changelist.id[len(prefix):]
+        return changelist.id
+
+    def _merge_duplicate_commits(
+        self,
+        results: List[CommitResult]
+    ) -> List[CommitResult]:
+        """Collapse commits that share a raw VCS id across projects.
+
+        When a single P4 changelist touches files belonging to multiple
+        subdir-scoped projects (e.g. ``Code`` and ``Gems``), it is indexed as
+        distinct rows (``Code/12345``, ``Gems/12345``) with identical
+        message/author/timestamp but project-scoped file lists and diffs. These
+        are independent vector entries and would otherwise surface as duplicate
+        results. This pass merges such rows into one combined result with no data
+        loss: file lists are unioned and per-project diffs are concatenated under
+        labeled section headers.
+
+        Ranking integrity is preserved: groups retain the position of their
+        highest-ranked member, and the merged score is the max across members.
+
+        Args:
+            results: Commit results in ranked order (best first).
+
+        Returns:
+            Results with cross-project duplicates merged, original order preserved.
+        """
+        order: List[str] = []
+        groups: Dict[str, List[CommitResult]] = {}
+        for result in results:
+            key = self._raw_changelist_id(result.changelist)
+            if key not in groups:
+                groups[key] = [result]
+                order.append(key)
+            else:
+                groups[key].append(result)
+
+        merged_results: List[CommitResult] = []
+        for key in order:
+            group = groups[key]
+            if len(group) == 1:
+                merged_results.append(group[0])
+            else:
+                merged_results.append(self._merge_commit_group(group))
+        return merged_results
+
+    def _merge_commit_group(self, group: List[CommitResult]) -> CommitResult:
+        """Merge a group of same-raw-id commit results into one combined result.
+
+        Args:
+            group: Two or more CommitResults sharing a raw VCS id.
+
+        Returns:
+            A single CommitResult whose changelist unions the members' files and
+            concatenates their diffs under per-project headers. Score/source are
+            taken from the highest-scoring member; provenance projects are joined
+            into the id and project_name (e.g. ``Code+Gems/12345``).
+        """
+        # Highest-scoring member drives score, position, and shared metadata.
+        primary = max(group, key=lambda r: r.similarity_score)
+        # Stable, deterministic project ordering for combined output.
+        contributors = sorted(group, key=lambda r: r.changelist.project_name)
+        projects = [r.changelist.project_name for r in contributors]
+        raw_id = self._raw_changelist_id(primary.changelist)
+
+        # Union files, preserving first-seen order (paths are project-prefixed,
+        # so provenance stays visible without extra annotation).
+        merged_files: List[str] = []
+        seen_files = set()
+        for r in contributors:
+            for f in r.changelist.files:
+                if f not in seen_files:
+                    seen_files.add(f)
+                    merged_files.append(f)
+
+        # Concatenate diffs under labeled headers so the agent can tell which
+        # subsystem each hunk came from.
+        sections = []
+        for r in contributors:
+            header = f"===== project: {r.changelist.project_name} (changelist {r.changelist.id}) ====="
+            sections.append(f"{header}\n{r.changelist.diff}")
+        merged_diff = "\n\n".join(sections)
+
+        # Combine distinct review comments (drop empties, preserve order).
+        comments = [
+            r.changelist.review_comments
+            for r in contributors
+            if r.changelist.review_comments
+        ]
+        merged_comments = "\n\n".join(dict.fromkeys(comments)) if comments else None
+
+        joined_projects = "+".join(projects)
+        merged_changelist = primary.changelist.model_copy(update={
+            "id": f"{joined_projects}/{raw_id}",
+            "project_name": joined_projects,
+            "files": merged_files,
+            "diff": merged_diff,
+            "review_comments": merged_comments,
+        })
+
+        # Source reflects the merge unless every member agreed.
+        source = primary.source if all(r.source == primary.source for r in group) else "combined"
+
+        return CommitResult(
+            changelist=merged_changelist,
+            similarity_score=primary.similarity_score,
+            source=source,
+            chroma_id=primary.chroma_id,
+            search_similarity_score=primary.search_similarity_score,
+            embedding=primary.embedding,
+        )
+
     def _build_where_clause(self, files: Optional[List[str]]) -> Optional[dict]:
         """Extract project names from file path prefixes and build a ChromaDB where clause.
         

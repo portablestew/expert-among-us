@@ -393,3 +393,139 @@ class TestBuildWhereClause:
             enable_query_expansion=False,
         )
         assert searcher.has_vector_metadata is True
+
+
+class TestMergeDuplicateCommits:
+    """Tests for cross-project duplicate commit merging.
+
+    A single P4 changelist that touches multiple subdir-scoped projects is
+    indexed as distinct rows ('Code/12345', 'Gems/12345') sharing a raw id.
+    These must collapse to one combined result with no data loss.
+    """
+
+    @pytest.fixture
+    def searcher(self, mock_embedder, mock_vector_db):
+        mock_metadata_db = Mock()
+        mock_metadata_db.list_projects.return_value = []
+        return Searcher(
+            expert_name="TestExpert",
+            embedder=mock_embedder,
+            metadata_db=mock_metadata_db,
+            vector_db=mock_vector_db,
+            enable_query_expansion=False,
+        )
+
+    @pytest.fixture
+    def mock_embedder(self):
+        embedder = Mock()
+        embedder.embed.return_value = [0.1] * 1024
+        embedder.dimension = 1024
+        return embedder
+
+    @pytest.fixture
+    def mock_vector_db(self):
+        return Mock()
+
+    @staticmethod
+    def _commit(project, raw_id, files, diff, score, source="metadata",
+                message="Add feature", author="john", ts=None):
+        ts = ts or datetime(2024, 1, 15, 10, 30, 0)
+        cl = Changelist(
+            id=f"{project}/{raw_id}",
+            expert_name="TestExpert",
+            project_name=project,
+            timestamp=ts,
+            author=author,
+            message=message,
+            diff=diff,
+            files=files,
+        )
+        return CommitResult(changelist=cl, similarity_score=score, source=source)
+
+    def test_raw_id_strips_project_prefix(self):
+        cl = Changelist(
+            id="Code/12345", expert_name="E", project_name="Code",
+            timestamp=datetime.now(), author="a", message="m", diff="d",
+            files=["Code/x.py"],
+        )
+        assert Searcher._raw_changelist_id(cl) == "12345"
+
+    def test_raw_id_unchanged_when_no_prefix(self):
+        cl = Changelist(
+            id="abcdef", expert_name="E", project_name="Code",
+            timestamp=datetime.now(), author="a", message="m", diff="d",
+            files=["Code/x.py"],
+        )
+        # id doesn't start with "Code/", so it is returned unchanged
+        assert Searcher._raw_changelist_id(cl) == "abcdef"
+
+    def test_cross_project_duplicates_merge(self, searcher):
+        ts = datetime(2024, 1, 15, 10, 30, 0)
+        results = [
+            self._commit("Code", "12345", ["Code/a.py"], "diff-code", 0.91, "metadata", ts=ts),
+            self._commit("Gems", "12345", ["Gems/b.py"], "diff-gems", 0.74, "diff", ts=ts),
+        ]
+        merged = searcher._merge_duplicate_commits(results)
+
+        assert len(merged) == 1
+        cl = merged[0].changelist
+        # Union of files, no loss
+        assert cl.files == ["Code/a.py", "Gems/b.py"]
+        # Both diffs preserved under labeled headers
+        assert "diff-code" in cl.diff
+        assert "diff-gems" in cl.diff
+        assert "project: Code" in cl.diff
+        assert "project: Gems" in cl.diff
+        # Provenance in id/project_name
+        assert cl.id == "Code+Gems/12345"
+        assert cl.project_name == "Code+Gems"
+        # Max score wins
+        assert merged[0].similarity_score == 0.91
+
+    def test_single_commit_passes_through_unchanged(self, searcher):
+        results = [self._commit("Code", "999", ["Code/a.py"], "d", 0.5)]
+        merged = searcher._merge_duplicate_commits(results)
+        assert len(merged) == 1
+        assert merged[0].changelist.id == "Code/999"
+        assert merged[0].changelist.project_name == "Code"
+
+    def test_distinct_raw_ids_not_merged(self, searcher):
+        results = [
+            self._commit("Code", "111", ["Code/a.py"], "d1", 0.9),
+            self._commit("Code", "222", ["Code/b.py"], "d2", 0.8),
+        ]
+        merged = searcher._merge_duplicate_commits(results)
+        assert len(merged) == 2
+
+    def test_merge_preserves_highest_ranked_position(self, searcher):
+        ts = datetime(2024, 1, 15, 10, 30, 0)
+        # Order: rank0 distinct, rank1 Code/12345, rank2 distinct, rank3 Gems/12345
+        results = [
+            self._commit("Code", "100", ["Code/x.py"], "dx", 0.95),
+            self._commit("Code", "12345", ["Code/a.py"], "diff-code", 0.90, ts=ts),
+            self._commit("Code", "200", ["Code/y.py"], "dy", 0.80),
+            self._commit("Gems", "12345", ["Gems/b.py"], "diff-gems", 0.50, ts=ts),
+        ]
+        merged = searcher._merge_duplicate_commits(results)
+        ids = [r.changelist.id for r in merged]
+        # The merged entry keeps the Code/12345 position (index 1), Gems dropped from index 3
+        assert ids == ["Code/100", "Code+Gems/12345", "Code/200"]
+
+    def test_merge_combines_review_comments(self, searcher):
+        ts = datetime(2024, 1, 15, 10, 30, 0)
+        c1 = self._commit("Code", "12345", ["Code/a.py"], "d1", 0.9, ts=ts)
+        c2 = self._commit("Gems", "12345", ["Gems/b.py"], "d2", 0.8, ts=ts)
+        c1.changelist.review_comments = "LGTM code"
+        c2.changelist.review_comments = "LGTM gems"
+        merged = searcher._merge_duplicate_commits([c1, c2])
+        assert "LGTM code" in merged[0].changelist.review_comments
+        assert "LGTM gems" in merged[0].changelist.review_comments
+
+    def test_source_combined_when_members_differ(self, searcher):
+        ts = datetime(2024, 1, 15, 10, 30, 0)
+        results = [
+            self._commit("Code", "12345", ["Code/a.py"], "d1", 0.9, source="metadata", ts=ts),
+            self._commit("Gems", "12345", ["Gems/b.py"], "d2", 0.8, source="diff", ts=ts),
+        ]
+        merged = searcher._merge_duplicate_commits(results)
+        assert merged[0].source == "combined"
