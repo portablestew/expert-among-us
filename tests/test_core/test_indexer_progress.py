@@ -49,8 +49,15 @@ def mock_vcs():
                 ids = [c.id for c in self._commits]
                 start_idx = ids.index(after_hash) + 1 if after_hash in ids else 0
             
-            batch = self._commits[start_idx : start_idx + batch_size]
-            
+            # Return fresh copies, mirroring real VCS providers (git.py/perforce.py)
+            # which build new Changelist objects on every call. The indexer rewrites
+            # commit.id to the project-namespaced storage id during indexing, so the
+            # mock must not hand out the same objects it keys its lookups on.
+            batch = [
+                c.model_copy(deep=True)
+                for c in self._commits[start_idx : start_idx + batch_size]
+            ]
+
             # Call progress callback if provided (simulate Git behavior - report once at completion)
             if progress_callback and batch:
                 progress_callback(len(batch), len(batch))
@@ -103,6 +110,7 @@ def mock_metadata_db():
     db = Mock()
     db.get_last_processed_commit_hash.return_value = None
     db.get_commit_count.return_value = 0
+    db.get_project_commit_count.return_value = 0
     return db
 
 

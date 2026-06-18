@@ -36,6 +36,7 @@ def mock_metadata_db():
     db = Mock()
     db.get_last_processed_commit_hash.return_value = None
     db.get_commit_count.return_value = 0
+    db.get_project_commit_count.return_value = 0
     
     # Simulate file chunks existing in sqlite
     chunk_ids = ["file:test.py:chunk_0", "file:test.py:chunk_1", "file:test.py:chunk_2"]

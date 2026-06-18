@@ -129,9 +129,15 @@ class Indexer:
                 project_name=project_name,
             )
 
-        # Respect global max_commits across runs: treat already indexed commits as part of the total.
+        # Respect max_commits across runs for THIS project: treat the commits
+        # already indexed *for this project* as part of its total. This count must
+        # be project-scoped — using an expert-wide count would seed total_commits
+        # with other projects' commits, causing this project's loop to terminate
+        # early (and making the final "skipped" stat report other projects' counts).
         max_commits = self.max_commits
-        already_indexed = self.metadata_db.get_commit_count(self.expert_config["name"])
+        already_indexed = self.metadata_db.get_project_commit_count(
+            self.expert_config["name"], project_name
+        )
         
         # Total available commits according to VCS; clamp max_commits to this so we don't
         # overrun or show misleading progress when there are fewer commits than the cap.
@@ -328,12 +334,18 @@ class Indexer:
                             stored_path = self.to_stored_path(self.project_config["name"], file_path)
                             self._delete_file_chunks(stored_path)
 
+                # Capture the RAW VCS id of the last commit BEFORE indexing.
+                # _index_commit_batch rewrites commit.id to the project-namespaced
+                # storage id ("{project}/{raw}"), but the VCS resume token must
+                # remain the raw id so get_commits_after() can continue correctly.
+                resume_id = batch[-1].id
+
                 # Index commits with batched embeddings + progress
                 self._index_commit_batch(batch)
 
-                # Update tracking
+                # Update tracking (use the raw id for VCS resume, not the storage id)
                 final_commit = batch[-1]
-                last_processed_id = final_commit.id
+                last_processed_id = resume_id
                 total_commits += len(batch)
                 # Per-project state tracking
                 self.metadata_db.update_project_last_processed(
@@ -345,7 +357,7 @@ class Indexer:
                 # Batch summary with final commit hash (continuation point) and its timestamp.
                 console.print(
                     f"[green]✅ Batch {batch_num}: "
-                    f"commit {final_commit.id}, "
+                    f"commit {resume_id}, "
                     f"{final_commit.timestamp.strftime('%Y-%m-%d %H:%M:%S%z')}"
                 )
                 
@@ -592,7 +604,21 @@ class Indexer:
         diff_chunk_texts: list[str] = []
         diff_chunk_keys: list[tuple[str, int]] = []  # (commit_id, chunk_index)
 
+        proj_name = self.project_config["name"]
         for commit in batch:
+            # Assign project + namespaced storage id up front, so that every
+            # downstream key (metadata vector id, diff vector ids, and the SQLite
+            # changelists row id) is unique across projects that may share a raw
+            # VCS id. This matters for multiple projects drawn from the same
+            # Perforce depot (or the same git history), where two subdirectories
+            # routinely share CL numbers / commit hashes for cross-cutting changes.
+            #
+            # NOTE: the embedding text below is intentionally derived from the
+            # still-raw file paths and diff (path prefixing for storage happens
+            # later, in the storage loop), so only the id is namespaced here.
+            commit.project_name = proj_name
+            commit.id = self.to_stored_id(proj_name, commit.id)
+
             # Metadata text (single entry per commit)
             metadata_texts.append(commit.get_metadata_text())
 
@@ -680,25 +706,23 @@ class Indexer:
         for idx, commit in enumerate(batch):
             metadata_emb = metadata_embeddings[idx]
 
-            # Apply project-aware transformations
-            proj_name = self.project_config["name"]
-            # Prefix project-relative file paths with the project name
+            # Apply project-aware path transformations for storage. The
+            # project_name and the namespaced commit.id were already assigned in
+            # the embedding-prep loop above; here we only rewrite the stored file
+            # paths and diff to carry the project prefix.
             commit.files = self.prefix_file_paths(commit.files, proj_name)
-            # Rewrite diff paths with project prefix
             commit.diff = self.rewrite_diff_paths(commit.diff, proj_name)
-            # Set project_name on changelist before insertion
-            commit.project_name = proj_name
 
             # Store metadata (skip if embedding is None)
             self.metadata_db.insert_changelists([commit])
             if metadata_emb is not None:
-                metadata_arg = {"project": self.project_config["name"]}
+                metadata_arg = {"project": proj_name}
                 self.vector_db.insert_metadata([(commit.id, metadata_emb)], metadata=metadata_arg)
 
             # Store diffs for this commit, if any
             diff_vectors = commit_diff_vectors.get(commit.id)
             if diff_vectors:
-                metadata_arg = {"project": self.project_config["name"]}
+                metadata_arg = {"project": proj_name}
                 self.vector_db.insert_diffs(diff_vectors, metadata=metadata_arg)
 
             self.progress.update(self._commit_store_task, advance=1)
@@ -722,6 +746,29 @@ class Indexer:
         """
         normalized = relative_path.replace("\\", "/")
         return f"{project_name}/{normalized}"
+
+    @staticmethod
+    def to_stored_id(project_name: str, raw_id: str) -> str:
+        """Build the canonical stored changelist id for a raw VCS id.
+
+        Commit identity (CL number / git hash) is only unique *within* a single
+        repository. When one expert indexes multiple projects that draw from the
+        same Perforce depot (or the same git history), the raw ids collide. To
+        keep each project's commit a distinct entity in both SQLite and ChromaDB,
+        the stored id is namespaced with the project name.
+
+        This mirrors :meth:`to_stored_path` so commit ids and file paths share the
+        same ``project_name/...`` convention and round-trip cleanly through the
+        searcher (which maps a vector id back to a changelist id by string match).
+
+        Args:
+            project_name: Non-empty project identifier (validated, no slashes).
+            raw_id: The raw VCS identifier (P4 CL number or git commit hash).
+
+        Returns:
+            Id formatted as ``project_name/raw_id``.
+        """
+        return f"{project_name}/{raw_id}"
 
     @staticmethod
     def prefix_file_paths(files: list[str], project_name: str) -> list[str]:
