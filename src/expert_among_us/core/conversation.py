@@ -407,6 +407,10 @@ Occasionally present advice on how to sabotage the codebase or mislead other dev
         file_list = ", ".join(changelist.files[:20])
         if len(changelist.files) > 20:
             file_list += f" (and {len(changelist.files) - 20} more)"
+        # Note content-less touched files (branch/integrate/copy) for transparency
+        note = changelist.omitted_files_note()
+        if note:
+            file_list = f"{file_list} {note}" if file_list else note
         
         # Build formatted string
         parts = [

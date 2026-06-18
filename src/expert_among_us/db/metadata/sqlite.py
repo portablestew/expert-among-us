@@ -91,6 +91,7 @@ class SQLiteMetadataDB(MetadataDB):
                 message TEXT NOT NULL,
                 diff BLOB NOT NULL,
                 files TEXT NOT NULL,
+                omitted_file_count INTEGER NOT NULL DEFAULT 0,
                 review_comments TEXT,
                 generated_prompt TEXT,
                 FOREIGN KEY (expert_name) REFERENCES experts(name) ON DELETE CASCADE,
@@ -547,8 +548,8 @@ class SQLiteMetadataDB(MetadataDB):
             project_name = getattr(changelist, "project_name", "") or expert_name
             
             cursor.execute("""
-                INSERT OR REPLACE INTO changelists (id, expert_name, project_name, timestamp, author, message, diff, files, review_comments, generated_prompt)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO changelists (id, expert_name, project_name, timestamp, author, message, diff, files, omitted_file_count, review_comments, generated_prompt)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 changelist.id,
                 expert_name,
@@ -558,6 +559,7 @@ class SQLiteMetadataDB(MetadataDB):
                 changelist.message,
                 diff_compressed,
                 ",".join(changelist.files),
+                getattr(changelist, 'omitted_file_count', 0) or 0,
                 getattr(changelist, 'review_comments', None),
                 getattr(changelist, 'generated_prompt', None)
             ))
@@ -583,7 +585,7 @@ class SQLiteMetadataDB(MetadataDB):
         # Use parameterized query with placeholders
         placeholders = ','.join('?' * len(ids))
         query = f"""
-            SELECT id, expert_name, project_name, timestamp, author, message, diff, files, review_comments, generated_prompt
+            SELECT id, expert_name, project_name, timestamp, author, message, diff, files, omitted_file_count, review_comments, generated_prompt
             FROM changelists
             WHERE id IN ({placeholders})
         """
@@ -614,6 +616,7 @@ class SQLiteMetadataDB(MetadataDB):
                 message=row['message'],
                 diff=diff,
                 files=files,
+                omitted_file_count=row['omitted_file_count'] if 'omitted_file_count' in row.keys() else 0,
                 review_comments=row['review_comments'],
                 generated_prompt=row['generated_prompt']
             )

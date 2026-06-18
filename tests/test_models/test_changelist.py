@@ -183,3 +183,42 @@ def test_changelist_to_dict_from_dict():
     assert cl2.author == cl.author
     assert cl2.message == cl.message
     assert cl2.project_name == cl.project_name
+
+
+def test_omitted_files_default_zero_and_no_note():
+    """By default no files are omitted and the transparency note is empty."""
+    cl = Changelist(
+        id="abc123",
+        expert_name="TestExpert",
+        project_name="test-project",
+        timestamp=datetime.now(timezone.utc),
+        author="test_user",
+        message="Edit a file",
+        diff="diff --git a/test.py...",
+        files=["test.py"],
+    )
+    assert cl.omitted_file_count == 0
+    assert cl.omitted_files_note() == ""
+    # No spurious note in the embedding text.
+    assert "without content changes" not in cl.get_metadata_text()
+
+
+def test_omitted_files_surfaced_in_metadata_text():
+    """A no-content merge (empty files, positive count) is represented in metadata."""
+    cl = Changelist(
+        id="def456",
+        expert_name="TestExpert",
+        project_name="test-project",
+        timestamp=datetime.now(timezone.utc),
+        author="test_user",
+        message="merged all the things",
+        diff="",
+        files=[],
+        omitted_file_count=1500,
+    )
+    note = cl.omitted_files_note()
+    assert "1500" in note
+
+    metadata_text = cl.get_metadata_text()
+    assert "merged all the things" in metadata_text
+    assert "1500" in metadata_text  # not mistaken for a commit that touched nothing

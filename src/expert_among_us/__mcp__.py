@@ -406,7 +406,11 @@ async def handle_query(
                 lines.append(f"## {i}. Commit {cl.id[:12]} (Score: {result.similarity_score:.3f})")
                 lines.append(f"**Author**: {cl.author}")
                 lines.append(f"**Date**: {cl.timestamp.isoformat()}")
-                lines.append(f"**Files**: {', '.join(cl.files)}")
+                files_text = ', '.join(cl.files)
+                note = cl.omitted_files_note()
+                if note:
+                    files_text = f"{files_text} {note}" if files_text else note
+                lines.append(f"**Files**: {files_text}")
                 lines.append(f"\n**Message**:\n```\n{cl.message}\n```")
                 
                 if cl.diff:

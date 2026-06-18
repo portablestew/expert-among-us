@@ -214,6 +214,36 @@ class TestCommitRetrieval:
         # temp_repo_path is `git init`-ed but has no commits.
         assert git_provider.get_total_commit_count(str(temp_repo_path)) == 0
 
+    def test_pure_rename_omitted_from_files(self, git_provider, temp_repo_path):
+        """A pure rename (no content change) is dropped from `files` but counted."""
+        repo_path = temp_repo_path
+        # Ensure rename detection is on so `git show --name-status` reports R100.
+        subprocess.run(["git", "config", "diff.renames", "true"], cwd=repo_path, capture_output=True, check=True)
+
+        (repo_path / "orig.txt").write_text("line1\nline2\nline3\n")
+        subprocess.run(["git", "add", "orig.txt"], cwd=repo_path, capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "add orig"], cwd=repo_path, capture_output=True, check=True)
+
+        subprocess.run(["git", "mv", "orig.txt", "renamed.txt"], cwd=repo_path, capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "pure rename"], cwd=repo_path, capture_output=True, check=True)
+
+        commits = git_provider.get_commits_after(
+            project_root=str(repo_path), after_hash=None, batch_size=10,
+        )
+        rename_cl = next(c for c in commits if c.message == "pure rename")
+        assert "renamed.txt" not in rename_cl.files
+        assert "orig.txt" not in rename_cl.files
+        assert rename_cl.omitted_file_count >= 1
+
+    def test_normal_commits_have_zero_omitted(self, git_provider, repo_with_commits):
+        """Ordinary add/edit commits keep their files and omit nothing."""
+        commits = git_provider.get_commits_after(
+            project_root=str(repo_with_commits), after_hash=None, batch_size=10,
+        )
+        assert commits
+        assert all(c.omitted_file_count == 0 for c in commits)
+        assert all(len(c.files) >= 1 for c in commits)
+
 
     def test_get_commits_page_empty_repository(self, git_provider):
         """Empty Git repository should cause git log to fail with an error."""

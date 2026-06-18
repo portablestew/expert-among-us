@@ -421,29 +421,50 @@ class Git(VCSProvider):
             )
 
         files_by_commit: dict[str, list[str]] = {}
+        omitted_by_commit: dict[str, int] = {}
         current_hash = None
         current_files: list[str] = []
+        current_omitted = 0
 
         for line in files_result.stdout.splitlines():
             if line.startswith("commit "):
                 # Flush previous
                 if current_hash is not None:
                     files_by_commit[current_hash] = current_files
+                    omitted_by_commit[current_hash] = current_omitted
                 current_hash = line[len("commit ") :].strip()
                 current_files = []
+                current_omitted = 0
             else:
                 stripped = line.strip()
                 if not stripped:
                     continue
-                # Expect NAME-STATUS line: "STATUS<TAB>path"
-                parts = stripped.split("\t", 1)
-                if len(parts) == 2:
-                    _status, path = parts
-                    # Filter by extension if specified
-                    if should_index_file(path, self._settings.allowed_file_extensions):
-                        current_files.append(path)
+                # NAME-STATUS line: "STATUS<TAB>path", or for renames/copies
+                # "R100<TAB>old<TAB>new" / "C100<TAB>old<TAB>new".
+                fields = stripped.split("\t")
+                if len(fields) < 2:
+                    continue
+                status = fields[0]
+                path = fields[-1]  # new path for renames/copies, else the path
+                # Filter by extension if specified
+                if not should_index_file(path, self._settings.allowed_file_extensions):
+                    continue
+                code = status[0] if status else ""
+                if code in ("R", "C"):
+                    # Pure rename/copy (similarity 100) has no content change; keep
+                    # only renames/copies that also modified the file.
+                    score_str = status[1:]
+                    score = int(score_str) if score_str.isdigit() else 0
+                    if score >= 100:
+                        current_omitted += 1
+                        continue
+                # A (add), M (modify), T (typechange), D (delete), and modified
+                # renames/copies are content-bearing; deletes are kept so
+                # HEAD-deletion cleanup still fires.
+                current_files.append(path)
         if current_hash is not None:
             files_by_commit[current_hash] = current_files
+            omitted_by_commit[current_hash] = current_omitted
 
         # 4) Assemble Changelist objects using the metadata + batched diffs/files.
         changelists: list[Changelist] = []
@@ -503,6 +524,7 @@ class Git(VCSProvider):
                 message=message,
                 diff=diff,
                 files=files,
+                omitted_file_count=omitted_by_commit.get(commit_hash, 0),
             )
             changelists.append(changelist)
 

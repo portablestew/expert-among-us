@@ -465,7 +465,14 @@ Differences ...
 +// New line
  int main() {
      return 0;
- }"""
+ }
+
+==== //depot/src/header.h#10 (text) ====
+
+@@ -0,0 +1,2 @@
++#pragma once
++// header
+"""
         
         # Mock workspace mapping for depot-to-local path conversion
         with patch('socket.gethostname', return_value='test-host'):
@@ -608,6 +615,120 @@ Affected files ...
         assert changelists[0].id == "12345"
         assert "Updated binary asset" in changelists[0].message
         assert changelists[0].diff.strip() == ""
+
+    def test_parse_describe_output_trims_content_less_files(self, perforce_provider, tmp_path):
+        """Files with no content change (branch/integrate) are dropped but counted;
+        edits are kept by content and deletes are kept by action."""
+        # Focus on the kept/omitted logic, independent of workspace mapping.
+        perforce_provider._depot_to_relative_path = lambda root, dp: dp.replace("//depot/", "")
+
+        describe_output = """Change 12345 by user@client on 2024/01/15 14:00:00
+
+\tMixed: edit one, branch one, delete one
+
+Affected files ...
+
+... //depot/src/edited.cpp#3 edit
+... //depot/src/branched.cpp#1 branch
+... //depot/src/removed.cpp#2 delete
+
+Differences ...
+
+==== //depot/src/edited.cpp#3 (text) ====
+
+@@ -1,1 +1,2 @@
+ existing
++new line
+"""
+
+        changelists = perforce_provider._parse_describe_output(describe_output, str(tmp_path))
+
+        assert len(changelists) == 1
+        cl = changelists[0]
+        # edited (has hunk) + removed (delete action) kept; branched dropped.
+        assert set(cl.files) == {"src/edited.cpp", "src/removed.cpp"}
+        assert cl.omitted_file_count == 1
+
+    def test_parse_describe_output_branch_only_empty_files_with_count(self, perforce_provider, tmp_path):
+        """A pure branch/merge CL yields empty `files` but a non-zero omitted count,
+        and the count is surfaced in the metadata text."""
+        perforce_provider._depot_to_relative_path = lambda root, dp: dp.replace("//depot/", "")
+
+        describe_output = """Change 200 by user@client on 2024/01/15 14:00:00
+
+\tBranch release-1.0 -- merged all the things
+
+Affected files ...
+
+... //depot/src/a.cpp#1 branch
+... //depot/src/b.cpp#1 branch
+"""
+
+        changelists = perforce_provider._parse_describe_output(describe_output, str(tmp_path))
+
+        assert len(changelists) == 1
+        cl = changelists[0]
+        assert cl.files == []
+        assert cl.omitted_file_count == 2
+        # Transparency: the metadata embedding text reflects the touched-but-empty files.
+        assert "2 files touched without content" in cl.get_metadata_text()
+
+    def test_parse_describe_output_add_without_diff_markers_is_kept(self, perforce_provider, tmp_path):
+        """An 'add' must be kept even when p4 renders no +/@@ diff markers for it.
+
+        Regression: a content check based on diff markers stripped added files,
+        because `p4 describe` does not render an add like an edit. Adds are kept
+        by action, independent of how the diff is formatted.
+        """
+        perforce_provider._depot_to_relative_path = lambda root, dp: dp.replace("//depot/", "")
+
+        describe_output = """Change 400 by user@client on 2024/01/15 14:00:00
+
+\tAdd a brand new file
+
+Affected files ...
+
+... //depot/src/new_file.cpp#1 add
+
+Differences ...
+
+==== //depot/src/new_file.cpp#1 (text) ====
+
+content rendered without unified-diff markers
+"""
+
+        changelists = perforce_provider._parse_describe_output(describe_output, str(tmp_path))
+
+        assert len(changelists) == 1
+        cl = changelists[0]
+        assert cl.files == ["src/new_file.cpp"]
+        assert cl.omitted_file_count == 0
+
+    def test_parse_describe_output_metadata_scope_keeps_all_files(self, perforce_provider, tmp_path):
+        """In metadata scope (embed_diffs=False) there is no diff to judge content by,
+        so the full affected-file list is kept — adds must NOT be stripped."""
+        perforce_provider._depot_to_relative_path = lambda root, dp: dp.replace("//depot/", "")
+
+        # `p4 describe -s` (metadata scope) emits no "Differences ..." section.
+        describe_output = """Change 300 by user@client on 2024/01/15 14:00:00
+
+\tAdd and branch, metadata scope
+
+Affected files ...
+
+... //depot/src/added.cpp#1 add
+... //depot/src/branched.cpp#1 branch
+"""
+
+        changelists = perforce_provider._parse_describe_output(
+            describe_output, str(tmp_path), embed_diffs=False
+        )
+
+        assert len(changelists) == 1
+        cl = changelists[0]
+        # Both kept (including the add); nothing counted as omitted.
+        assert set(cl.files) == {"src/added.cpp", "src/branched.cpp"}
+        assert cl.omitted_file_count == 0
 
     def test_describe_timestamp_parsing(self, perforce_provider, tmp_path):
         """Verify datetime conversion from Perforce format."""

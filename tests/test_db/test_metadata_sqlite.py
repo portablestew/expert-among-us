@@ -884,3 +884,33 @@ class TestEdgeCases:
         
         assert "id_1" in author_ids
         assert "id_1" in file_ids
+
+
+class TestOmittedFileCountPersistence:
+    """omitted_file_count must round-trip so the transparency note survives to query/prompt time."""
+
+    def test_omitted_file_count_round_trip(self, temp_db):
+        cl = Changelist(
+            id="branch_cl_1",
+            expert_name="test_expert",
+            project_name="test-project",
+            timestamp=datetime.now(),
+            author="merger",
+            message="merged all the things",
+            diff="",
+            files=[],
+            omitted_file_count=1234,
+        )
+        temp_db.insert_changelists([cl])
+
+        retrieved = temp_db.get_changelist("branch_cl_1")
+        assert retrieved is not None
+        assert retrieved.omitted_file_count == 1234
+        # And the note is reconstructable from the retrieved row.
+        assert "1234" in retrieved.omitted_files_note()
+
+    def test_omitted_file_count_defaults_zero(self, temp_db, sample_changelist):
+        temp_db.insert_changelists([sample_changelist])
+        retrieved = temp_db.get_changelist(sample_changelist.id)
+        assert retrieved is not None
+        assert retrieved.omitted_file_count == 0

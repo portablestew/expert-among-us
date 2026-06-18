@@ -981,8 +981,10 @@ class Perforce(VCSProvider):
                 if i < len(lines) and not lines[i].strip():
                     i += 1
                 
-                # Collect affected files
-                files = []
+                # Collect affected files together with their action (the trailing
+                # token, e.g. "edit", "add", "branch", "integrate", "delete",
+                # "move/add", "move/delete").
+                affected: list[tuple[str, str]] = []
                 while i < len(lines):
                     line = lines[i]
                     # File lines start with "... //depot/path#rev action"
@@ -994,7 +996,9 @@ class Perforce(VCSProvider):
                             # Remove revision number (#42)
                             if "#" in depot_path:
                                 depot_path = depot_path.split("#")[0]
-                            
+                            # Action is the trailing token, if present
+                            action = parts[2] if len(parts) >= 3 else ""
+
                             # Filter by depot prefixes if provided
                             if depot_prefixes:
                                 matches = any(
@@ -1013,7 +1017,7 @@ class Perforce(VCSProvider):
                             # Convert to project-root-relative path
                             relative_path = self._depot_to_relative_path(project_root, depot_path)
                             if relative_path:
-                                files.append(relative_path)
+                                affected.append((relative_path, action))
                         i += 1
                     else:
                         break
@@ -1030,9 +1034,14 @@ class Perforce(VCSProvider):
                         i += 1
                 
                 # Collect diff until next changelist or EOF
-                # If filtering by depot_prefixes, only include diff sections for matching files
+                # If filtering by depot_prefixes, only include diff sections for matching files.
+                # Also track which files have an actual unified-diff hunk ("@@ ..."),
+                # so we can tell genuine content changes from content-less actions
+                # (branch/integrate/copy) that emit a header but no hunk.
                 diff_lines = []
                 current_file_matches = True  # Track if current diff section matches filter
+                current_rel_path: Optional[str] = None
+                content_paths: set[str] = set()
                 
                 while i < len(lines):
                     line = lines[i]
@@ -1043,28 +1052,44 @@ class Perforce(VCSProvider):
                     
                     # Check for diff file headers: ==== //depot/path/file.cpp#42 (text) ====
                     if line.startswith("==== //"):
-                        if depot_prefixes:
-                            # Extract depot path from header
-                            parts = line.split()
-                            if len(parts) >= 2:
-                                depot_spec = parts[1]  # //depot/path/file.cpp#42
-                                depot_path = depot_spec.split("#")[0] if "#" in depot_spec else depot_spec
-                                
-                                # Check if this file matches our filter
-                                current_file_matches = any(
-                                    depot_path.startswith(prefix)
-                                    for prefix in depot_prefixes
-                                )
-                            else:
-                                current_file_matches = True
+                        current_rel_path = None
+                        depot_path = None
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            depot_spec = parts[1]  # //depot/path/file.cpp#42
+                            depot_path = depot_spec.split("#")[0] if "#" in depot_spec else depot_spec
+
+                        if depot_prefixes and depot_path is not None:
+                            # Check if this file matches our filter
+                            current_file_matches = any(
+                                depot_path.startswith(prefix)
+                                for prefix in depot_prefixes
+                            )
                         else:
                             current_file_matches = True
                         
                         # Also filter by extension
-                        if current_file_matches and self._settings.allowed_file_extensions:
+                        if current_file_matches and self._settings.allowed_file_extensions and depot_path is not None:
                             current_file_matches = should_index_file(
                                 depot_path, self._settings.allowed_file_extensions
                             )
+
+                        # Remember the in-scope file for this section so its hunks
+                        # can mark it as content-bearing.
+                        if current_file_matches and depot_path is not None:
+                            current_rel_path = self._depot_to_relative_path(project_root, depot_path)
+                    elif current_rel_path is not None and (
+                        line.startswith("@@")
+                        or (
+                            line[:1] in ("+", "-")
+                            and not line.startswith("+++")
+                            and not line.startswith("---")
+                        )
+                    ):
+                        # A unified-diff hunk header or body line → this file has
+                        # an actual (text) content change. Branch/integrate/copy
+                        # and binary sections have no such lines.
+                        content_paths.add(current_rel_path)
                     
                     # Only include lines if current file matches filter
                     if current_file_matches:
@@ -1096,7 +1121,32 @@ class Perforce(VCSProvider):
                 # >= batch_size empty-diff CLs masquerade as "end of history"
                 # (get_commits_after would return an empty batch), prematurely
                 # halting indexing before later indexable changelists.
-                
+
+                # Build the stored file list.
+                if embed_diffs:
+                    # Keep everything except the genuinely content-less actions
+                    # (branch/integrate that carried no diff). Adds, edits, moves,
+                    # deletes, and unknown actions are always kept — added files in
+                    # particular must never be dropped, even though `p4 describe`
+                    # may not render an add as a +/@@ hunk. `content_paths` rescues
+                    # a branch/integrate that did carry a real merge diff.
+                    # Deletions are kept so HEAD-deletion cleanup still fires.
+                    content_less_actions = {"branch", "integrate"}
+                    kept_files: list[str] = []
+                    omitted_file_count = 0
+                    for relative_path, action in affected:
+                        if action in content_less_actions and relative_path not in content_paths:
+                            omitted_file_count += 1
+                        else:
+                            kept_files.append(relative_path)
+                else:
+                    # Metadata-only scope: no diffs are fetched, so there is no
+                    # per-file content signal — and nothing is read for file-content
+                    # indexing anyway. Keep the full affected-file list, since the
+                    # file set itself is the signal here (e.g. asset experts).
+                    kept_files = [relative_path for relative_path, _action in affected]
+                    omitted_file_count = 0
+
                 changelist = Changelist(
                     id=cl_number,
                     expert_name="",  # Will be set by caller
@@ -1105,7 +1155,8 @@ class Perforce(VCSProvider):
                     author=author,
                     message=message if message else f"Changelist {cl_number}",
                     diff=diff,
-                    files=files if files else [],
+                    files=kept_files,
+                    omitted_file_count=omitted_file_count,
                 )
                 changelists.append(changelist)
             else:

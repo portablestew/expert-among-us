@@ -38,6 +38,15 @@ class Changelist(BaseModel):
     message: str = Field(..., description="Commit message")
     diff: str = Field(..., description="Full diff content")
     files: List[str] = Field(..., description="List of affected file paths")
+    omitted_file_count: int = Field(
+        0,
+        description=(
+            "Count of affected files dropped from `files` because they had no "
+            "content change in this commit (e.g. branch/integrate/copy). Kept as a "
+            "count for transparency so large no-content merges are not "
+            "misrepresented as touching nothing."
+        ),
+    )
     review_comments: Optional[str] = Field(
         None, description="Code review comments (if available)"
     )
@@ -129,6 +138,22 @@ class Changelist(BaseModel):
         """
         return cls.model_validate(data)
 
+    def omitted_files_note(self) -> str:
+        """Return a short transparency note about content-less affected files.
+
+        When this commit touched files without changing their content (e.g. a
+        Perforce branch/integrate or a pure git rename/copy), those paths are not
+        stored in `files`, but their count is. This note makes that explicit so a
+        commit like "merged all the things" is not mistaken for one that touched
+        nothing. Returns an empty string when no files were omitted.
+        """
+        if self.omitted_file_count > 0:
+            return (
+                f"[+{self.omitted_file_count} files touched without content "
+                f"changes (e.g. branch/integrate or pure rename/copy)]"
+            )
+        return ""
+
     def get_metadata_text(self, max_files: int = 100, max_message_bytes: int = 4096, max_files_bytes: int = 4096) -> str:
         """Combine message + files + comments for embedding with size limits.
         
@@ -186,6 +211,13 @@ class Changelist(BaseModel):
             omitted = len(self.files) - max_files
             files_text += f"\n[...{omitted} files omitted]"
         
+        # Surface content-less touched files (branch/integrate/copy) as a count so
+        # large no-content merges are represented in the embedding rather than
+        # appearing to touch nothing.
+        note = self.omitted_files_note()
+        if note:
+            files_text = f"{files_text}\n{note}" if files_text else note
+
         parts = [
             f"Commit Message: {message}",
             f"Files: {files_text}",
