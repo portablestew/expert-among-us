@@ -67,27 +67,17 @@ class Git(VCSProvider):
         if batch_size == 0:
             return []
 
-        # The cache is keyed by project_root (after_hash is NOT part of the key;
-        # it is treated as a cursor into the global ordered sequence).
-        cache_key = project_root
+        # Ensure the ordered hash cache for this project_root is built. This is
+        # shared with get_total_commit_count() so the full history is walked only
+        # once per project_root.
+        self._ensure_hash_cache(project_root)
 
-        # (Re)build cache if it does not exist or the parameters changed
-        if self._hash_cache is None or self._hash_cache_key != cache_key:
-            self._hash_cache = self._fetch_all_hashes(
-                project_root=project_root,
+        if DebugLogger.is_enabled():
+            from expert_among_us.utils.progress import console as progress_console
+            progress_console.print(
+                f"[dim]Git.get_commits_after: {len(self._hash_cache or [])} cached commits "
+                f"(after={after_hash or 'START'})[/dim]"
             )
-            # Build index for O(1) lookup of positions
-            self._hash_index = {
-                commit_hash: idx for idx, commit_hash in enumerate(self._hash_cache)
-            }
-            self._hash_cache_key = cache_key
-
-            if DebugLogger.is_enabled():
-                from expert_among_us.utils.progress import console as progress_console
-                progress_console.print(
-                    f"[dim]Git.get_commits_after: cached {len(self._hash_cache)} commits "
-                    f"(after={after_hash or 'START'})[/dim]"
-                )
 
         # Determine starting index based on after_hash cursor
         if after_hash:
@@ -144,6 +134,36 @@ class Git(VCSProvider):
         self._hash_cache = None
         self._hash_index = None
         self._hash_cache_key = None
+
+    def _ensure_hash_cache(self, project_root: str) -> list[str]:
+        """Return the cached ordered commit-hash list for ``project_root``.
+
+        Builds the cache on first use (and whenever project_root changes), then
+        reuses it. The same list backs both pagination (get_commits_after) and
+        the total count (get_total_commit_count), so the full history is walked
+        only once per project_root. Mirrors the Perforce provider's caching of
+        ``_fetch_all_changelist_numbers``.
+
+        Raises:
+            subprocess.CalledProcessError: if the underlying ``git log`` fails
+                (e.g. an empty repository with no commits).
+        """
+        if self._hash_cache is None or self._hash_cache_key != project_root:
+            hashes = self._fetch_all_hashes(project_root=project_root)
+            self._hash_cache = hashes
+            # Build index for O(1) lookup of positions
+            self._hash_index = {
+                commit_hash: idx for idx, commit_hash in enumerate(hashes)
+            }
+            self._hash_cache_key = project_root
+
+            if DebugLogger.is_enabled():
+                from expert_among_us.utils.progress import console as progress_console
+                progress_console.print(
+                    f"[dim]Git._ensure_hash_cache: cached {len(hashes)} commits "
+                    f"for {project_root}[/dim]"
+                )
+        return self._hash_cache
 
     def _fetch_all_hashes(
         self,
@@ -462,10 +482,14 @@ class Git(VCSProvider):
                     diff, was_truncated = truncate_to_bytes(diff, self._settings.max_diff_bytes_per_commit)
                     if was_truncated:
                         diff += "\n\n[TRUNCATED - commit diff exceeded limit]"
-                
-                # Skip commits with empty diffs when we expected diffs
-                if not diff or not diff.strip():
-                    continue
+
+            # NOTE: commits with an empty diff (empty commits, binary-only
+            # changes, or files excluded by the extension filter) are
+            # intentionally retained. The message + file list are still useful
+            # for semantic search. Dropping them would also let a run of
+            # >= batch_size empty-diff commits look like end-of-history
+            # (get_commits_after returns an empty batch), prematurely halting
+            # indexing before later indexable commits.
 
             # Lookup pre-fetched file list for this commit
             files = files_by_commit.get(commit_hash, [])
@@ -504,36 +528,27 @@ class Git(VCSProvider):
         self,
         project_root: str,
     ) -> int:
-        """Return total number of non-merge commits considered by this provider.
+        """Return the total number of commits considered for indexing.
+
+        Reuses the cached, ordered hash list — the same set traversed by
+        get_commits_after() via ``git log --no-merges`` — so the count is
+        consistent with what actually gets indexed and the full history is
+        walked only once per project_root (the count is then a zero-cost
+        ``len()`` on the in-memory list).
 
         Semantics:
-        - Matches get_commits_after(): excludes merge commits via --no-merges.
-        - Returns 0 on any git error.
+        - Matches get_commits_after(): excludes merge commits; HEAD history.
+        - Returns 0 for an empty repository (no commits).
+
+        NOTE: This counts HEAD history, not ``--all`` refs. That is intentional:
+        it must agree with the commits the indexer can actually traverse, so the
+        derived "skipped" stat does not report phantom commits living only on
+        unmerged branches.
         """
-        cmd = [
-            "git",
-            "-C",
-            project_root,
-            "rev-list",
-            "--all",
-            "--no-merges",
-            "--count",
-        ]
-
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        if result.returncode != 0:
-            return 0
-
-        output = result.stdout.strip()
         try:
-            return int(output) if output else 0
-        except ValueError:
+            return len(self._ensure_hash_cache(project_root))
+        except subprocess.CalledProcessError:
+            # Empty repository: `git log` exits non-zero when there are no commits.
             return 0
     
     def get_file_content_at_commit(

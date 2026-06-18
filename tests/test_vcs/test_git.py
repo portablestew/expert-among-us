@@ -167,6 +167,53 @@ class TestCommitRetrieval:
             # All returned commits should be strictly after the boundary in chronological order
             assert all(c.id != boundary for c in newer)
 
+    def test_empty_diff_commit_is_retained(self, git_provider, temp_repo_path):
+        """Commits with an empty diff are kept and indexed for their message.
+
+        Regression: empty/binary-only commits were previously dropped, which both
+        lost useful commit-message signal and could make a run of >= batch_size
+        such commits look like end-of-history, halting indexing early.
+        """
+        repo_path = temp_repo_path
+
+        # A normal commit so the repo has at least one real diff.
+        (repo_path / "a.txt").write_text("hello")
+        subprocess.run(["git", "add", "a.txt"], cwd=repo_path, capture_output=True, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "Add a.txt"],
+            cwd=repo_path, capture_output=True, check=True,
+        )
+
+        # An empty commit: no file changes => empty diff, but a meaningful message.
+        subprocess.run(
+            ["git", "commit", "--allow-empty", "-m", "Empty but meaningful message"],
+            cwd=repo_path, capture_output=True, check=True,
+        )
+
+        commits = git_provider.get_commits_after(
+            project_root=str(repo_path), after_hash=None, batch_size=10,
+        )
+
+        assert len(commits) == 2
+        empty = next(c for c in commits if c.message == "Empty but meaningful message")
+        assert empty.diff.strip() == ""
+
+    def test_total_commit_count_matches_traversal(self, git_provider, repo_with_commits):
+        """get_total_commit_count agrees with what get_commits_after traverses."""
+        count = git_provider.get_total_commit_count(str(repo_with_commits))
+        assert count == 3
+
+        commits = git_provider.get_commits_after(
+            project_root=str(repo_with_commits), after_hash=None, batch_size=100,
+        )
+        # The count must match the set actually traversed (HEAD, --no-merges).
+        assert count == len(commits)
+
+    def test_total_commit_count_empty_repo_returns_zero(self, git_provider, temp_repo_path):
+        """An initialized repo with no commits reports 0 rather than raising."""
+        # temp_repo_path is `git init`-ed but has no commits.
+        assert git_provider.get_total_commit_count(str(temp_repo_path)) == 0
+
 
     def test_get_commits_page_empty_repository(self, git_provider):
         """Empty Git repository should cause git log to fail with an error."""

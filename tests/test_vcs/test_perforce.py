@@ -582,6 +582,33 @@ Differences ...
         assert len(changelists) == 1
         assert "text content" in changelists[0].diff
 
+    def test_parse_describe_output_keeps_empty_diff_changelist(self, perforce_provider, tmp_path):
+        """A changelist with an empty diff (e.g. binary-only) is retained for its message.
+
+        Regression: such CLs were previously dropped when embed_diffs was True,
+        which lost commit-message signal and could make a run of >= batch_size
+        empty-diff CLs look like end-of-history, halting indexing early.
+        """
+        # No "Differences" section => empty diff after parsing.
+        describe_output = """Change 12345 by user@client on 2024/01/15 14:00:00
+
+\tUpdated binary asset
+
+Affected files ...
+
+... //depot/assets/model.fbx#3 edit
+"""
+
+        changelists = perforce_provider._parse_describe_output(
+            describe_output,
+            str(tmp_path),
+        )
+
+        assert len(changelists) == 1
+        assert changelists[0].id == "12345"
+        assert "Updated binary asset" in changelists[0].message
+        assert changelists[0].diff.strip() == ""
+
     def test_describe_timestamp_parsing(self, perforce_provider, tmp_path):
         """Verify datetime conversion from Perforce format."""
         describe_output = """Change 12345 by user@client on 2024/01/15 14:30:45

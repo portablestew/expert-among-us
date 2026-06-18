@@ -1089,10 +1089,13 @@ class Perforce(VCSProvider):
                     if was_truncated:
                         diff += "\n\n[TRUNCATED - commit diff exceeded limit]"
                 
-                # Only skip empty diffs when we expected diffs
-                # (if embed_diffs was False, diff will be empty but that's intentional)
-                if embed_diffs and (not diff or not diff.strip()):
-                    continue
+                # NOTE: changelists with an empty diff (binary-only changes, or
+                # when embed_diffs is False) are intentionally retained. The
+                # commit message + file list are still valuable for semantic
+                # search. Dropping them here would also let a run of
+                # >= batch_size empty-diff CLs masquerade as "end of history"
+                # (get_commits_after would return an empty batch), prematurely
+                # halting indexing before later indexable changelists.
                 
                 changelist = Changelist(
                     id=cl_number,

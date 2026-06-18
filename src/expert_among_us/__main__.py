@@ -375,7 +375,7 @@ def populate(
                 )
                 skipped_commit_count = total_available - total_processed if isinstance(total_available, int) else 0
                 if skipped_commit_count > 0:
-                    log_info(f"  (skipped {skipped_commit_count} commits with no indexable text content, e.g. binary-only)")
+                    log_info(f"  (skipped {skipped_commit_count} commits that could not be indexed, e.g. corrupt, or on unmerged branches)")
         else:
             log_info("No commits were processed")
         
