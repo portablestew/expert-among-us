@@ -437,7 +437,7 @@ Expert Among Us supports multiple LLM providers for prompt generation. By defaul
 | `ollama` | Ollama running locally | Default: `http://127.0.0.1:11434/v1` |
 | `bedrock` | AWS credentials | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` |
 | `claude-code` | `claude` CLI on PATH | [Install](https://www.claude.com/product/claude-code) |
-| `kiro-cli` | Kiro IDE running | Used within Kiro sessions |
+| `kiro-cli` | `kiro-cli` on PATH, logged in | Runs kiro-cli headless with a tool-less agent |
 
 **Default Models (Bedrock):**
 - **Prompt Generation**: `us.amazon.nova-lite-v1:0`

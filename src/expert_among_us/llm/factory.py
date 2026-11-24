@@ -25,6 +25,7 @@ def create_llm_provider(settings: Settings, debug: bool = False) -> LLMProvider:
     - "ollama": Ollama LLM server
     - "bedrock": AWS Bedrock
     - "claude-code": Claude Code CLI
+    - "kiro-cli": Kiro CLI
     
     Args:
         settings: Application settings
@@ -55,7 +56,7 @@ def create_llm_provider(settings: Settings, debug: bool = False) -> LLMProvider:
             "  --llm-provider ollama      (default: http://127.0.0.1:11434/v1)\n"
             "  --llm-provider bedrock     (requires AWS credentials)\n"
             "  --llm-provider claude-code (requires claude CLI)\n"
-            "  --llm-provider kiro-cli    (requires kiro-cli + pywinpty/pexpect)"
+            "  --llm-provider kiro-cli    (requires kiro-cli)"
         )
     
     # Check cache (one instance per provider type)
@@ -142,8 +143,8 @@ def create_llm_provider(settings: Settings, debug: bool = False) -> LLMProvider:
     
     elif provider == "kiro-cli":
         llm = KiroCliLLM(
-            cli_path=getattr(settings, "kiro_cli_path", None),
-            sessions_dir=getattr(settings, "kiro_cli_sessions_dir", None),
+            cli_path=settings.kiro_cli_path,
+            workspace_dir=settings.data_dir / "kiro-cli",
         )
         _llm_cache[provider] = llm
         return llm

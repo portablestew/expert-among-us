@@ -34,9 +34,6 @@ dependencies = [
     "chromadb>=0.4,<0.5",
     "posthog>=2.4.0,<6.0.0",
     "numpy>=1.22,<2.0",
-    # PTY for kiro-cli provider
-    "pywinpty>=2.0; sys_platform == 'win32'",
-    "pexpect>=4.8; sys_platform != 'win32'",
     # Utilities
     "python-dateutil>=2.8,<3.0",
     "pyyaml>=6.0,<7.0",

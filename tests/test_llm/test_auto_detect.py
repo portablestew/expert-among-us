@@ -141,12 +141,13 @@ class TestClaudeCLIDetection:
     def test_detects_claude_cli(self, mock_log, mock_which, mock_check_aws):
         """Test detection of Claude CLI when it's on PATH."""
         mock_check_aws.return_value = False
-        mock_which.return_value = "/usr/local/bin/claude"
+        mock_which.side_effect = lambda name: "/usr/local/bin/claude" if name == "claude" else None
         
         provider = detect_llm_provider()
         
         assert provider == "claude-code"
-        mock_which.assert_called_once_with("claude")
+        mock_which.assert_any_call("kiro-cli")
+        mock_which.assert_called_with("claude")
     
     @patch.dict(os.environ, {}, clear=True)
     @patch("expert_among_us.llm.auto_detect._check_aws_credentials")
@@ -298,7 +299,7 @@ class TestDetectionPriority:
     def test_claude_takes_priority_over_ollama(self, mock_log, mock_ollama, mock_which, mock_check_aws):
         """Test Claude CLI takes priority over Ollama."""
         mock_check_aws.return_value = False
-        mock_which.return_value = "/usr/local/bin/claude"
+        mock_which.side_effect = lambda name: "/usr/local/bin/claude" if name == "claude" else None
         mock_ollama.return_value = True
         
         provider = detect_llm_provider()

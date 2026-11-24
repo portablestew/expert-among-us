@@ -13,28 +13,28 @@ DEFAULT_EMBEDDING_MODEL_ID = "amazon.titan-embed-text-v2:0"
 # Provider-specific model defaults
 PROVIDER_MODEL_DEFAULTS = {
     "bedrock": {
-        "expert": "global.anthropic.claude-sonnet-4-6",
-        "promptgen": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "expert": "global.anthropic.claude-sonnet-5-5",
+        "promptgen": "global.anthropic.claude-haiku-5-5",
     },
     "openai": {
-        "expert": "gpt-5",
-        "promptgen": "gpt-5-mini",
+        "expert": "gpt-6.2-sol",
+        "promptgen": "gpt-6-luna",
     },
     "openrouter": {
-        "expert": "arcee-ai/trinity-large-preview:free",
-        "promptgen": "stepfun/step-3.5-flash:free",
+        "expert": "nvidia/nemotron-3.5-super-vl:free",
+        "promptgen": "nvidia/nemotron-3.5-lightning:free",
     },
     "ollama": {
-        "expert": "deepseek-coder-v2:16b",
-        "promptgen": "qwen2.5-coder:7b",
+        "expert": "qwen3.5:9b",
+        "promptgen": "qwen3.5:4b",
     },
     "claude-code": {
-        "expert": "claude-sonnet-4-6",
-        "promptgen": "claude-haiku-4-5",
+        "expert": "claude-sonnet-5-5",
+        "promptgen": "claude-haiku-5-5",
     },
     "kiro-cli": {
-        "expert": "claude-sonnet-4.6",
-        "promptgen": "claude-haiku-4.5",
+        "expert": "claude-sonnet-5.5",
+        "promptgen": "claude-haiku-5.5",
     },
 }
 
@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     
     # Provider settings
     embedding_provider: str = "local"  # "local" or "bedrock"
-    llm_provider: str = "auto"  # "auto", "openai", "openrouter", "ollama", "bedrock", "claude-code"
+    llm_provider: str = "auto"  # "auto", "openai", "openrouter", "ollama", "bedrock", "claude-code", "kiro-cli"
     base_url_override: Optional[str] = None  # Override base URL for OpenAI-compatible providers
     
     # LLM provider settings
@@ -75,8 +75,7 @@ class Settings(BaseSettings):
     claude_code_model: str = "claude-sonnet-4-5"
     claude_code_cli_path: str = "claude"
     claude_code_session_dir: Optional[Path] = None
-    kiro_cli_path: Optional[str] = None  # Auto-detected if not set
-    kiro_cli_sessions_dir: Optional[Path] = None  # Defaults to ~/.kiro/sessions/cli/
+    kiro_cli_path: Optional[str] = None  # Found on PATH if not set
     
     # OpenAI-compatible API keys
     openai_api_key: Optional[str] = Field(

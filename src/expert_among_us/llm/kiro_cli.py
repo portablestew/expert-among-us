@@ -1,71 +1,77 @@
-"""Kiro CLI LLM provider implementation with session-based conversations.
+"""Kiro CLI LLM provider (v3 engine, headless).
 
-Uses kiro-cli's session file mechanism with --resume-id to support multi-turn
-conversations. Session files are fabricated in Kiro's JSONL format, the CLI is
-spawned via a PTY (so it sees isTTY=true and honors --resume-id), and the
-response is polled from the session JSONL file.
+Each call fabricates a v3 session containing the conversation history, then runs
+``kiro-cli chat --no-interactive --resume-id <id> --output-format stream-json``
+with the current prompt on stdin. Replies are parsed from the JSON Lines event
+stream on stdout, and the session is deleted afterwards.
 
-Requires: pywinpty (Windows) or pexpect (Linux/macOS)
+kiro-cli runs from a private workspace directory with a tool-less agent, so the
+model cannot touch the filesystem and the caller's workspace config is not loaded.
 """
 
+import asyncio
+import hashlib
 import json
-import os
 import platform
 import shutil
-import sys
-import time
+import subprocess
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import AsyncIterator, List, Optional
+from typing import AsyncIterator, List, Optional, Tuple
 
 from .base import (
+    LLMError,
+    LLMInvalidRequestError,
     LLMProvider,
-    Message,
     LLMResponse,
+    Message,
     StreamChunk,
     UsageMetrics,
-    LLMError,
-    LLMRateLimitError,
-    LLMInvalidRequestError,
 )
 from ..utils.debug import DebugLogger
 
 
+AGENT_NAME = "expert-among-us"
+
+# Tool-less agent: the expert only answers from the supplied context.
+AGENT_CONFIG = {
+    "name": AGENT_NAME,
+    "description": "Tool-less agent used by expert-among-us",
+    "prompt": None,
+    "mcpServers": {},
+    "tools": [],
+    "allowedTools": [],
+    "resources": [],
+    "hooks": {},
+    "includeMcpJson": False,
+}
+
+_NO_USAGE = UsageMetrics(input_tokens=0, output_tokens=0, total_tokens=0)
+
+
 class KiroCliLLM(LLMProvider):
-    """Kiro CLI implementation with session-based multi-turn conversations.
+    """LLM provider that drives kiro-cli's v3 engine in headless mode."""
 
-    Uses fabricated session files and kiro-cli's --resume-id flag to inject
-    conversation history. A PTY is used to keep stdin as a real terminal so
-    kiro-cli operates in interactive mode (required for --resume-id to work).
-    """
-
-    # Default kiro-cli path
     DEFAULT_CLI_PATH = "kiro-cli"
 
     def __init__(
         self,
         cli_path: Optional[str] = None,
-        sessions_dir: Optional[Path] = None,
-        poll_interval: float = 0.5,
+        workspace_dir: Optional[Path] = None,
         response_timeout: float = 300.0,
-        shutdown_timeout: float = 10.0,
     ):
         """Initialize Kiro CLI provider.
 
         Args:
-            cli_path: Path to kiro-cli executable. Defaults to "kiro-cli" (found via PATH).
-            sessions_dir: Directory for session files. Defaults to ~/.kiro/sessions/cli/
-            poll_interval: Seconds between jsonl polls (default: 0.5)
-            response_timeout: Max seconds to wait for response (default: 300)
-            shutdown_timeout: Max seconds to wait for /quit to take effect (default: 10)
+            cli_path: kiro-cli executable name or path (default: "kiro-cli" on PATH)
+            workspace_dir: Private working directory for kiro-cli
+                (default: ~/.expert-among-us/kiro-cli)
+            response_timeout: Max seconds to wait for a reply (default: 300)
 
         Raises:
-            LLMError: If kiro-cli is not found or PTY library unavailable
+            LLMError: If kiro-cli is not found
         """
-        # Resolve CLI path — verify it exists on PATH
-        # On Windows, shutil.which may return uppercase .EXE extension which
-        # breaks Toolbox shims (they're case-sensitive). Lowercase the path.
         cli_path = cli_path or self.DEFAULT_CLI_PATH
         full_path = shutil.which(cli_path)
         if not full_path:
@@ -73,285 +79,178 @@ class KiroCliLLM(LLMProvider):
                 f"kiro-cli not found at '{cli_path}'. "
                 "Please ensure kiro-cli is installed and on your PATH."
             )
+        # shutil.which may return an uppercase .EXE on Windows, which breaks
+        # case-sensitive Toolbox shims.
         if platform.system() == "Windows":
             full_path = full_path.lower()
         self.cli_path = full_path
-
-        # Verify PTY library is available
-        self._pty_backend = self._detect_pty_backend()
-
-        # Session storage
-        self.sessions_dir = sessions_dir or (Path.home() / ".kiro" / "sessions" / "cli")
-        self.sessions_dir.mkdir(parents=True, exist_ok=True)
-
-        # Timing
-        self.poll_interval = poll_interval
         self.response_timeout = response_timeout
-        self.shutdown_timeout = shutdown_timeout
+
+        self.workspace_dir = Path(
+            workspace_dir or Path.home() / ".expert-among-us" / "kiro-cli"
+        ).resolve()
+        self._write_agent_config()
+
+        # kiro-cli finds sessions by ID in any workspace folder, but files them
+        # under sha256(lowercased forward-slash cwd)[:16]; match that layout.
+        workspace_key = hashlib.sha256(
+            self.workspace_dir.as_posix().lower().encode("utf-8")
+        ).hexdigest()[:16]
+        kiro_home = Path.home() / ".kiro"
+        self.sessions_dir = kiro_home / "sessions" / workspace_key
+        self.leases_dir = kiro_home / "session-leases"
+
+    def _write_agent_config(self) -> None:
+        """Write the tool-less agent config into the private workspace."""
+        agents_dir = self.workspace_dir / ".kiro" / "agents"
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        (agents_dir / f"{AGENT_NAME}.json").write_text(
+            json.dumps(AGENT_CONFIG, indent=2), encoding="utf-8"
+        )
+
+    # ------------------------------------------------------------------
+    # Session files
+    # ------------------------------------------------------------------
 
     @staticmethod
-    def _detect_pty_backend() -> str:
-        """Detect available PTY backend.
+    def _split_prompt(messages: List[Message]) -> Tuple[List[Message], str]:
+        """Split messages into (history, current prompt) at the last user message."""
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i].role == "user":
+                return list(messages[:i]), messages[i].content
+        raise LLMInvalidRequestError("No user message found in messages list")
+
+    def _create_session(
+        self, history: List[Message], system: Optional[str]
+    ) -> Tuple[str, Path]:
+        """Write a v3 session (session.json + messages.jsonl) holding the history.
+
+        The system prompt is injected as an opening user/assistant exchange,
+        because kiro-cli keeps its own system prompt.
 
         Returns:
-            "winpty" or "pexpect"
-
-        Raises:
-            LLMError: If no PTY library is available
+            Tuple of (session_id, session_dir)
         """
-        if platform.system() == "Windows":
-            try:
-                import winpty  # noqa: F401
-                return "winpty"
-            except ImportError:
-                raise LLMError(
-                    "pywinpty is required on Windows for kiro-cli provider. "
-                    "Install with: pip install pywinpty"
-                )
-        else:
-            try:
-                import pexpect  # noqa: F401
-                return "pexpect"
-            except ImportError:
-                raise LLMError(
-                    "pexpect is required on Linux/macOS for kiro-cli provider. "
-                    "Install with: pip install pexpect"
-                )
+        session_id = f"sess_{uuid.uuid4()}"
+        session_dir = self.sessions_dir / session_id
+        session_dir.mkdir(parents=True)
 
-    def _create_session_id(self) -> str:
-        """Generate a unique session ID."""
-        return str(uuid.uuid4())
-
-    def _create_session_files(
-        self,
-        session_id: str,
-        messages: List[Message],
-        system: Optional[str] = None,
-    ) -> tuple[Path, Path]:
-        """Create session .json and .jsonl files with conversation history.
-
-        The last user message is NOT included in the files — it will be sent
-        via stdin to the running kiro-cli process.
-
-        Args:
-            session_id: Unique session identifier
-            messages: Full conversation history (excluding the last user message)
-            system: Optional system prompt (baked into first exchange)
-
-        Returns:
-            Tuple of (json_path, jsonl_path)
-        """
-        json_path = self.sessions_dir / f"{session_id}.json"
-        jsonl_path = self.sessions_dir / f"{session_id}.jsonl"
-
-        # Build JSONL content
-        jsonl_lines = []
-        base_timestamp = int(time.time()) - len(messages) * 2  # Spread timestamps
-
-        # If system prompt provided, inject as first user/assistant exchange
-        effective_messages = []
+        turns: List[Message] = []
         if system:
-            effective_messages.append(Message(role="user", content=system))
-            effective_messages.append(Message(role="assistant", content="Understood. I will follow these instructions."))
-        effective_messages.extend(messages)
+            turns.append(Message(role="user", content=system))
+            turns.append(Message(role="assistant", content="Understood. I will follow these instructions."))
+        turns.extend(m for m in history if m.role in ("user", "assistant"))
 
-        for i, msg in enumerate(effective_messages):
-            msg_id = str(uuid.uuid4())
-            timestamp = base_timestamp + i * 2
+        now = datetime.now(timezone.utc)
 
-            if msg.role == "user":
-                entry = {
-                    "version": "v1",
-                    "kind": "Prompt",
-                    "data": {
-                        "message_id": msg_id,
-                        "content": [{"kind": "text", "data": msg.content}],
-                        "meta": {"timestamp": timestamp},
-                    },
-                }
-            elif msg.role == "assistant":
-                entry = {
-                    "version": "v1",
-                    "kind": "AssistantMessage",
-                    "data": {
-                        "message_id": msg_id,
-                        "content": [{"kind": "text", "data": msg.content}],
-                    },
-                }
-            else:
-                # Skip system messages (already handled above)
-                continue
+        def iso(t: datetime) -> str:
+            return t.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
-            jsonl_lines.append(json.dumps(entry, ensure_ascii=False))
-
-        # Write JSONL
-        with open(jsonl_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(jsonl_lines))
-            if jsonl_lines:
-                f.write("\n")
-
-        # Write minimal session JSON
-        session_meta = {
-            "session_id": session_id,
-            "cwd": os.getcwd(),
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+        workspace = str(self.workspace_dir)
+        metadata = {
+            "schemaVersion": "1.0.0",
+            "dataModelVersion": 1,
+            "id": session_id,
             "title": "Expert code analysis session",
-            "session_created_reason": "subagent",
-            "session_state": {
-                "version": "v1",
-                "agent_name": "kiro_default",
-            },
+            "agentMode": "vibe",
+            "status": "idle",
+            "workspacePaths": [workspace],
+            "rootPaths": [workspace],
+            "createdAt": iso(now),
+            "lastModifiedAt": iso(now),
+            # Keep the user's Kiro memories out of expert prompts, and don't
+            # write new memories from these sessions.
+            "memoryConfig": {"mode": "off", "reflection": False},
+            "memoryConfigSource": "explicit",
         }
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(session_meta, f, ensure_ascii=False)
+        (session_dir / "session.json").write_text(
+            json.dumps(metadata, ensure_ascii=False), encoding="utf-8"
+        )
 
-        return json_path, jsonl_path
+        start = now - timedelta(milliseconds=len(turns))
+        lines = [
+            json.dumps(
+                {
+                    "id": str(uuid.uuid4()),
+                    "timestamp": iso(start + timedelta(milliseconds=i)),
+                    "payload": {"type": msg.role, "content": msg.content},
+                },
+                ensure_ascii=False,
+            )
+            for i, msg in enumerate(turns)
+        ]
+        (session_dir / "messages.jsonl").write_text(
+            "".join(line + "\n" for line in lines), encoding="utf-8"
+        )
+        return session_id, session_dir
 
     def _cleanup_session(self, session_id: str) -> None:
-        """Remove session files (.json, .jsonl, .lock).
+        """Delete the session folder and its lease (kept when debug is enabled)."""
+        if DebugLogger.is_enabled():
+            return
+        shutil.rmtree(self.sessions_dir / session_id, ignore_errors=True)
+        try:
+            (self.leases_dir / f"{session_id}.lease").unlink(missing_ok=True)
+        except OSError:
+            pass
 
-        Args:
-            session_id: Session ID to clean up
-        """
-        for suffix in (".json", ".jsonl", ".lock"):
-            path = self.sessions_dir / f"{session_id}{suffix}"
-            try:
-                if path.exists():
-                    path.unlink()
-            except Exception:
-                pass  # Best effort
+    # ------------------------------------------------------------------
+    # Command and event stream
+    # ------------------------------------------------------------------
 
-    def _spawn_pty(self, cmd: str):
-        """Spawn a process with a PTY.
+    def _build_command(self, session_id: str, model: str) -> List[str]:
+        return [
+            self.cli_path, "chat",
+            "--no-interactive",
+            "--agent-engine", "v3",
+            "--resume-id", session_id,
+            "--agent", AGENT_NAME,
+            "--model", model,
+            "--trust-tools=",
+            "--output-format", "stream-json",
+        ]
 
-        Args:
-            cmd: Command string to execute
-
-        Returns:
-            PTY process object (winpty.PtyProcess or pexpect.spawn)
-        """
-        if self._pty_backend == "winpty":
-            from winpty import PtyProcess
-            return PtyProcess.spawn(cmd)
-        else:
-            import pexpect
-            # pexpect.spawn takes command and args separately
-            parts = cmd.split(" ", 1)
-            if len(parts) == 2:
-                return pexpect.spawn(parts[0], parts[1].split(), encoding="utf-8", timeout=None)
-            return pexpect.spawn(parts[0], encoding="utf-8", timeout=None)
-
-    def _pty_write(self, proc, text: str) -> None:
-        """Write text to PTY stdin.
-
-        Args:
-            proc: PTY process object
-            text: Text to write
-        """
-        if self._pty_backend == "winpty":
-            proc.write(text)
-        else:
-            proc.sendline(text.rstrip("\r\n"))
-
-    def _pty_is_alive(self, proc) -> bool:
-        """Check if PTY process is still running.
-
-        Args:
-            proc: PTY process object
-
-        Returns:
-            True if process is alive
-        """
-        if self._pty_backend == "winpty":
-            return proc.isalive()
-        else:
-            return proc.isalive()
-
-    def _pty_read(self, proc) -> str:
-        """Non-blocking read from PTY.
-
-        Args:
-            proc: PTY process object
-
-        Returns:
-            Available output text, or empty string
-        """
-        if self._pty_backend == "winpty":
-            try:
-                return proc.read(4096)
-            except Exception:
-                return ""
-        else:
-            try:
-                # pexpect non-blocking read
-                import pexpect
-                proc.expect([pexpect.TIMEOUT, pexpect.EOF], timeout=0.1)
-                return proc.before or ""
-            except Exception:
-                return ""
-
-    def _pty_terminate(self, proc) -> None:
-        """Force terminate PTY process.
-
-        Args:
-            proc: PTY process object
-        """
-        if self._pty_backend == "winpty":
-            proc.terminate()
-        else:
-            proc.terminate(force=True)
-
-    def _pty_exit_status(self, proc) -> Optional[int]:
-        """Get exit status of PTY process.
-
-        Args:
-            proc: PTY process object
-
-        Returns:
-            Exit code or None if still running
-        """
-        if self._pty_backend == "winpty":
-            return proc.exitstatus
-        else:
-            return proc.exitstatus
-
-    def _poll_jsonl_for_response(self, jsonl_path: Path, initial_size: int) -> Optional[str]:
-        """Check jsonl file for a new AssistantMessage.
-
-        Args:
-            jsonl_path: Path to the session JSONL file
-            initial_size: File size before the request was sent
-
-        Returns:
-            Response text if found, None otherwise
-        """
-        if not jsonl_path.exists():
+    @staticmethod
+    def _parse_event(line: str) -> Optional[dict]:
+        line = line.strip()
+        if not line.startswith("{"):
+            return None
+        try:
+            return json.loads(line)
+        except json.JSONDecodeError:
             return None
 
-        current_size = jsonl_path.stat().st_size
-        if current_size <= initial_size:
+    @staticmethod
+    def _text_delta(event: dict) -> Optional[str]:
+        """Return reply text from an agent_message_chunk event, else None."""
+        if event.get("type") != "sessionUpdate":
             return None
-
-        with open(jsonl_path, "r", encoding="utf-8") as f:
-            f.seek(initial_size)
-            new_content = f.read()
-
-        for line in new_content.split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-                if obj.get("kind") == "AssistantMessage":
-                    content_items = obj.get("data", {}).get("content", [])
-                    for item in content_items:
-                        if item.get("kind") == "text":
-                            return item.get("data", "")
-            except json.JSONDecodeError:
-                continue
-
+        update = event.get("data", {}).get("update", {})
+        if update.get("sessionUpdate") != "agent_message_chunk":
+            return None
+        content = update.get("content", {})
+        if content.get("type") == "text":
+            return content.get("text") or None
         return None
+
+    @staticmethod
+    def _raise_run_error(event: dict, session_id: str) -> None:
+        data = event.get("data", {})
+        raise LLMError(
+            f"kiro-cli error ({data.get('stage', 'unknown')} stage): "
+            f"{data.get('message', 'no message')}. Session: {session_id}"
+        )
+
+    @staticmethod
+    def _raise_no_result(returncode: Optional[int], stderr: str, session_id: str) -> None:
+        raise LLMError(
+            f"kiro-cli exited with code {returncode} without a result. "
+            f"Session: {session_id}\nstderr: {stderr.strip()[-500:]}"
+        )
+
+    # ------------------------------------------------------------------
+    # LLMProvider API
+    # ------------------------------------------------------------------
 
     def generate(
         self,
@@ -362,179 +261,59 @@ class KiroCliLLM(LLMProvider):
         system: Optional[str] = None,
         debug_category: str = "expert",
     ) -> LLMResponse:
-        """Generate a complete response using Kiro CLI.
-
-        Args:
-            messages: Conversation history as a list of Message objects
-            model: Model identifier (passed via --model flag)
-            max_tokens: Maximum tokens to generate (not directly supported, ignored)
-            temperature: Sampling temperature (not directly supported, ignored)
-            system: Optional system prompt (baked into session history)
-            debug_category: Category for debug logging (default: "expert")
-
-        Returns:
-            LLMResponse containing generated content and metadata
-
-        Raises:
-            LLMError: For Kiro CLI errors or timeouts
-        """
-        session_id = self._create_session_id()
+        """Generate a complete response. max_tokens and temperature are not supported by kiro-cli."""
+        history, prompt = self._split_prompt(messages)
+        session_id, _ = self._create_session(history, system)
+        cmd = self._build_command(session_id, model)
+        request_id = self._log_request(session_id, prompt, history, system, cmd, model, debug_category)
 
         try:
-            # Separate history from current prompt
-            history_messages = []
-            current_prompt = ""
-
-            if messages:
-                for i in range(len(messages) - 1, -1, -1):
-                    if messages[i].role == "user":
-                        current_prompt = messages[i].content
-                        history_messages = list(messages[:i])
-                        break
-
-            if not current_prompt:
-                raise LLMInvalidRequestError("No user message found in messages list")
-
-            # Create session files with history
-            json_path, jsonl_path = self._create_session_files(
-                session_id, history_messages, system
-            )
-
-            # Record initial jsonl size (to detect new content)
-            initial_size = jsonl_path.stat().st_size
-
-            # Build command
-            cmd = (
-                f'{self.cli_path} chat --resume-id {session_id}'
-                f' --model {model}'
-                f' --trust-tools='
-                f' --agent-engine v2'
-            )
-
-            # Log request if debug enabled
-            request_id = None
-            if DebugLogger.is_enabled():
-                request_data = {
-                    "session_id": session_id,
-                    "current_prompt": current_prompt,
-                    "history_count": len(history_messages),
-                    "system_prompt": system[:200] if system else None,
-                    "command": cmd,
-                    "model": model,
-                }
-                request_id = DebugLogger.log_request(
-                    "kiro_cli", request_data, category=debug_category
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    input=prompt.encode("utf-8"),
+                    capture_output=True,
+                    cwd=self.workspace_dir,
+                    timeout=self.response_timeout,
                 )
-
-            # Spawn PTY process
-            proc = self._spawn_pty(cmd)
-
-            # Immediately write prompt via stdin
-            self._pty_write(proc, current_prompt + "\r\n")
-
-            # Poll jsonl for response
-            deadline = time.time() + self.response_timeout
-            response_text = None
-            pty_output = ""  # Collect PTY output for diagnostics
-
-            while time.time() < deadline:
-                # Drain PTY output to prevent blocking
-                if self._pty_is_alive(proc):
-                    chunk = self._pty_read(proc)
-                    if chunk:
-                        pty_output += chunk
-
-                # Check for response in jsonl
-                response_text = self._poll_jsonl_for_response(jsonl_path, initial_size)
-                if response_text is not None:
-                    break
-
-                # Check if process died unexpectedly
-                if not self._pty_is_alive(proc):
-                    # Drain any remaining output
-                    chunk = self._pty_read(proc)
-                    if chunk:
-                        pty_output += chunk
-                    # One final check of jsonl
-                    response_text = self._poll_jsonl_for_response(jsonl_path, initial_size)
-                    if response_text is not None:
-                        break
-                    exit_code = self._pty_exit_status(proc)
-                    raise LLMError(
-                        f"kiro-cli exited unexpectedly with code {exit_code}. "
-                        f"Session: {session_id}\n"
-                        f"PTY output: {pty_output.strip()[-500:]}"
-                    )
-
-                time.sleep(self.poll_interval)
-
-            # Shutdown the process
-            self._shutdown_process(proc)
-
-            # Handle timeout
-            if response_text is None:
+            except subprocess.TimeoutExpired:
                 raise LLMError(
                     f"Timed out waiting for kiro-cli response after {self.response_timeout}s. "
-                    f"Session: {session_id}\n"
-                    f"PTY output: {pty_output.strip()[-500:]}"
+                    f"Session: {session_id}"
                 )
 
-            # Validate response
-            if not response_text.strip():
-                raise LLMError(
-                    f"kiro-cli returned empty response. Session: {session_id}"
+            chunks: List[str] = []
+            finished: Optional[dict] = None
+            for line in proc.stdout.decode("utf-8", errors="replace").splitlines():
+                event = self._parse_event(line)
+                if event is None:
+                    continue
+                delta = self._text_delta(event)
+                if delta:
+                    chunks.append(delta)
+                elif event.get("type") == "runError":
+                    self._raise_run_error(event, session_id)
+                elif event.get("type") == "runFinished":
+                    finished = event.get("data", {})
+
+            if finished is None:
+                self._raise_no_result(
+                    proc.returncode, proc.stderr.decode("utf-8", errors="replace"), session_id
                 )
 
-            # Log response if debug enabled
-            if DebugLogger.is_enabled():
-                DebugLogger.log_response(
-                    "kiro_cli",
-                    {"content": response_text, "session_id": session_id},
-                    request_id,
-                    category=debug_category,
-                )
+            content = "".join(chunks) or finished.get("finalText") or ""
+            if not content.strip():
+                raise LLMError(f"kiro-cli returned empty response. Session: {session_id}")
 
+            self._log_response(session_id, content, request_id, debug_category)
             return LLMResponse(
-                content=response_text,
+                content=content,
                 model=model,
-                stop_reason="end_turn",
-                usage=UsageMetrics(
-                    input_tokens=0,
-                    output_tokens=0,
-                    total_tokens=0,
-                ),
+                stop_reason=finished.get("stopReason") or "end_turn",
+                usage=_NO_USAGE,
             )
-
         finally:
-            # Clean up session files (unless debug is enabled)
-            if not DebugLogger.is_enabled():
-                self._cleanup_session(session_id)
-
-    def _shutdown_process(self, proc) -> None:
-        """Gracefully shut down the kiro-cli process.
-
-        Sends /quit, waits for exit, then force terminates if needed.
-
-        Args:
-            proc: PTY process object
-        """
-        if not self._pty_is_alive(proc):
-            return
-
-        # Send /quit
-        try:
-            self._pty_write(proc, "/quit\r\n")
-        except (EOFError, OSError):
-            return
-
-        # Wait for graceful exit
-        deadline = time.time() + self.shutdown_timeout
-        while self._pty_is_alive(proc) and time.time() < deadline:
-            time.sleep(0.2)
-
-        # Force terminate if still alive
-        if self._pty_is_alive(proc):
-            self._pty_terminate(proc)
+            self._cleanup_session(session_id)
 
     async def stream(
         self,
@@ -545,34 +324,109 @@ class KiroCliLLM(LLMProvider):
         system: Optional[str] = None,
         debug_category: str = "expert",
     ) -> AsyncIterator[StreamChunk]:
-        """Stream response from Kiro CLI.
+        """Stream reply text as kiro-cli emits it. max_tokens and temperature are not supported."""
+        history, prompt = self._split_prompt(messages)
+        session_id, _ = self._create_session(history, system)
+        cmd = self._build_command(session_id, model)
+        request_id = self._log_request(session_id, prompt, history, system, cmd, model, debug_category)
 
-        Since kiro-cli doesn't support true streaming output, this yields the
-        complete response as a single chunk once available.
+        proc = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=self.workspace_dir,
+                limit=16 * 1024 * 1024,  # single events can be large
+            )
+            proc.stdin.write(prompt.encode("utf-8"))
+            await proc.stdin.drain()
+            proc.stdin.close()
 
-        Args:
-            messages: Conversation history as a list of Message objects
-            model: Model identifier (passed via --model flag)
-            max_tokens: Maximum tokens to generate (ignored)
-            temperature: Sampling temperature (ignored)
-            system: Optional system prompt (baked into session history)
-            debug_category: Category for debug logging (default: "expert")
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + self.response_timeout
+            chunks: List[str] = []
+            finished: Optional[dict] = None
 
-        Yields:
-            StreamChunk with the complete response
-        """
-        # Use generate() and yield as single chunk
-        response = self.generate(
-            messages=messages,
-            model=model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            system=system,
-            debug_category=debug_category,
+            while True:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise asyncio.TimeoutError
+                raw = await asyncio.wait_for(proc.stdout.readline(), timeout=remaining)
+                if not raw:
+                    break
+                event = self._parse_event(raw.decode("utf-8", errors="replace"))
+                if event is None:
+                    continue
+                delta = self._text_delta(event)
+                if delta:
+                    chunks.append(delta)
+                    yield StreamChunk(delta=delta)
+                elif event.get("type") == "runError":
+                    self._raise_run_error(event, session_id)
+                elif event.get("type") == "runFinished":
+                    finished = event.get("data", {})
+                    break
+
+            if finished is None:
+                stderr = (await proc.stderr.read()).decode("utf-8", errors="replace")
+                await proc.wait()
+                self._raise_no_result(proc.returncode, stderr, session_id)
+
+            if not chunks and finished.get("finalText"):
+                chunks.append(finished["finalText"])
+                yield StreamChunk(delta=finished["finalText"])
+            if not "".join(chunks).strip():
+                raise LLMError(f"kiro-cli returned empty response. Session: {session_id}")
+
+            self._log_response(session_id, "".join(chunks), request_id, debug_category)
+            yield StreamChunk(
+                delta="",
+                stop_reason=finished.get("stopReason") or "end_turn",
+                usage=_NO_USAGE,
+            )
+        except asyncio.TimeoutError:
+            raise LLMError(
+                f"Timed out waiting for kiro-cli response after {self.response_timeout}s. "
+                f"Session: {session_id}"
+            )
+        finally:
+            if proc is not None and proc.returncode is None:
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.wait()
+            self._cleanup_session(session_id)
+
+    # ------------------------------------------------------------------
+    # Debug logging
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _log_request(session_id, prompt, history, system, cmd, model, category) -> Optional[str]:
+        if not DebugLogger.is_enabled():
+            return None
+        return DebugLogger.log_request(
+            "kiro_cli",
+            {
+                "session_id": session_id,
+                "current_prompt": prompt,
+                "history_count": len(history),
+                "system_prompt": system[:200] if system else None,
+                "command": cmd,
+                "model": model,
+            },
+            category=category,
         )
 
-        yield StreamChunk(
-            delta=response.content,
-            stop_reason=response.stop_reason,
-            usage=response.usage,
-        )
+    @staticmethod
+    def _log_response(session_id, content, request_id, category) -> None:
+        if DebugLogger.is_enabled():
+            DebugLogger.log_response(
+                "kiro_cli",
+                {"content": content, "session_id": session_id},
+                request_id,
+                category=category,
+            )
